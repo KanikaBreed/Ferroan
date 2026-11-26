@@ -23,10 +23,11 @@
 //!
 //! `CharacterDesc.Default` (`IPhysicsBackend.cs` 346–357) supplies the friction,
 //! slope, step and push that the constructor does not overwrite. The descriptor
-//! is what `CreateCharacter` receives. A ray that would see the query marker,
-//! and a body-cap miss, need the native body. The gravity scale
-//! `Gravity.Z * (1 - buoyancy)` sits inside `StepCharacter` and is not applied
-//! here.
+//! is what `CreateCharacter` receives. `JoltPhysicsBackend.cs` 3070 and 3090
+//! copy that descriptor's user data onto the query marker. This module is that
+//! assignment. Creating the body, and whether a ray sees it, is the bind. The
+//! gravity scale `Gravity.Z * (1 - buoyancy)` sits inside `StepCharacter` and
+//! is not applied here.
 
 /// `DefaultAvatarMass`. Second Life's fixed avatar mass, in the same units as a prim.
 pub const DEFAULT_AVATAR_MASS: f32 = 1.954922;
@@ -162,13 +163,18 @@ fn scale(value: [f32; 3], factor: f32) -> [f32; 3] {
     [value[0] * factor, value[1] * factor, value[2] * factor]
 }
 
-/// `AvatarJump` sets the latch and ignores `force_z`.
+/// `AvatarJump` stores the latch and ignores `force_z` (`JoltCharacter.cs`
+/// 370–375). The stored latch is the character's field. This is that
+/// assignment. A later `PushMovement` forwards the field; the character that
+/// owns it is P3.13b.
 #[must_use]
 pub fn jump_latch_on_press(_force_z: f32) -> bool {
     true
 }
 
-/// `PushMovement` sends the current latch and does not clear it.
+/// `PushMovement` sends the current latch and does not clear it
+/// (`JoltCharacter.cs` 245). The field that holds the latch is the
+/// character's, and a stateful owner is P3.13b.
 #[must_use]
 pub fn movement_sends_latch(latched: bool) -> bool {
     latched
@@ -274,6 +280,14 @@ pub struct MarkerDesc {
     pub jump_speed: f32,
     pub wants_contact_events: bool,
     pub user_data: u32,
+}
+
+/// Query-marker `BodyCreationSettings.UserData` (`JoltPhysicsBackend.cs` 3070)
+/// and the marker record (3090). Both copy the descriptor's user data. This is
+/// that assignment. Creating the body is the bind.
+#[must_use]
+pub fn marker_body_user_data(descriptor_user_data: u32) -> u32 {
+    descriptor_user_data
 }
 
 /// `CreateCharacterInternal`. Contact events are wanted only when `subscribed_ms`

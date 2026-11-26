@@ -16,6 +16,9 @@ sealed class RecordingBackend : IPhysicsBackend
 {
     internal bool CreatedOnce;
     internal CharacterDesc Created;
+    // JoltPhysicsBackend.cs 3070 and 3090 copy desc.UserData onto the query
+    // marker. Creating that body needs native. This is the assignment.
+    internal uint MarkerUserData;
     internal readonly List<Movement> Moves = new();
     internal readonly List<ShapeCall> Shapes = new();
     internal readonly List<float> Masses = new();
@@ -36,6 +39,7 @@ sealed class RecordingBackend : IPhysicsBackend
             throw new InvalidOperationException("the character compile created a second character");
         CreatedOnce = true;
         Created = desc;
+        MarkerUserData = desc.UserData;
         return new CharacterId(1);
     }
 

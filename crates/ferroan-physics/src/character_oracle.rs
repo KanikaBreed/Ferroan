@@ -12,8 +12,8 @@ use crate::character::{
     DEFAULT_AVATAR_MASS, DEFAULT_AVATAR_SIZE, EDGE_MARGIN, Intent, MarkerRequest, ShapeState,
     SpeedFactors, capsule_from_size, contact_wanted_after_subscribe,
     contact_wanted_after_unsubscribe, desired_velocity, ground_flags, jump_latch_after_drain,
-    jump_latch_on_press, keep_in_region, marker_descriptor, mass_for, movement_sends_latch,
-    stand_half_for, store_buoyancy, store_target,
+    jump_latch_on_press, keep_in_region, marker_body_user_data, marker_descriptor, mass_for,
+    movement_sends_latch, stand_half_for, store_buoyancy, store_target,
 };
 
 #[test]
@@ -55,7 +55,7 @@ fn character_fixture_matches_the_pinned_methods() {
                 capsules += 1;
                 check_capsule(&f, &header);
             }
-            Some("desc") => check_desc(&f, &header),
+            Some("desc") => check_desc(&f, &calls, &header),
             Some("move") => check_move(&f, &header),
             Some("intent") => check_intent(&f),
             Some("jump") => check_jump(&f),
@@ -69,12 +69,13 @@ fn character_fixture_matches_the_pinned_methods() {
             Some("buoyancy") => buoyancy = check_buoyancy(&f, buoyancy),
             Some("subscribe") => check_subscribe(&f),
             Some("reject_target") => check_reject(&f),
+            Some("keep") => check_keep(&f),
             _ => {}
         }
     }
     assert!(capsules >= 2, "capsule rows");
     assert!(saw_half && saw_above, "0.5 and the next float");
-    assert!(calls.lines().any(|line| line.starts_with("capsule ")));
+    replay_calls(&calls, &result);
 }
 
 fn anchor_drop_factors(factors: &Factors) {
@@ -120,30 +121,33 @@ fn check_capsule(f: &[&str], header: &Header) {
     }
 }
 
-fn check_desc(f: &[&str], header: &Header) {
-    assert_eq!(f.len(), 18, "{f:?}");
+fn check_desc(f: &[&str], calls: &str, header: &Header) {
+    assert_eq!(f.len(), 19, "{f:?}");
+    let create = fields(line_starting(calls, "create "));
+    assert_eq!(create.len(), 13, "{create:?}");
+    let subscribed_ms = create[12].parse().unwrap();
     let desc = marker_descriptor(MarkerRequest {
-        user_data: f[1].parse().unwrap(),
-        position: [bits(f[2]), bits(f[3]), bits(f[4])],
-        orientation: [0.0, 0.0, 0.0, 1.0],
-        size: parse3(&header.default_size),
+        user_data: create[1].parse().unwrap(),
+        position: [bits(create[2]), bits(create[3]), bits(create[4])],
+        size: [bits(create[5]), bits(create[6]), bits(create[7])],
+        orientation: [
+            bits(create[8]),
+            bits(create[9]),
+            bits(create[10]),
+            bits(create[11]),
+        ],
         jump_speed: bits(&header.factors.jump),
-        subscribed_ms: 0,
+        subscribed_ms,
     });
     assert_eq!(desc.user_data.to_string(), f[1]);
+    assert_eq!(create[1], f[1], "create user data");
     assert_eq!(vec3(desc.position), owned3([f[2], f[3], f[4]]));
-    assert_eq!(
-        vec4(desc.orientation),
-        [
-            f[5].to_string(),
-            f[6].to_string(),
-            f[7].to_string(),
-            f[8].to_string()
-        ]
-    );
+    assert_eq!(vec4(desc.orientation), owned4([f[5], f[6], f[7], f[8]]));
     assert_eq!(hex(desc.half_height), f[9]);
     assert_eq!(hex(desc.radius), f[10]);
-    assert!(desc.radius >= 0.2_f32);
+    if desc.radius.is_finite() {
+        assert!(desc.radius >= 0.2_f32);
+    }
     assert_eq!(hex(desc.mass), f[11]);
     assert_eq!(hex(desc.jump_speed), f[12]);
     assert_eq!(bit(desc.wants_contact_events), f[13]);
@@ -151,6 +155,9 @@ fn check_desc(f: &[&str], header: &Header) {
     assert_eq!(hex(desc.max_slope_angle), f[15]);
     assert_eq!(hex(desc.step_height), f[16]);
     assert_eq!(hex(desc.push_strength), f[17]);
+    let marker = marker_body_user_data(desc.user_data);
+    assert_eq!(marker.to_string(), f[18], "marker user data");
+    assert_eq!(marker, desc.user_data);
 }
 
 fn check_move(f: &[&str], header: &Header) {
@@ -266,6 +273,81 @@ fn check_subscribe(f: &[&str]) {
     assert_eq!(bit(wanted), f[2], "subscribe {f:?}");
 }
 
+fn check_keep(f: &[&str]) {
+    assert_eq!(f.len(), 12, "{f:?}");
+    let clamped = keep_in_region(
+        [bits(f[5]), bits(f[6]), bits(f[7])],
+        f[3].parse().unwrap(),
+        f[4].parse().unwrap(),
+        flag(f[1]),
+        flag(f[2]),
+    );
+    assert_eq!(
+        vec3(clamped.position),
+        owned3([f[8], f[9], f[10]]),
+        "keep {f:?}"
+    );
+    assert_eq!(bit(clamped.wrote_transform), f[11], "keep transform {f:?}");
+}
+
+fn replay_calls(calls: &str, result: &str) {
+    let paired: Vec<&str> = result
+        .lines()
+        .filter(|line| {
+            matches!(
+                line.split_whitespace().next(),
+                Some(
+                    "capsule"
+                        | "desc"
+                        | "intent"
+                        | "drain"
+                        | "size"
+                        | "buoyancy"
+                        | "subscribe"
+                        | "keep"
+                )
+            )
+        })
+        .collect();
+    let mut index = 0usize;
+    for line in calls.lines() {
+        let call = fields(line);
+        if call.first().copied() == Some("format") {
+            continue;
+        }
+        assert!(index < paired.len(), "no result for {line}");
+        let got = fields(paired[index]);
+        match call.first().copied() {
+            Some("capsule") => {
+                assert_eq!(got[0], "capsule", "{line}");
+                assert_eq!(&got[2..5], &call[1..4], "{line}");
+            }
+            Some("create") => {
+                assert_eq!(call.len(), 13, "{line}");
+                assert_eq!(got[0], "desc", "{line}");
+                assert_eq!(got[1], call[1], "user {line}");
+                assert_eq!(&got[2..5], &call[2..5], "position {line}");
+                assert_eq!(&got[5..9], &call[8..12], "orientation {line}");
+                assert_eq!(got[18], call[1], "marker user data {line}");
+            }
+            Some("intent" | "drain" | "size" | "buoyancy" | "subscribe" | "keep") => {
+                assert_eq!(got[0], call[0], "{line}");
+                assert!(got.len() >= call.len(), "{line}");
+                assert_eq!(&got[..call.len()], call.as_slice(), "{line}");
+            }
+            other => panic!("unexpected call {other:?}: {line}"),
+        }
+        index += 1;
+    }
+    assert_eq!(index, paired.len(), "a result row has no call");
+    assert!(result.contains("FFC00000"), "NaN rows");
+    assert!(result.contains("7F800000"), "infinity rows");
+    assert!(calls.contains("intent 1 1 "), "flight with always-run");
+    assert!(calls.contains("keep 1 "), "allow outside");
+    assert!(calls.contains("keep 0 0 "), "invalid character");
+    assert!(calls.contains("256 128"), "non-square region");
+}
+
 fn check_reject(f: &[&str]) {
     assert_eq!(f.len(), 6, "{f:?}");
     let finite = store_target([1.0, 2.0, 3.0]).unwrap();
@@ -370,6 +452,15 @@ fn owned3(hexes: [&str; 3]) -> [String; 3] {
 
 fn vec4(value: [f32; 4]) -> [String; 4] {
     [hex(value[0]), hex(value[1]), hex(value[2]), hex(value[3])]
+}
+
+fn owned4(hexes: [&str; 4]) -> [String; 4] {
+    [
+        hexes[0].to_string(),
+        hexes[1].to_string(),
+        hexes[2].to_string(),
+        hexes[3].to_string(),
+    ]
 }
 
 fn bit(value: bool) -> &'static str {

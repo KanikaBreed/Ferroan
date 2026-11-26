@@ -3,9 +3,10 @@
 
 // Compiles JoltCharacter's capsule, mass, jump latch, movement intent and
 // marker descriptor. The character is constructed against RecordingBackend, so
-// CreateCharacter records the descriptor and does not build a native body.
-// JoltScene is not initialised. A ray that would see the query marker, and the
-// body-cap miss, need that native body; this fixture does not record them.
+// CreateCharacter records the descriptor and the user data the query marker
+// would copy. It does not build a native body. JoltScene is not initialised.
+// A ray that would see the query marker, and the body-cap miss, need that
+// native body; this fixture does not record them.
 
 using System.Globalization;
 using System.Numerics;
@@ -32,6 +33,7 @@ static class CharacterOracle
         run.SizeAndBuoyancy();
         run.Subscription();
         run.RejectTarget();
+        run.KeepCases();
         return new Texts(run.Calls.ToString(), run.Result.ToString());
     }
 
@@ -123,7 +125,12 @@ static class CharacterOracle
             if (!_backend.CreatedOnce)
                 throw new InvalidOperationException("CreateCharacter was not called");
             CharacterDesc desc = _backend.Created;
-            Calls.Append("create 1000 ").Append(Vec(desc.Position)).Append(' ').Append(Vec(Om(_defaultSize))).Append('\n');
+            int subscribed = (int)Field(_character, "_subscribedMs");
+            Calls.Append("create ").Append(desc.UserData.ToString(CultureInfo.InvariantCulture)).Append(' ');
+            Calls.Append(Vec(desc.Position)).Append(' ').Append(Vec(Om(Get("Size")))).Append(' ');
+            Calls.Append(Hex(desc.Orientation.X)).Append(' ').Append(Hex(desc.Orientation.Y)).Append(' ');
+            Calls.Append(Hex(desc.Orientation.Z)).Append(' ').Append(Hex(desc.Orientation.W)).Append(' ');
+            Calls.Append(subscribed.ToString(CultureInfo.InvariantCulture)).Append('\n');
             Result.Append("desc");
             Result.Append(' ').Append(desc.UserData.ToString(CultureInfo.InvariantCulture));
             Result.Append(' ').Append(Vec(desc.Position));
@@ -134,6 +141,7 @@ static class CharacterOracle
             Result.Append(' ').Append(desc.WantsContactEvents ? "1" : "0");
             Result.Append(' ').Append(Hex(desc.Friction)).Append(' ').Append(Hex(desc.MaxSlopeAngle));
             Result.Append(' ').Append(Hex(desc.StepHeight)).Append(' ').Append(Hex(desc.PushStrength));
+            Result.Append(' ').Append(_backend.MarkerUserData.ToString(CultureInfo.InvariantCulture));
             Result.Append('\n');
             if (_backend.Moves.Count != 1)
                 throw new InvalidOperationException("construction did not push one movement");
@@ -224,6 +232,56 @@ static class CharacterOracle
             Result.Append(' ').Append(before.ToString(CultureInfo.InvariantCulture));
             Result.Append(' ').Append(_backend.Moves.Count.ToString(CultureInfo.InvariantCulture));
             Result.Append('\n');
+        }
+
+        internal void KeepCases()
+        {
+            MethodInfo keep = Require(_type, "KeepInRegion", BindingFlags.Instance | BindingFlags.NonPublic);
+            // A 256 by 128 region. Swapping the axes clamps a different coordinate.
+            Keep(keep, false, true, 256, 128, 200f, 10f, 25f);
+            Keep(keep, false, true, 256, 128, 10f, 200f, 25f);
+            Keep(keep, false, true, 256, 128, 300f, -1f, 25f);
+            // AllowOutsideRegion returns before the clamp and writes no transform.
+            Keep(keep, true, true, 256, 256, -1f, 300f, 10f);
+            // An invalid character still clamps, and writes no transform.
+            Keep(keep, false, false, 256, 256, -1f, 300f, 10f);
+            SetCharacter(true);
+            SetRegion(256, 256);
+            Set("AllowOutsideRegion", false);
+        }
+
+        void Keep(MethodInfo keep, bool allow, bool valid, int regionX, int regionY, float x, float y, float z)
+        {
+            SetRegion(regionX, regionY);
+            Set("AllowOutsideRegion", allow);
+            SetCharacter(valid);
+            SetPosition(x, y, z);
+            int transforms = _backend.Transforms.Count;
+            Invoke(keep, _character, null);
+            object position = Field(_character, "_position");
+            Calls.Append("keep ").Append(Bit(allow)).Append(' ').Append(Bit(valid)).Append(' ');
+            Calls.Append(regionX.ToString(CultureInfo.InvariantCulture)).Append(' ');
+            Calls.Append(regionY.ToString(CultureInfo.InvariantCulture)).Append(' ');
+            Calls.Append(Vec(new Vector3(x, y, z))).Append('\n');
+            Result.Append("keep ").Append(Bit(allow)).Append(' ').Append(Bit(valid)).Append(' ');
+            Result.Append(regionX.ToString(CultureInfo.InvariantCulture)).Append(' ');
+            Result.Append(regionY.ToString(CultureInfo.InvariantCulture)).Append(' ');
+            Result.Append(Vec(new Vector3(x, y, z))).Append(' ');
+            Result.Append(Vec(Om(position))).Append(' ');
+            Result.Append((_backend.Transforms.Count - transforms).ToString(CultureInfo.InvariantCulture));
+            Result.Append('\n');
+        }
+
+        void SetCharacter(bool valid)
+        {
+            var id = new CharacterId(valid ? 1u : 0u);
+            _type.GetField("_character", BindingFlags.Instance | BindingFlags.NonPublic).SetValue(_character, id);
+        }
+
+        void SetPosition(float x, float y, float z)
+        {
+            _type.GetField("_position", BindingFlags.Instance | BindingFlags.NonPublic)
+                .SetValue(_character, Om(x, y, z));
         }
 
         void Capsule(object size, bool isDefault)

@@ -26,8 +26,9 @@ pub use character::{
     Capsule, DEFAULT_AVATAR_MASS, DEFAULT_AVATAR_SIZE, EDGE_MARGIN, GroundFlags, Intent,
     MarkerDesc, MarkerRequest, RegionClamp, ShapeState, SpeedFactors, capsule_from_size,
     contact_wanted_after_subscribe, contact_wanted_after_unsubscribe, desired_velocity,
-    ground_flags, jump_latch_after_drain, jump_latch_on_press, keep_in_region, marker_descriptor,
-    mass_for, movement_sends_latch, stand_half_for, store_buoyancy, store_target,
+    ground_flags, jump_latch_after_drain, jump_latch_on_press, keep_in_region,
+    marker_body_user_data, marker_descriptor, mass_for, movement_sends_latch, stand_half_for,
+    store_buoyancy, store_target,
 };
 pub use jolt_config::{
     BasicForces, JoltConfig, JoltLoad, MaterialCombine, VehicleBehaviour, VehiclePresetSet, load,

@@ -42,14 +42,19 @@ The same file command calls `JoltCharacter` capsule, mass and stand-half,
 `DesiredVelocity`, the jump latch and the ground flags through
 `ApplyCharacterState`, and records the `CharacterDesc` a stub backend
 received. The samples are those method results. A finite footprint keeps a
-radius of at least 0.2 m. The default mass bits match `DefaultAvatarMass`.
-Walk and run leave Z unscaled. The latch clears when vertical velocity is
-above 0.5 or the avatar is not supported. Heartbeat and native code are not
+radius of at least 0.2 m. A constructor size that is NaN or infinite is
+recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
+The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
+unscaled. Flight ignores always-run, for both signs of Z. The latch clears
+when vertical velocity is above 0.5 or the avatar is not supported.
+`KeepInRegion` records an allow-outside return, an invalid character and a
+256 by 128 region. The descriptor's user data is the value the query marker
+would copy; the body is not created. Heartbeat and native code are not
 involved. A ray that would see the query marker, and the body-cap miss, wait
 for the bind. The matched-native trace waits for the upgrade. The gravity
-scale inside `StepCharacter` is not invoked. Default speed-factor and jump
-bits are the same bits as `fixtures/jolt-record/drop/config.txt`. The capture
-still does not load joltc.
+scale inside `StepCharacter` is not invoked; that multiply is P3.13b.
+Default speed-factor and jump bits are the same bits as
+`fixtures/jolt-record/drop/config.txt`. The capture still does not load joltc.
 
 No native code is started. The fixture records the same proof at
 `before_construct`, after construction and after the calls:
