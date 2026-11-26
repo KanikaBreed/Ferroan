@@ -83,6 +83,8 @@ pub(crate) mod login_probe;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
+#[path = "parcel_timing.rs"]
+mod parcel_timing;
 #[path = "prim_arrival.rs"]
 mod prim_arrival;
 #[cfg(target_os = "linux")]
@@ -116,6 +118,10 @@ const PROMPT: &str = "GridServer>";
 
 pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
     live::finish(run_inner(spec))
+}
+
+pub fn parcel_timing_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(parcel_timing::extract(directory))
 }
 
 pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -752,7 +758,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1242,7 +1248,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "object-cross" {
+    if scenario == "parcel-timing" {
+        let timing = parcel_timing::extract(&root)?;
+        Ok(format!("{}\n{timing}", report.lines))
+    } else if scenario == "object-cross" {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
     } else if let Some(observation) = report.child {
@@ -1618,7 +1627,12 @@ fn run_bot(
         scenario,
         private_uri,
         |selected| async move {
-            if let Some(seed) = ParcelSeed::scenario(selected) {
+            if selected == "parcel-timing" {
+                harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_timing(harness_ref))
+                    .await
+            } else if let Some(seed) = ParcelSeed::scenario(selected) {
                 let captures = harness_ref
                     .http_trace
                     .scope(ferroan_bot::scenario::parcel_overlays(
