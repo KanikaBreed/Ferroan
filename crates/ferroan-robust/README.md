@@ -1,6 +1,6 @@
 # ferroan-robust
 
-The grid-services process. This build serves the asset, user-account and user-alias routes whose ini sections are present. An ini with only `[AssetService]` still serves assets.
+The grid-services process. This build serves the asset, user-account, user-alias and avatar routes whose ini sections are present. An ini with only `[AssetService]` still serves assets.
 
 ```sh
 ferroan-robust [--inimaster FILE] [--inifile FILE] [--inidirectory DIR]

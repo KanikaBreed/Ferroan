@@ -1,0 +1,50 @@
+{
+  "pin": "c401bceecd1684832ae8ba86a31b5ee01a4ded7b",
+  "observations": [
+    {
+      "Label": "cache-bake",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setitems\u0026UserID=11111111-1111-4111-8111-111111111111\u0026Names[]=Bake%3AHead\u0026Values[]=cached",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "first-appearance",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarType=1\u0026Wearable\u002B4%3A0=shirt\u0026Serial=1",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "oversize-name",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=setavatar\u0026UserID=11111111-1111-4111-8111-111111111111\u0026AvatarType=1\u0026Serial=2\u0026xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx=bad",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003EFailure\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "read-after-failure",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=getavatar\u0026UserID=11111111-1111-4111-8111-111111111111",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\u003CServerResponse\u003E\u003Cresult type=\u0022List\u0022\u003E\u003CAvatarType\u003E0\u003C/AvatarType\u003E\u003CBake_x003A_Head\u003Ecached\u003C/Bake_x003A_Head\u003E\u003C/result\u003E\u003C/ServerResponse\u003E"
+    },
+    {
+      "Label": "failed-delete",
+      "Body": "VERSIONMIN=0\u0026VERSIONMAX=0\u0026METHOD=removeitems\u0026UserID=11111111-1111-4111-8111-111111111111\u0026Names[]=Bake%3AHead",
+      "Refuse": null,
+      "Shard": false,
+      "Status": 200,
+      "ContentType": "application/xml",
+      "Reply": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003Cresult\u003ESuccess\u003C/result\u003E\n\u003C/ServerResponse\u003E"
+    }
+  ]
+}
