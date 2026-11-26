@@ -42,6 +42,8 @@ static class Program
 
     record ItemMasks(Mask Current, Mask Group, Mask Everyone);
 
+    record ChildPart(Mask OwnerMask, ItemMasks InventoryItem = null, bool Observe = false);
+
     record Case(string Name, bool OwnsObject = false, bool Deeded = false, bool Member = false,
         GroupPowers Powers = 0, Mask OwnerMask = Mask.AllEffective, Mask GroupMask = 0,
         Mask EveryoneMask = 0, bool Attachment = false, bool Manager = false,
@@ -50,6 +52,15 @@ static class Program
         Mask BaseMask = Mask.AllEffective, PrimFlags Flags = PrimFlags.Phantom,
         ItemMasks InventoryItem = null, bool FriendCanModify = false)
     {
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool NilOwner { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool NilGroup { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public int? CreationDate { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public ChildPart Child { get; init; }
+
         [JsonIgnore]
         public Settings Settings { get; init; } = new();
     }
@@ -105,6 +116,24 @@ static class Program
         new("temporary", Flags: PrimFlags.Temporary),
         new("temporary-on-rez", Flags: PrimFlags.TemporaryOnRez),
         new("physics", Flags: PrimFlags.Physics),
+        new("friend-on-deeded-object", Deeded: true, FriendCanModify: true),
+        new("grid-god-locked-nonowner", UserLevel: 200, OwnerMask: Mask.Copy | Mask.Transfer)
+            { Settings = new(automatic_gods: true) },
+        new("friend-no-transfer", FriendCanModify: true, OwnerMask: Mask.Copy | Mask.Modify | Mask.Move),
+        new("group-manipulate-no-transfer", Deeded: true, Member: true, Powers: GroupPowers.ObjectManipulate,
+            OwnerMask: Mask.Copy | Mask.Modify | Mask.Move),
+        new("attachment-friend", Attachment: true, FriendCanModify: true),
+        new("attachment-group-member", Attachment: true, Member: true, GroupMask: Mask.Copy | Mask.Move),
+        new("bypass-restrictive-inventory", InventoryItem: new(Mask.Transfer, 0, 0))
+            { Settings = new(serverside_object_permissions: false) },
+        new("bypass-child-owner-mask") { Child = new(Mask.Transfer, Observe: true),
+            Settings = new(serverside_object_permissions: false) },
+        new("nil-group-membership", Member: true, GroupMask: Mask.Copy | Mask.Move) { NilGroup = true },
+        new("unowned-object") { NilOwner = true },
+        new("child-inventory-modern", EveryoneMask: Mask.Copy, GroupMask: Mask.Copy)
+            { CreationDate = 1493574995, Child = new(Mask.AllEffective, new(Mask.AllEffective, 0, 0)) },
+        new("child-inventory-legacy", EveryoneMask: Mask.Copy, GroupMask: Mask.Copy)
+            { CreationDate = 1493574994, Child = new(Mask.AllEffective, new(Mask.AllEffective, 0, 0)) },
     ];
 
     static int Main(string[] args)
@@ -191,6 +220,8 @@ static class Program
 
     static object Observe(Case c)
     {
+        UUID objectGroup = c.NilGroup ? UUID.Zero : Group;
+        UUID objectOwner = c.NilOwner ? UUID.Zero : c.OwnsObject ? Agent : c.Deeded ? objectGroup : Owner;
         var config = c.Settings.Config();
         var info = new RegionInfo { RegionName = "Fixture" };
         info.EstateSettings.EstateOwner = c.EstateOwner ? Agent : LandOwner;
@@ -199,11 +230,11 @@ static class Program
         scene.RegisterModuleInterface<IUserAccountService>(InputProxy.For<IUserAccountService>((m, a) =>
             m == "GetUserAccount" && (UUID)a[1] == Agent ? new UserAccount { UserLevel = c.UserLevel } : throw Unexpected(m)));
         scene.RegisterModuleInterface<IGroupsModule>(InputProxy.For<IGroupsModule>((m, a) =>
-            m == "GetMembershipData" ? ((UUID)a[0] == Group && (UUID)a[1] == Agent && c.Member
+            m == "GetMembershipData" ? ((UUID)a[0] == objectGroup && (UUID)a[1] == Agent && c.Member
                 ? new GroupMembershipData { GroupPowers = (ulong)c.Powers } : null) : throw Unexpected(m)));
         if (c.FriendCanModify)
             scene.RegisterModuleInterface<IFriendsModule>(InputProxy.For<IFriendsModule>((m, a) =>
-                m == "GetRightsGrantedByFriend" ? ((UUID)a[0] == Agent && (UUID)a[1] == Owner
+                m == "GetRightsGrantedByFriend" ? ((UUID)a[0] == Agent && (UUID)a[1] == objectOwner
                     ? (int)FriendRights.CanModifyObjects : 0) : throw Unexpected(m)));
         var land = new LandData { OwnerID = c.OwnsLand ? Agent : c.GroupLand ? Group : LandOwner,
             GroupID = Group, IsGroupOwned = c.GroupLand, Flags = (uint)c.LandFlags };
@@ -223,8 +254,8 @@ static class Program
         var client = InputProxy.For<IClientAPI>((m, a) => m switch
         {
             "get_AgentId" => Agent, "get_SceneAgent" => presence,
-            "IsGroupMember" => (UUID)a[0] == Group && c.Member,
-            "GetGroupPowers" => (UUID)a[0] == Group && c.Member ? (ulong)c.Powers : 0ul,
+            "IsGroupMember" => (UUID)a[0] == objectGroup && c.Member,
+            "GetGroupPowers" => (UUID)a[0] == objectGroup && c.Member ? (ulong)c.Powers : 0ul,
             "get_FirstName" => "Fixture", "get_LastName" => "User",
             "get_StartPos" => Position, "get_StartFar" => 128f,
             "RefreshGroupMembership" => null,
@@ -235,18 +266,29 @@ static class Program
         var add = typeof(SceneGraph).GetMethod("CreateAndAddChildScenePresence", BindingFlags.Instance | BindingFlags.NonPublic);
         presence = (ScenePresence)add.Invoke(scene.SceneGraph, [client, new AvatarAppearance(), PresenceType.User]);
 
-        var group = new SceneObjectGroup(c.OwnsObject ? Agent : c.Deeded ? Group : Owner, Position, PrimitiveBaseShape.CreateBox());
-        var part = group.RootPart;
-        part.GroupID = Group;
-        part.BaseMask = (uint)c.BaseMask;
-        part.OwnerMask = (uint)c.OwnerMask;
-        part.GroupMask = (uint)c.GroupMask;
-        part.EveryoneMask = (uint)c.EveryoneMask;
-        part.Flags = PrimFlags.Phantom;
+        var group = new SceneObjectGroup(objectOwner, Position, PrimitiveBaseShape.CreateBox());
+        var root = group.RootPart;
+        root.GroupID = objectGroup;
+        root.BaseMask = (uint)c.BaseMask;
+        root.OwnerMask = (uint)c.OwnerMask;
+        root.GroupMask = (uint)c.GroupMask;
+        root.EveryoneMask = (uint)c.EveryoneMask;
+        if (c.CreationDate is int date) root.CreationDate = date;
+        root.Flags = PrimFlags.Phantom;
+        SceneObjectPart child = null;
+        if (c.Child is { } linked)
+        {
+            child = new SceneObjectPart(objectOwner, PrimitiveBaseShape.CreateBox(), Position,
+                Quaternion.Identity, Vector3.UnitX) { GroupID = objectGroup, OwnerMask = (uint)linked.OwnerMask };
+            group.AddPart(child);
+        }
         group.InvalidateEffectivePerms();
         if (!scene.AddNewSceneObject(group, false, false))
             throw new InvalidOperationException("fixture object did not enter the graph");
         group.IsAttachment = c.Attachment;
+        RestoreItem(root, c.InventoryItem);
+        if (child is not null) RestoreItem(child, c.Child.InventoryItem);
+        var part = c.Child?.Observe == true ? child : root;
 
         // Supply the observed prim state after attach. Runtime event flags are derived by the part.
         part.Flags = c.Flags;
@@ -255,12 +297,6 @@ static class Program
         if (c.Flags.HasFlag(PrimFlags.Touch)) events |= scriptEvents.touch_start;
         if (c.Flags.HasFlag(PrimFlags.Money)) events |= scriptEvents.money;
         if (events != 0 || part.AllowedDrop) part.SetScriptEvents(UUID.Random(), (ulong)events);
-        if (c.InventoryItem is { } masks)
-            part.Inventory.RestoreInventoryItems([new TaskInventoryItem {
-                ItemID = UUID.Random(), OwnerID = part.OwnerID, InvType = (int)InventoryType.Notecard,
-                CurrentPermissions = (uint)masks.Current, GroupPermissions = (uint)masks.Group,
-                EveryonePermissions = (uint)masks.Everyone
-            }]);
         var p = scene.Permissions;
         uint viewerFlags = p.GenerateClientFlags(part, presence);
         uint initialFlags = flagInput ?? throw new InvalidOperationException("flag handler was not called");
@@ -279,6 +315,16 @@ static class Program
             canDeleteById = p.CanDeleteObject(part.UUID, Agent), canDelink = p.CanDelinkObject(Agent, part.UUID),
             canSelectObject = p.CanChangeSelectedState(part, presence)
         };
+    }
+
+    static void RestoreItem(SceneObjectPart part, ItemMasks masks)
+    {
+        if (masks is not null)
+            part.Inventory.RestoreInventoryItems([new TaskInventoryItem {
+                ItemID = UUID.Random(), OwnerID = part.OwnerID, InvType = (int)InventoryType.Notecard,
+                CurrentPermissions = (uint)masks.Current, GroupPermissions = (uint)masks.Group,
+                EveryonePermissions = (uint)masks.Everyone
+            }]);
     }
 
     static Exception Unexpected(string method) => new InvalidOperationException("unexpected fixture input: " + method);
