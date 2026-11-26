@@ -145,7 +145,7 @@ Gate: the protocol crate decodes and re-encodes every packet captured from a C# 
 
 ## Phase 2: The region
 
-Gate: Firestorm and Aurora on a Ferroan region beside C# Robust and C# neighbours, for the Phase 2 scope in [the plan](docs/PLAN.md). What is left, and the proposed splits, are in [the Phase 2 gate map](docs/plans/PHASE2-GATE.md). Queue Q40 to Q85. Q86 sits outside that queue range and inside P2.12's task range.
+Gate: Firestorm and Aurora on a Ferroan region beside C# Robust and C# neighbours. The G3 check is the short list in the G3 row. [The Phase 2 gate map](docs/plans/PHASE2-GATE.md) question 1 asks whether the PLAN scope is also the gate. What is left, and the proposed splits, are in that map. Queue Q40 to Q85. Q86 sits outside that queue range and inside P2.12's task range.
 
 | ID | Status | Depends on | Task and acceptance |
 | --- | --- | --- | --- |
