@@ -109,6 +109,8 @@ pub struct PresenceLimit {
 
 #[derive(Debug, thiserror::Error)]
 pub enum PresenceStoreError {
+    #[error("Presence realm must be one SQL identifier of at most 64 ASCII characters")]
+    Realm,
     #[error(transparent)]
     Limit(#[from] PresenceLimit),
     #[error("presence database: {0}")]

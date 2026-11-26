@@ -508,15 +508,7 @@ fn distinct_ids(ids: &[String]) -> Vec<String> {
 /// One SQL identifier: a letter or underscore, then letters, digits or
 /// underscores, at most 64 characters.
 pub(crate) fn sql_ident(name: &str) -> Result<(), StoreError> {
-    let mut chars = name.chars();
-    let Some(first) = chars.next() else {
-        return Err(StoreError::Realm);
-    };
-    if name.len() > 64 || (!first.is_ascii_alphabetic() && first != '_') {
-        return Err(StoreError::Realm);
-    }
-    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
-        return Err(StoreError::Realm);
-    }
-    Ok(())
+    crate::sql_ident(name)
+        .then_some(())
+        .ok_or(StoreError::Realm)
 }

@@ -13,15 +13,17 @@ use super::{MAX_RESULTS, MySqlPresenceData, PresenceData, PresenceStore, Presenc
 
 const OLD: &str = "2001-02-03 04:05:06";
 
-async fn set_old(pool: &MySqlPool, session: Uuid) {
+async fn set_old(pool: &MySqlPool, realm: &str, session: Uuid) {
     assert_eq!(
-        sqlx::query("UPDATE Presence SET LastSeen = ? WHERE SessionID = ?")
-            .bind(OLD)
-            .bind(session.to_string())
-            .execute(pool)
-            .await
-            .unwrap()
-            .rows_affected(),
+        sqlx::query(&format!(
+            "UPDATE {realm} SET LastSeen = ? WHERE SessionID = ?"
+        ))
+        .bind(OLD)
+        .bind(session.to_string())
+        .execute(pool)
+        .await
+        .unwrap()
+        .rows_affected(),
         1
     );
 }
@@ -50,21 +52,45 @@ async fn has_current_stamp(
 #[tokio::test]
 async fn mysql_presence_plugins_cross_read() {
     if std::env::var_os("FERROAN_PRESENCE_CROSS").is_none() {
+        eprintln!(
+            "FERROAN_PRESENCE_CROSS is unset; run cargo xtask presence cross mysql for the Pin8 comparison"
+        );
         return;
     }
     let dll = std::env::var_os("FERROAN_PRESENCE_ORACLE").unwrap();
     let connection = std::env::var("FERROAN_PRESENCE_ADO_MYSQL")
         .expect("set FERROAN_PRESENCE_ADO_MYSQL for a disposable MySQL database");
+    // Read the server clock before the C# constructor migrates the DB and writes.
+    let db = Pool::connect(Backend::Mysql, &connection).await.unwrap();
+    let pool = db.mysql().unwrap();
+    cross_realm(&db, pool, &dll, false).await;
+    cross_realm(&db, pool, &dll, true).await;
+    db.close().await;
+}
+
+async fn cross_realm(db: &Pool, pool: &MySqlPool, dll: &std::ffi::OsStr, custom: bool) {
     // Include at least one hex letter for the oracle's uppercase secure ID.
     let base = (Uuid::new_v4().as_u128() & !0xfff) | 0xa00;
     let id = |suffix| Uuid::from_u128(base | suffix);
     let (user, first, second, secure, home, away, new_secure) =
         (id(1), id(2), id(3), id(4), id(5), id(6), id(7));
+    let mode = if custom { "alternate" } else { "default" };
+    let realm = if custom {
+        format!("PresenceGridB{}", id(0).simple())
+    } else {
+        "Presence".to_owned()
+    };
+    if custom {
+        sqlx::query(&format!("CREATE TABLE {realm} LIKE Presence"))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
     let oracle = |phase| {
         let prefix = id(0).to_string();
         let output = Command::new("dotnet")
-            .arg(&dll)
-            .args(["mysql", phase, &prefix[..34]])
+            .arg(dll)
+            .args(["mysql", phase, &prefix[..34], mode])
             .output()
             .unwrap();
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -79,13 +105,17 @@ async fn mysql_presence_plugins_cross_read() {
         );
     };
 
-    // Read the server clock before the C# constructor migrates the DB and writes.
-    let db = Pool::connect(Backend::Mysql, &connection).await.unwrap();
-    let pool = db.mysql().unwrap();
     let before = now(pool).await;
     oracle("seed");
     db.require_stores(&["Presence"]).await.unwrap();
-    let store = MySqlPresenceData::new(pool.clone());
+    let default_store = MySqlPresenceData::open(pool.clone()).unwrap();
+    let store = if custom {
+        assert!(MySqlPresenceData::new(pool.clone(), "invalid realm").is_err());
+        assert!(default_store.get(first).await.unwrap().is_none());
+        MySqlPresenceData::new(pool.clone(), &realm).unwrap()
+    } else {
+        default_store
+    };
     assert!(matches!(
         store.get(id(9)).await,
         Err(PresenceStoreError::Database(
@@ -116,14 +146,14 @@ async fn mysql_presence_plugins_cross_read() {
     assert!(!store.verify_agent(away, secure).await.unwrap());
     assert!(!store.verify_agent(user, id(8)).await.unwrap());
 
-    set_old(pool, first).await;
+    set_old(pool, &realm, first).await;
     let before = now(pool).await;
     oracle("report");
     has_current_stamp(pool, &store, first, &before).await;
     assert_eq!(store.get(first).await.unwrap().unwrap().region_id(), away);
     oracle("restore");
     // A distinct historical second makes replacing LastSeen with NOW() observable.
-    set_old(pool, first).await;
+    set_old(pool, &realm, first).await;
     let fetched = store.get(first).await.unwrap().unwrap();
     assert_eq!(fetched.data["LastSeen"], OLD);
     fetched.set_region_id(home);
@@ -168,7 +198,7 @@ async fn mysql_presence_plugins_cross_read() {
     assert_eq!(held.region_id(), home);
     assert_eq!(store.get(second).await.unwrap().unwrap().region_id(), away);
     // Even a report to the same region must explicitly stamp LastSeen.
-    set_old(pool, second).await;
+    set_old(pool, &realm, second).await;
     let before = now(pool).await;
     assert!(store.report_agent(second, away).await.unwrap());
     has_current_stamp(pool, &store, second, &before).await;
@@ -177,9 +207,14 @@ async fn mysql_presence_plugins_cross_read() {
     assert!(store.get(second).await.unwrap().is_some());
     store.logout_region_agents(away).await.unwrap();
     oracle("after-logout");
-    db.close().await;
+    if custom {
+        sqlx::query(&format!("DROP TABLE {realm}"))
+            .execute(pool)
+            .await
+            .unwrap();
+    }
     println!(
-        "presence mysql: both directions match; TB104 fetched re-store: Pin8 false, Ferroan true with LastSeen preserved (proposed D84)"
+        "presence mysql: {mode} realm: both directions match; TB104 fetched re-store: Pin8 false, Ferroan true with LastSeen preserved (D84)"
     );
 }
 
@@ -187,12 +222,13 @@ async fn mysql_presence_plugins_cross_read() {
 #[tokio::test]
 async fn mysql_presence_lookup_bound_allows_bulk_removal() {
     let Ok(url) = std::env::var("FERROAN_MYSQL_URL") else {
+        eprintln!("FERROAN_MYSQL_URL is unset; MySQL Presence lookup bound was not tested");
         return;
     };
     let db = Pool::connect_sqlx_url(&url).await.unwrap();
     db.require_stores(&["Presence"]).await.unwrap();
     let pool = db.mysql().unwrap();
-    let store = MySqlPresenceData::new(pool.clone());
+    let store = MySqlPresenceData::open(pool.clone()).unwrap();
     let user = Uuid::new_v4().to_string();
     let region = Uuid::new_v4();
     let mut insert = sqlx::QueryBuilder::new("INSERT INTO Presence (UserID, SessionID, RegionID) ");
