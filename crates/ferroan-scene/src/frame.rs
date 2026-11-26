@@ -974,8 +974,11 @@ fn run(
         let wait = next.saturating_duration_since(now);
         if wait.is_zero() {
             // Pose after the reply, then the stand-in. P3.64 reads a box pose.
-            // P3.76 is what removes the stand-in.
-            let _pose = physics.frame_tick(f64::from(FRAME_TIME));
+            // P3.76 is what removes the stand-in. A refused heartbeat is logged.
+            // The time is not dropped without a trace.
+            if let Err(error) = physics.frame_tick(f64::from(FRAME_TIME)) {
+                log::error!("ferroan-scene: physics heartbeat: {error}");
+            }
             frames = tick(&mut scene, map.as_ref(), frames);
             next = next_tick(next, now);
             continue;

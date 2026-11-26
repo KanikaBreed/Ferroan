@@ -18,8 +18,10 @@
 //! The depth is [`REQUEST_QUEUE`], the same 256 as `region.scene-inbound`.
 //! A caller past that bound is refused and does not wait. Script rays, the
 //! arrival ray, and body create and remove are requests on this queue. The
-//! stock stepped frame that reads a box pose is P3.64. Avatars stay on the
-//! stand-in until P3.76.
+//! frame's heartbeat is not. It has a one-deep path the thread serves first,
+//! so rays waiting on the queue cannot refuse it, as Pin8's `Simulate` always
+//! runs. The stock stepped frame that reads a box pose is P3.64. Avatars stay
+//! on the stand-in until P3.76.
 
 use std::cell::Cell;
 use std::error::Error;
@@ -197,7 +199,10 @@ fn hold_pair() -> (Hold, Gates) {
 
 #[derive(Clone)]
 struct Share {
-    tx: SyncSender<Job>,
+    requests: SyncSender<Job>,
+    /// One heartbeat waiting. The thread takes this before [`REQUEST_QUEUE`].
+    heartbeats: SyncSender<Job>,
+    wake: SyncSender<()>,
     stopping: Arc<AtomicBool>,
     heartbeat_seconds: f32,
     effective_rate: f32,
@@ -233,10 +238,14 @@ impl Physics {
     /// and is not read from `[Startup] FrameTime`.
     pub fn start(config: &Config, heartbeat_seconds: f32) -> Result<Self, SpawnError> {
         let loaded = jolt_config::load(config, heartbeat_seconds);
-        let (tx, rx) = mpsc::sync_channel(REQUEST_QUEUE);
+        let (requests_tx, requests_rx) = mpsc::sync_channel(REQUEST_QUEUE);
+        let (heartbeats_tx, heartbeats_rx) = mpsc::sync_channel(1);
+        let (wake_tx, wake_rx) = mpsc::sync_channel(1);
         let stopping = Arc::new(AtomicBool::new(false));
         let share = Share {
-            tx,
+            requests: requests_tx,
+            heartbeats: heartbeats_tx,
+            wake: wake_tx,
             stopping: Arc::clone(&stopping),
             heartbeat_seconds: loaded.heartbeat_seconds,
             effective_rate: loaded.effective_step_rate,
@@ -244,7 +253,7 @@ impl Physics {
         let engine = Engine::from_load(&loaded, stopping);
         let thread = std::thread::Builder::new()
             .name("ferroan-physics".to_owned())
-            .spawn(move || run(engine, rx))
+            .spawn(move || run(engine, heartbeats_rx, requests_rx, wake_rx))
             .map_err(|_| SpawnError)?;
         Ok(Self {
             share,
@@ -262,11 +271,16 @@ impl Physics {
         self.share.effective_rate
     }
 
-    /// What the frame does on one tick: post the heartbeat, wait for that
-    /// reply, then read the pose. The sample is not sent first.
+    /// What the frame does on one tick: post the heartbeat on the path the
+    /// thread serves first, and take the pose from that reply. The heartbeat
+    /// does not use [`REQUEST_QUEUE`]. The sample is not sent first.
     pub fn frame_tick(&self, frame_seconds: f64) -> Result<Pose, Refusal> {
-        let _step = self.heartbeat(frame_seconds)?;
-        self.sample()
+        let step = self.heartbeat(frame_seconds)?;
+        Ok(Pose {
+            ready: true,
+            last_count: step.count,
+            total_steps: step.total_steps,
+        })
     }
 
     /// Post one heartbeat and wait for its step count.
@@ -312,6 +326,7 @@ impl Physics {
 impl Drop for Physics {
     fn drop(&mut self) {
         self.share.stopping.store(true, Ordering::Release);
+        self.share.poke();
         // Detach. Callers wait on a reply channel, not on this join.
         drop(self.thread.take());
     }
@@ -359,11 +374,32 @@ impl Engine {
 
 impl Share {
     fn heartbeat(&self, frame_seconds: f64, hold: Option<Hold>) -> Result<Step, Refusal> {
-        self.call(|reply| Job::Heartbeat {
+        let (tx, rx) = mpsc::channel();
+        self.post_heartbeat(Job::Heartbeat {
             frame_seconds,
             hold,
-            reply,
-        })
+            reply: tx,
+        })?;
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(Refusal::Stopped),
+        }
+    }
+
+    /// The one-deep heartbeat path. A second heartbeat waits until the thread
+    /// takes the one already waiting. It is not [`Refusal::Full`].
+    fn post_heartbeat(&self, job: Job) -> Result<(), Refusal> {
+        match self.heartbeats.send(job) {
+            Ok(()) => {
+                self.poke();
+                Ok(())
+            }
+            Err(_) => Err(Refusal::Stopped),
+        }
+    }
+
+    fn poke(&self) {
+        let _ = self.wake.try_send(());
     }
 
     fn sample(&self) -> Result<Pose, Refusal> {
@@ -417,8 +453,11 @@ impl Share {
     }
 
     fn try_post(&self, job: Job) -> Result<(), Refusal> {
-        match self.tx.try_send(job) {
-            Ok(()) => Ok(()),
+        match self.requests.try_send(job) {
+            Ok(()) => {
+                self.poke();
+                Ok(())
+            }
             Err(TrySendError::Full(_)) => {
                 refuse(
                     PHYSICS_REQUEST_QUEUE,
@@ -434,19 +473,36 @@ impl Share {
     }
 }
 
-fn run(mut engine: Engine, rx: Receiver<Job>) {
+fn run(mut engine: Engine, heartbeats: Receiver<Job>, requests: Receiver<Job>, wake: Receiver<()>) {
     enter_owner();
     loop {
         if engine.stopping.load(Ordering::Acquire) {
-            while let Ok(job) = rx.try_recv() {
-                dispatch(&mut engine, job);
-            }
+            drain(&mut engine, &heartbeats, &requests);
             break;
         }
-        match rx.recv() {
-            Ok(job) => dispatch(&mut engine, job),
-            Err(_) => break,
+        if let Some(job) = next_job(&heartbeats, &requests) {
+            dispatch(&mut engine, job);
+            continue;
         }
+        if wake.recv().is_err() {
+            drain(&mut engine, &heartbeats, &requests);
+            break;
+        }
+    }
+}
+
+/// A waiting heartbeat, or else one request. Heartbeats are not behind the
+/// request queue.
+fn next_job(heartbeats: &Receiver<Job>, requests: &Receiver<Job>) -> Option<Job> {
+    if let Ok(job) = heartbeats.try_recv() {
+        return Some(job);
+    }
+    requests.try_recv().ok()
+}
+
+fn drain(engine: &mut Engine, heartbeats: &Receiver<Job>, requests: &Receiver<Job>) {
+    while let Some(job) = next_job(heartbeats, requests) {
+        dispatch(engine, job);
     }
 }
 
@@ -647,6 +703,50 @@ mod tests {
         for rx in waiting {
             let reply = rx.recv_timeout(Duration::from_secs(2)).expect("ray");
             assert_eq!(reply, Ok(RayReply { hit: false }));
+        }
+    }
+
+    #[test]
+    fn the_heartbeat_is_served_before_a_full_request_queue() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::with_capacity(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        assert_eq!(physics.share.enqueue_ray().err(), Some(Refusal::Full));
+        let second = physics.share.clone();
+        let (hold_next, next) = hold_pair();
+        let worker_next =
+            thread::spawn(move || second.heartbeat(f64::from(0.0909f32), Some(hold_next)));
+        assert!(
+            matches!(
+                next.entered.recv_timeout(Duration::from_millis(50)),
+                Err(mpsc::RecvTimeoutError::Timeout)
+            ),
+            "second heartbeat ran before the held step finished"
+        );
+        gates.release.send(()).expect("release");
+        next.entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("heartbeat served before the queued rays");
+        assert!(matches!(waiting[0].try_recv(), Err(TryRecvError::Empty)));
+        next.release.send(()).expect("release next");
+        let first = worker.join().expect("worker").expect("step");
+        let followed = worker_next.join().expect("next").expect("step");
+        assert_eq!(first.count, 4);
+        assert_eq!(followed.count, 4);
+        assert_eq!(followed.total_steps, 8);
+        for rx in waiting {
+            rx.recv_timeout(Duration::from_secs(2))
+                .expect("ray")
+                .expect("ok");
         }
     }
 
