@@ -18,7 +18,6 @@ ferroan-http = { path = "../crates/ferroan-http" }
 ferroan-llsd = { path = "../crates/ferroan-llsd" }
 ferroan-log = { path = "../crates/ferroan-log" }
 ferroan-protocol = { path = "../crates/ferroan-protocol" }
-ferroan-region = { path = "../crates/ferroan-region" }
 ferroan-scene = { path = "../crates/ferroan-scene" }
 ferroan-services = { path = "../crates/ferroan-services" }
 serde = { version = "1", features = ["derive"] }
@@ -32,6 +31,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time",
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
 uuid = { version = "1.27.0", features = ["v4"] }
+
+# Only the Linux live tasks (the group-memberships comparison) read the region crate.
+[target.'cfg(target_os = "linux")'.dependencies]
+ferroan-region = { path = "../crates/ferroan-region" }
 
 [lints]
 workspace = true

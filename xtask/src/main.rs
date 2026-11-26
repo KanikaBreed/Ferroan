@@ -119,6 +119,7 @@ mod live;
 mod live_args;
 mod live_proxy;
 mod login_gate;
+mod memory;
 mod nodelay;
 mod oracle;
 mod oracle_reference;
@@ -210,6 +211,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live up grid --region ferroan [--bind <IPv4>]
        cargo xtask live group-memberships
        cargo xtask live persistent-grid-check
+       cargo xtask live memory [--bulk]
        cargo xtask live diag [url...]
        cargo xtask live down
 ";

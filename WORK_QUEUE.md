@@ -76,7 +76,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q10ae | Pin7: move the Tranquillity pin back to OpenSim-NGC `develop` `1052cbae82` (every carried PR merged upstream) | DONE (#185) |
 | Q10af | Pin8: move the Tranquillity pin to the maintainer's `dev-build` roll-up (`develop` `923a4cd70b` plus their 29 open OpenSim-NGC PRs #499 and #503 to #530) | DONE (#190) |
 | Q10ac | P0.10n10: find why the GridUser `getgriduserinfo` POST through the private capture proxy sometimes never returns (the logout probe named `griduser` on #172 after #171) | DONE (#192) |
-| Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | READY after Q10ab |
+| Q10ad | P0.10n11: the live harness prints memory per region and per Robust, C# beside Ferroan | DONE (this PR) |
 | Q10ag | P0.10n12: the captured `AgentUpdate` re-encodes every time (`record 197 (udp in) does not re-encode`, back after #173) | DONE (#190) |
 | Q10ah | P0.10n13: each live run takes its own ports and directories, so two runs on one machine never collide | DONE (#200) |
 | Q10ai | P0.10n14: `live scenarios`, `live ferrobot` and `live services` run on the self-hosted runners like `live images` | BLOCKED (stopped by the maintainer, #203 closed) |
