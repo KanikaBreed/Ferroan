@@ -80,6 +80,8 @@ mod child_capture;
 mod login_capture;
 #[path = "grid_probe.rs"]
 pub(crate) mod login_probe;
+#[path = "prim_arrival.rs"]
+mod prim_arrival;
 #[path = "prim_capture.rs"]
 mod prim_capture;
 
@@ -737,11 +739,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "object-cross"
             | "child-view"
             | "prim-capture"
+            | "prim-arrival"
             | "report"
     ) && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1002,8 +1005,8 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: region_metrics,
-            prim_capture: matches!(scenario, "prim-capture" | "object-cross"),
-            seed_prims: matches!(scenario, "prim-capture" | "object-cross"),
+            prim_capture: matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross"),
+            seed_prims: matches!(scenario, "prim-capture" | "prim-arrival" | "object-cross"),
             basic_physics: spec.basic_physics && !ferroan,
         },
         &grid.passwords,
@@ -1237,6 +1240,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         Ok(format!("{}\n{line}", report.lines))
     } else if scenario == "prim-capture" {
         let fixture = prim_capture::extract(&root)?;
+        Ok(format!("{}\n{fixture}", report.lines))
+    } else if scenario == "prim-arrival" {
+        let fixture = prim_arrival::extract(&root, &home_log).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
     } else if scenario == "report" {
         // The capture still has to pass check, redact and replay. Its packet

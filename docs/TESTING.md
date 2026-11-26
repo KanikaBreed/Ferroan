@@ -84,6 +84,8 @@ Q65a uses a separate SQLite scene persisted by Pin8. `cargo xtask live run prim-
 
 The [Q79a child-view fixture](../fixtures/child-view/README.md) follows a viewer that stays rooted at home while receiving the neighbour's resident avatar and stored prim on a separate circuit. Its replay correlates the home movement and logout with the neighbour's child admission, position update and close.
 
+Q65c1 reopens the same scene for two viewers with `cargo xtask live run prim-arrival grid --physics basicphysics`. The [two circuit captures](../fixtures/prim-arrival/README.md) preserve first and repeat deliveries, linkset IDs, packet boundaries and avatar terse updates while the second viewer varies only Task. `cargo test -p xtask grid::prim_arrival` replays both circuits offline.
+
 `cargo xtask live run object-cross grid --physics basicphysics` moves the seeded two-part linkset between separate Pin8 regions and back. The [object-crossing fixture](../fixtures/object-cross/README.md) contains both object POSTs, their replies and the two viewers' edit and update packets. The offline replay checks the captured bytes and link relationships.
 
 Release `ferroan-region`, idle `VmRSS` two seconds after initialization completed, one process per size: 500 prims 17044 kB, 1,000 prims 18624 kB, 5,000 prims 27520 kB, 10,000 prims 37816 kB, 40,000 prims 98204 kB. The startup high-water marks were 17044 kB, 18624 kB, 34052 kB, 53276 kB and 167936 kB. The load log for those sizes was 15 ms, 36 ms, 128 ms, 305 ms and 1171 ms, and each log matched the prim count. The stores were the `bulk` files above. Terrain and estate were not opened for that measurement.

@@ -11,15 +11,15 @@ use std::path::Path;
 pub(crate) fn check(root: &Path) -> bool {
     let mut problems = Vec::new();
     match fs::read_to_string(root.join("tools/bot/src/scenario.rs")) {
-        Ok(text) => match function_body(&text, "async fn enter(") {
+        Ok(text) => match function_body(&text, "async fn enter_with_task(") {
             Some(enter) => match (enter.find("before_login"), enter.find("login::login")) {
                 (Some(hook), Some(call)) if hook < call && text.matches("login::login(").count() == 1 => {}
                 _ => problems.push(
-                    "tools/bot/src/scenario.rs enter must call before_login before the sole login::login call"
+                    "tools/bot/src/scenario.rs enter_with_task must call before_login before the sole login::login call"
                         .to_string(),
                 ),
             },
-            None => problems.push("tools/bot/src/scenario.rs has no enter function".to_string()),
+            None => problems.push("tools/bot/src/scenario.rs has no enter_with_task function".to_string()),
         },
         Err(error) => problems.push(format!("could not read tools/bot/src/scenario.rs: {error}")),
     }
