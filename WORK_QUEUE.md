@@ -232,8 +232,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q214 | P2.0e4.1: OAR control file and region path | READY |
 | Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
-| Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
-| Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
+| Q216 | P2.0e4.3: OAR terrain merge | BLOCKED (split into Q216a and Q216b) |
+| Q216a | P2.0e4.3a: OAR terrain merge (`MergeWithBounding`) | READY after Q215 |
+| Q216b | P2.0e4.3b: OAR terrain-member cap in the archive walk | READY after Q214 and Q216a |
+| Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216a |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
@@ -1201,6 +1203,30 @@ Q65c3b's material-override send is independent of both items.
 ### Q76 object-crossing fixture scope
 
 The manager approved the riderless scope on 25 November 2026. At Pin8 `c401bceecd`, `SceneObjectGroup.cs` 1185 and 1265–1272 take a linkset without riders from the grid lookup directly to transfer. `SimulationServiceConnector.cs` 487–516 posts the linkset and includes `state` only for a nonempty script snapshot. Q76 records these messages and both viewer circuits in each direction. A seated avatar's access check uses its own UUID (`EntityTransferModule.cs` 1764–1777) and belongs to a later item.
+
+### Q216 proposed split (P2.0e4.3)
+
+**BLOCKED (26 November 2026, `feat/q216-oar-terrain-merge`).** More than about a day. No merge code is in this change. Pin8 is `c401bceecd`. This branch is the block only, from current main, so the change does not carry unlanded Q215. Q216a stacks on `feat/q215-oar-raw32` until that work squash-merges, and then starts from main. On a `Cargo.lock` conflict, take main's lock.
+
+The TASKS row is about one day: console `load oar` always passes the bounding options, so `LoadTerrain` (`ArchiveReadRequest.cs` 1271) takes the bounding call at 1276–1281. That is `TerrainModule.LoadFromStream` (480–493) and `TerrainChannel.MergeWithBounding` (309–434). The call at 1284 is the plain overload and is not this part. The Q215 review added two obligations on that branch's TASKS row. They are not on main yet. The merge, those obligations, and the Pin8 option runs are more than about a day, and the cap cannot be written on a branch that only has the RAW32 decoder.
+
+`HandleLoadOarConsoleCommand` always inserts `bounding-origin` (`ArchiverModule.cs` 255), with displacement, rotation, rotation-center and bounding-size. `ArchiveReadRequest` sets `m_boundingBox` whenever that key is present (252–259), even when the vector equals the default `(0, 0, MinSimulationHeight)`. A default console load therefore takes `MergeWithBounding`. Bounding size X or Y at or below 0, or larger than the region, is clipped to the region (262–281). `--rotation-center` is parsed and does not affect this merge (302). Q378 owns the console parser, including `--default-user` by name. The merge consumes the option values. It does not take the parser.
+
+`MergeWithBounding` builds a temporary map of `base + base/2` on each side, puts the incoming origin at `base/4` and the centre at `tmp/2`, and fills every cell with `-65535f`. Rotation is in degrees. A negative angle adds 360 before the special-case tests, after cosine and sine are taken. 0, 90, 180 and 270 are special cases because `Math.Cos` of 90 degrees is not 0. Any other angle uses `Math.Round` of the double cosine and sine about the centre, then subtracts the offset. The rotation loops run `0..=tmp` inclusive, one past the temporary map; the catch logs and writes nothing, so a port that writes only inside the map matches. A source sample is copied when it is in range. The bounding window is `floor(origin) + offset` through `floor(origin + size) + offset`, clamped to the temporary map. Displacement X and Y are `floor`. A destination cell is written only in range, and only when the temporary height is not `-65535f`. `displacement.Z` is added after that test. `.r32` and `.f32` both select RAW32 (`TerrainModule.cs` 735–736).
+
+Do not port `Merge` (`TerrainChannel.cs` 221–292). It casts displacement to int instead of flooring, and on a non-zero rotation it writes the centre cell again without `displacement.Z` (287).
+
+The RAW32 decoder on Q215 keeps a square trimmed to a multiple of 256, at least 256, up to 4096. A 512-square stays 512. A length that trims above 4096, including `4352²·4`, returns `TerrainError::Edge` and reports `terrain.edge`. `4351²·4` trims to 4096 and is accepted. `75,759,615` bytes (`4352²·4 − 1`) is the same trim. Pin8 allocates the trimmed square with no 4096 cap (`RAW32.cs` `LoadStream` 122–132).
+
+Do not crop the decoded square to the region-sized corner. The default bounding window reads that corner. `--bounding-origin` and `--rotation` sample further out in the file, so a crop at decode would drop cells the merge can read. Q216a records that on the `terrain.edge` row: do not crop, and a trim above 4096 stays refused. The member-size cap is a different limit id.
+
+The cap cannot land in the merge change. Q214 streams the tar, and `Session::next_member` yields the path, the type and the declared size before `read_body`. That session is `pub(super)`. It is not on `feat/q215-oar-raw32` or on main, and Q215 has no `crates/ferroan-scene/src/oar/`. `walk` calls `read_body` for every member, and `read_body` refuses only above `oar.member-bytes` (1,610,612,736). A second tar reader would duplicate Q214. Merging Q214 into the terrain stack would review the walker inside the merge change. The cap is its own part, after Q214 lands. TB197, filed on the Q215 branch, is this cap: Pin8 sizes the RAW32 member from the archive length with no upper bound.
+
+1. **Q216a — `MergeWithBounding`** (stacked on `feat/q215-oar-raw32`, about one day). Port the merge and the console call that reaches it: bounding origin, rotation, displacement and the `-65535` mask. Do not crop. Record that on the `terrain.edge` row. Do not add a limit id. Extend the raw32 oracle to run Pin8 `load oar` of the same archives, under the shared live lock with a free port base and `UseSharedCompilation=false`, and diff the merged heightmap. One case each: the default region-sized corner, a displacement, 90 degrees and one non-orthogonal rotation, a bounding origin that reads past the corner of a file larger than the region but at most 4096 on a side, a `-65535` sample, and `.f32`. The function is not wired through Q214's walker.
+
+2. **Q216b — the terrain-member cap** (after Q214 lands and after Q216a, about half a day). In `walk`, map the region path first. When the relative path is under `terrains/` and ends in `.r32` or `.f32`, refuse a declared size above 75,759,615 bytes under a new limit id, before `read_body`. That id is not `terrain.edge` and not `oar.member-bytes`. 75,759,615 is handed to the decoder, which trims it to 4096. 75,759,616 is refused and nothing is allocated. Generate those bodies in the test; do not commit them. A `--merge` load skips terrain unless `--merge-terrain` is set (`ArchiveReadRequest.cs` 498–501): that skip is the walk, so it belongs here, and an oversized terrain member is still refused before the body is read. The walk takes the merge flags it needs and does not parse the console line (Q378). A terrain member that passes the cap is merged with Q216a. No live region.
+
+Q217 stays `READY after Q216` until the manager retargets it to the last part. P2.0e4.3 stays the parent until both parts are done. The deferred `SaveTerrain` on the terrain tick stays Q217. This note does not add queue rows and does not retarget Q217. No new decision or Tranquillity bug number is used.
 
 ## Found while working
 
