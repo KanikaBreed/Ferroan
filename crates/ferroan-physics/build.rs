@@ -2,15 +2,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Refuses a `JOLTC_LIB_DIR` bypass and checks the SHA constants in this file
-//! against `prebuilt.txt` beside the `oxijolt-sys` package Cargo resolves.
+//! against `prebuilt.txt` beside the `oxijolt-sys` package this build has.
 //!
 //! `oxijolt-sys` treats a set `JOLTC_LIB_DIR` as an install prefix and skips
 //! the SHA-checked archive. This script cannot set `JOLTC_PREBUILT` for that
 //! crate. The repository default stays in `.cargo/config.toml`.
 //!
-//! The package is located with `cargo metadata --format-version 1 --offline
-//! --locked`, using the package id on `ferroan-physics`'s resolve edge. A
-//! `[patch]` or a vendored source replacement is the tree that is checked.
+//! The search looks in the registry source directories under `CARGO_HOME`, the
+//! workspace `vendor` directory, and any `[patch]` path in the workspace
+//! `Cargo.toml`. A `[patch]` path is the `oxijolt-sys` tree that is checked.
+//! `cargo metadata --format-version 1 --offline --locked
+//! --filter-platform $TARGET` runs only when that search finds no
+//! `prebuilt.txt`. A metadata failure prints one warning and the build
+//! continues. `Cargo.lock` still rejects an `oxijolt-sys` version bump, and
+//! for a fixed version the lockfile checksum pins `prebuilt.txt`.
 //! D8 quotes these constants.
 
 use std::env;
@@ -84,15 +89,64 @@ fn check_recorded_shas() -> Result<(), String> {
     let manifest_dir = PathBuf::from(&manifest);
     let lock_path = manifest_dir.join("../../Cargo.lock");
     println!("cargo:rerun-if-changed={}", lock_path.display());
+    let workspace = workspace_manifest(&manifest_dir)?;
+    println!("cargo:rerun-if-changed={}", workspace.display());
     let lock_text = fs::read_to_string(&lock_path)
         .map_err(|error| format!("read Cargo.lock to check the oxijolt-sys version: {error}"))?;
     let version = locked_version(&lock_text)?;
-    let list = resolved_prebuilt(&version, &manifest_dir)?;
-    println!("cargo:rerun-if-changed={}", list.display());
-    let text = fs::read_to_string(&list).map_err(|error| {
-        format!("read oxijolt-sys prebuilt.txt to check the SHA constants in build.rs: {error}")
-    })?;
-    check_text(&text)
+    let lists = local_prebuilts(&version, &manifest_dir, &workspace)?;
+    if !lists.is_empty() {
+        return check_lists(&lists);
+    }
+    match resolved_prebuilt(&version, &manifest_dir) {
+        Ok(list) => check_lists(std::slice::from_ref(&list)),
+        Err(reason) => {
+            let reason = one_line(&reason);
+            println!(
+                "cargo:warning=oxijolt-sys {version} prebuilt.txt was not in the Cargo registry, \
+                 the workspace vendor directory, or a [patch] path. {reason}"
+            );
+            Ok(())
+        }
+    }
+}
+
+fn check_lists(lists: &[PathBuf]) -> Result<(), String> {
+    for list in lists {
+        println!("cargo:rerun-if-changed={}", list.display());
+        let text = fs::read_to_string(list).map_err(|error| {
+            format!("read oxijolt-sys prebuilt.txt to check the SHA constants in build.rs: {error}")
+        })?;
+        check_text(&text)?;
+    }
+    Ok(())
+}
+
+/// One `cargo:warning` line. Cargo treats a newline as the end of the directive.
+fn one_line(text: &str) -> String {
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut pending_space = false;
+    for ch in text.chars() {
+        if count >= 800 {
+            break;
+        }
+        if ch == '\n' || ch == '\r' {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            out.push(' ');
+            count += 1;
+            pending_space = false;
+            if count >= 800 {
+                break;
+            }
+        }
+        out.push(ch);
+        count += 1;
+    }
+    out.trim().to_string()
 }
 
 /// Resolved `oxijolt-sys` version from `Cargo.lock`, including the `+jolt-…` suffix.
@@ -126,6 +180,319 @@ fn locked_version(lock_text: &str) -> Result<String, String> {
         return Ok(version.to_string());
     }
     Err("Cargo.lock has no oxijolt-sys package".to_string())
+}
+
+fn workspace_manifest(manifest_dir: &Path) -> Result<PathBuf, String> {
+    manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .map(|dir| dir.join("Cargo.toml"))
+        .ok_or_else(|| "ferroan-physics has no workspace parent".to_string())
+}
+
+/// `prebuilt.txt` files the build already has, before any metadata query.
+///
+/// `Ok` with an empty list means nothing local was found and no `[patch]`
+/// names `oxijolt-sys`, so the caller may ask Cargo. A declared `[patch]`
+/// with no `prebuilt.txt` is an error: the registry copy is a different package.
+fn local_prebuilts(
+    version: &str,
+    manifest_dir: &Path,
+    workspace: &Path,
+) -> Result<Vec<PathBuf>, String> {
+    match patched_oxijolt_dirs(workspace)? {
+        Some(dirs) => prebuilt_from_patch(&dirs),
+        None => Ok(registry_and_vendor(version, manifest_dir)),
+    }
+}
+
+fn prebuilt_from_patch(dirs: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    if dirs.is_empty() {
+        return Err(
+            "workspace Cargo.toml patches oxijolt-sys without a path, so the SHA constants in \
+             build.rs were not checked"
+                .to_string(),
+        );
+    }
+    let mut found = Vec::new();
+    for dir in dirs {
+        let prebuilt = dir.join("prebuilt.txt");
+        if !prebuilt.is_file() {
+            return Err(format!(
+                "workspace Cargo.toml patches oxijolt-sys to {}, and that path has no \
+                 prebuilt.txt, so the SHA constants in build.rs were not checked",
+                dir.display()
+            ));
+        }
+        found.push(prebuilt);
+    }
+    Ok(found)
+}
+
+fn cargo_home() -> Option<PathBuf> {
+    if let Some(home) = env::var_os("CARGO_HOME") {
+        return Some(PathBuf::from(home));
+    }
+    if let Some(home) = env::var_os("HOME") {
+        return Some(PathBuf::from(home).join(".cargo"));
+    }
+    env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".cargo"))
+}
+
+fn registry_and_vendor(version: &str, manifest_dir: &Path) -> Vec<PathBuf> {
+    let dir_name = format!("oxijolt-sys-{version}");
+    let mut found = Vec::new();
+    if let Some(home) = cargo_home() {
+        let src = home.join("registry").join("src");
+        if let Ok(indexes) = fs::read_dir(&src) {
+            for index in indexes {
+                let Ok(index) = index else {
+                    continue;
+                };
+                let candidate = index.path().join(&dir_name).join("prebuilt.txt");
+                if candidate.is_file() {
+                    found.push(candidate);
+                }
+            }
+        }
+    }
+    let vendor = manifest_dir.join("../../vendor");
+    for name in [dir_name.as_str(), "oxijolt-sys"] {
+        let candidate = vendor.join(name).join("prebuilt.txt");
+        if candidate.is_file() {
+            found.push(candidate);
+        }
+    }
+    found
+}
+
+/// Directories named by an `oxijolt-sys` `[patch]`. `None` means no such patch.
+fn patched_oxijolt_dirs(workspace_toml: &Path) -> Result<Option<Vec<PathBuf>>, String> {
+    let text = fs::read_to_string(workspace_toml).map_err(|error| {
+        format!("read workspace Cargo.toml to locate an oxijolt-sys patch: {error}")
+    })?;
+    let workspace_dir = workspace_toml
+        .parent()
+        .ok_or_else(|| "workspace Cargo.toml has no directory".to_string())?;
+    let mut declared = false;
+    let mut paths = Vec::new();
+    let mut in_patch = false;
+    let mut in_oxijolt_table = false;
+    let mut inline_depth = 0i32;
+    for raw in text.lines() {
+        let line = strip_toml_comment(raw.trim_end_matches('\r')).trim();
+        if line.is_empty() {
+            continue;
+        }
+        if inline_depth > 0 {
+            if let Some(path) = quoted_path_value(line) {
+                paths.push(workspace_dir.join(path));
+            }
+            inline_depth += brace_delta(line);
+            if inline_depth < 0 {
+                inline_depth = 0;
+            }
+            continue;
+        }
+        if let Some(header) = table_header(line) {
+            in_patch = is_patch_header(header);
+            in_oxijolt_table = in_patch && header_targets_oxijolt(header);
+            if in_oxijolt_table {
+                declared = true;
+            }
+            continue;
+        }
+        if in_oxijolt_table {
+            if let Some(path) = quoted_path_value(line) {
+                paths.push(workspace_dir.join(path));
+            }
+            continue;
+        }
+        if !in_patch || !is_oxijolt_key(line) {
+            continue;
+        }
+        declared = true;
+        let Some(value) = assignment_value(line, "oxijolt-sys") else {
+            if let Some(path) = quoted_path_value(line) {
+                paths.push(workspace_dir.join(path));
+            }
+            continue;
+        };
+        if let Some(path) = path_inside(value) {
+            paths.push(workspace_dir.join(path));
+        }
+        let depth = brace_delta(value);
+        if depth > 0 {
+            inline_depth = depth;
+        }
+    }
+    if declared { Ok(Some(paths)) } else { Ok(None) }
+}
+
+fn is_patch_header(header: &str) -> bool {
+    header == "patch" || header.starts_with("patch.")
+}
+
+fn header_targets_oxijolt(header: &str) -> bool {
+    last_toml_component(header) == "oxijolt-sys"
+}
+
+fn last_toml_component(header: &str) -> &str {
+    let mut start = 0usize;
+    let mut in_string = false;
+    for (index, byte) in header.as_bytes().iter().enumerate() {
+        if *byte == b'"' || *byte == b'\'' {
+            in_string = !in_string;
+            continue;
+        }
+        if *byte == b'.' && !in_string {
+            start = index + 1;
+        }
+    }
+    header[start..].trim().trim_matches(['"', '\''])
+}
+
+fn table_header(line: &str) -> Option<&str> {
+    let line = line.trim();
+    if !line.starts_with('[') || line.starts_with("[[") {
+        return None;
+    }
+    let end = line.find(']')?;
+    Some(line[1..end].trim())
+}
+
+fn is_oxijolt_key(line: &str) -> bool {
+    let Some(rest) = line.trim_start().strip_prefix("oxijolt-sys") else {
+        return false;
+    };
+    let rest = rest.trim_start();
+    rest.starts_with('=') || rest.starts_with('.')
+}
+
+fn quoted_path_value(line: &str) -> Option<String> {
+    path_inside(line)
+}
+
+fn path_inside(value: &str) -> Option<String> {
+    let raw = assignment_value(value, "path")?;
+    quoted_string(raw)
+}
+
+fn assignment_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let bytes = line.as_bytes();
+    let key_bytes = key.as_bytes();
+    let mut index = 0usize;
+    while index + key_bytes.len() <= bytes.len() {
+        let boundary = index == 0 || !is_key_char(bytes[index - 1]);
+        let matched = boundary && &bytes[index..index + key_bytes.len()] == key_bytes;
+        let after = index + key_bytes.len();
+        let ended = after >= bytes.len() || !is_key_char(bytes[after]);
+        if matched && ended {
+            let mut cursor = after;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if cursor < bytes.len() && bytes[cursor] == b'=' {
+                cursor += 1;
+                while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                return Some(&line[cursor..]);
+            }
+        }
+        index += 1;
+    }
+    None
+}
+
+fn is_key_char(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
+}
+
+fn quoted_string(value: &str) -> Option<String> {
+    let mut chars = value.chars();
+    let quote = chars.next()?;
+    if quote != '"' && quote != '\'' {
+        return None;
+    }
+    let mut out = String::new();
+    while let Some(ch) = chars.next() {
+        if ch == '\\' && quote == '"' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('n') => out.push('\n'),
+                Some('t') => out.push('\t'),
+                Some('r') => out.push('\r'),
+                Some(other) => out.push(other),
+                None => return None,
+            }
+            continue;
+        }
+        if ch == quote {
+            return Some(out);
+        }
+        out.push(ch);
+    }
+    None
+}
+
+fn brace_delta(line: &str) -> i32 {
+    let mut delta = 0i32;
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars();
+    while let Some(ch) = chars.next() {
+        if let Some(open) = quote {
+            if ch == '\\' && open == '"' {
+                let _skipped = chars.next();
+                continue;
+            }
+            if ch == open {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => quote = Some(ch),
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+fn strip_toml_comment(line: &str) -> &str {
+    let bytes = line.as_bytes();
+    let mut index = 0usize;
+    let mut quote: Option<u8> = None;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if let Some(open) = quote {
+            if byte == b'\\' && open == b'"' {
+                index += 1;
+                if index < bytes.len() {
+                    index += 1;
+                }
+                continue;
+            }
+            if byte == open {
+                quote = None;
+            }
+            index += 1;
+            continue;
+        }
+        if byte == b'"' || byte == b'\'' {
+            quote = Some(byte);
+            index += 1;
+            continue;
+        }
+        if byte == b'#' {
+            return &line[..index];
+        }
+        index += 1;
+    }
+    line
 }
 
 /// `prebuilt.txt` beside the `oxijolt-sys` Cargo resolves for this package.
@@ -168,21 +535,22 @@ fn resolved_prebuilt(locked: &str, manifest_dir: &Path) -> Result<PathBuf, Strin
 }
 
 fn cargo_metadata(manifest_dir: &Path) -> Result<String, String> {
+    let target = env::var("TARGET").map_err(|_| {
+        "TARGET is unset, so cargo metadata --filter-platform was not run".to_string()
+    })?;
     let cargo = env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let workspace = manifest_dir
-        .parent()
-        .and_then(Path::parent)
-        .ok_or_else(|| "ferroan-physics has no workspace parent".to_string())?
-        .join("Cargo.toml");
-    let output = Command::new(cargo)
+    let workspace = workspace_manifest(manifest_dir)?;
+    let output = Command::new(&cargo)
         .args([
             "metadata",
             "--format-version",
             "1",
             "--offline",
             "--locked",
-            "--manifest-path",
+            "--filter-platform",
         ])
+        .arg(&target)
+        .arg("--manifest-path")
         .arg(&workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -191,10 +559,10 @@ fn cargo_metadata(manifest_dir: &Path) -> Result<String, String> {
         .map_err(|error| format!("run cargo metadata to locate oxijolt-sys: {error}"))?;
     if !output.status.success() {
         let err = String::from_utf8_lossy(&output.stderr);
-        let err = err.trim();
-        let err = if err.len() > 800 { &err[..800] } else { err };
+        let err = one_line(err.trim());
         return Err(format!(
-            "cargo metadata --format-version 1 --offline --locked failed: {err}"
+            "cargo metadata --format-version 1 --offline --locked --filter-platform {target} \
+             failed: {err}"
         ));
     }
     String::from_utf8(output.stdout)
