@@ -265,9 +265,19 @@ pub struct SimulationState {
     /// Child destinations and seeds for each root circuit generation.
     children: Arc<crate::children::ChildBook>,
     /// Root identities the child driver copies onto neighbour circuits.
-    /// A child acceptance does not replace one. The matching generation's
-    /// lease removes it.
+    /// A visibility child does not replace one. The matching generation's
+    /// lease removes it. A teleport arrives as a child, so the identity is
+    /// stored at accept when nothing is held yet, and again when this
+    /// generation becomes root.
     roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    /// One identity per circuit generation, kept until that lease drops.
+    /// `mark_root` publishes it even when an older root identity was held
+    /// at accept.
+    prepared: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    /// Admission HTTP started by the child drive. Aborting the drive task
+    /// does not stop these. Serve end and process shutdown abort them, then
+    /// take whatever close the guard staged.
+    admissions: Arc<Mutex<HashMap<Uuid, Vec<tokio::task::JoinHandle<()>>>>>,
 }
 
 struct ActiveSession {
@@ -425,7 +435,31 @@ impl AcceptedAgent {
             // neighbour it left is an ordinary open child, so logout closes it.
             self._lease.children.release_promoted(self._lease.agent_id);
             publish_agents(&sessions, &self._lease.meters);
+            drop(sessions);
+            // A teleport's CreateAgent is a child. SendInitialData can arm
+            // before this report, so accept stored the identity when none
+            // was held. A far-hop return kept the previous identity at
+            // accept; publish this generation now, before the return handshake.
+            self.publish_prepared_root();
         }
+    }
+
+    fn publish_prepared_root(&self) {
+        let Some(identity) = self
+            ._lease
+            .prepared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&self._lease.generation)
+            .cloned()
+        else {
+            return;
+        };
+        self._lease
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(self._lease.agent_id, identity);
     }
 
     /// The grid logout runs only while this generation is still the root.
@@ -480,6 +514,7 @@ struct SessionLease {
     rooted_when_replaced: Arc<AtomicBool>,
     children: Arc<crate::children::ChildBook>,
     roots: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
+    prepared: Arc<Mutex<HashMap<Uuid, ChildIdentity>>>,
 }
 
 impl Drop for SessionLease {
@@ -503,6 +538,10 @@ impl Drop for SessionLease {
             publish_agents(&sessions, &self.meters);
         }
         drop(sessions);
+        self.prepared
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&self.generation);
         let mut roots = self
             .roots
             .lock()
@@ -552,6 +591,8 @@ impl SimulationState {
             objects: Arc::new(Vec::new()),
             children: Arc::new(crate::children::ChildBook::new()),
             roots: Arc::new(Mutex::new(HashMap::new())),
+            prepared: Arc::new(Mutex::new(HashMap::new())),
+            admissions: Arc::new(Mutex::new(HashMap::new())),
             scene: None,
             circuit: Arc::new(OnceLock::new()),
             login_connect_wait: config.login_connect_wait,
@@ -583,7 +624,72 @@ impl SimulationState {
             .cloned()
     }
 
-    fn remember_root(&self, generation: Uuid, fields: &AgentFields) {
+    /// Remember one child-drive admission. A finished handle is dropped.
+    pub fn track_admission(&self, agent: Uuid, handle: tokio::task::JoinHandle<()>) {
+        let mut admissions = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let queued = admissions.entry(agent).or_default();
+        queued.retain(|running| !running.is_finished());
+        queued.push(handle);
+    }
+
+    /// Stop this agent's admission HTTP and wait until each guard has dropped.
+    /// A logout that already won stages its close here, before the serve-end take.
+    pub async fn abort_admissions(&self, agent: Uuid) {
+        let handles = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
+            .unwrap_or_default();
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Stop every admission the drive spawned. Process shutdown calls this
+    /// after the drive task itself has stopped, so no new task is tracked.
+    pub async fn abort_every_admission(&self) {
+        let handles: Vec<_> = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .drain()
+            .flat_map(|(_, queued)| queued)
+            .collect();
+        for handle in &handles {
+            handle.abort();
+        }
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Wait until this agent's admission tasks finish. Tests use it so a
+    /// later assertion sees the POST's report.
+    #[cfg(test)]
+    pub(crate) async fn finish_admissions(&self, agent: Uuid) {
+        let handles = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .remove(&agent)
+            .unwrap_or_default();
+        for handle in handles {
+            let _ = handle.await;
+        }
+    }
+
+    /// Store this generation's child-circuit identity. A visibility child
+    /// does not replace an identity already held for the agent. A teleport
+    /// is a child with nothing held yet, and `SendInitialData` can arm
+    /// before [`AcceptedAgent::mark_root`], so that case is stored now.
+    fn remember_identity(&self, generation: Uuid, fields: &AgentFields) {
         let height = fields
             .appearance
             .as_ref()
@@ -607,10 +713,17 @@ impl SimulationState {
             generation,
             height,
         };
-        self.roots
+        self.prepared
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
-            .insert(fields.agent_id, identity);
+            .insert(generation, identity.clone());
+        let mut roots = self
+            .roots
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        if !fields.child || !roots.contains_key(&fields.agent_id) {
+            roots.insert(fields.agent_id, identity);
+        }
     }
 
     pub fn keep_objects(&mut self, objects: Arc<Vec<ferroan_scene::ObjectGroup>>) {
@@ -847,9 +960,7 @@ impl SimulationState {
             },
         );
         publish_agents(&sessions, &self.meters);
-        if !fields.child {
-            self.remember_root(generation, &fields);
-        }
+        self.remember_identity(generation, &fields);
         let lease = SessionLease {
             secrets,
             sessions: self.sessions.clone(),
@@ -863,6 +974,7 @@ impl SimulationState {
             rooted_when_replaced,
             children: Arc::clone(&self.children),
             roots: Arc::clone(&self.roots),
+            prepared: Arc::clone(&self.prepared),
         };
         let (seeds_sent, object_animations, supports_pbr) =
             self.caps.seed_flags(fields.agent_id).unwrap_or_default();

@@ -36,23 +36,24 @@
 
 //! Runs the frame's child notices off the scene thread.
 //!
-//! One task receives each [`ferroan_scene::ChildNotice`], diffs
-//! [`crate::grid::VisibleNeighbours`] on an enable, and admits, updates or
-//! closes. The scene thread has already returned. A new neighbour waits 500 ms
-//! after `CreateAgent` before the viewer events. A position that became due
-//! during that wait is sent once the child is open and before those events:
-//! the viewer then requests the seed, and the neighbour proxy would otherwise
-//! see the PUT and the seed at the same time. A position update goes only
-//! to an open child, so a PUT cannot land before the child exists.
+//! One task receives each [`ferroan_scene::ChildNotice`] and diffs
+//! [`crate::grid::VisibleNeighbours`] on an enable. Closes and new claims are
+//! decided before the 2 s gate is settled, which is when Pin8 clears
+//! `m_childUpdatesBusy` and stamps the timer (`ScenePresence.cs` 4772–4778).
+//! The closes go out first. Each neighbour then posts, waits 500 ms and
+//! announces, or puts a child that stayed, in that neighbour's order, on a
+//! task the drive does not await. A position pass sends one `AgentPosition`
+//! per simulator. A position update goes only to an open child, so a PUT
+//! cannot land before the child exists.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
 
 use ferroan_scene::{ChildNotice, ChildPass, TerrainFrame};
 use uuid::Uuid;
 
-use crate::children::{Admission, Claim, ClaimWork, NeighbourView, PostReport, admission_events};
+use crate::children::{Admission, NeighbourView, PostReport, admission_events};
 use crate::config::RegionConfig;
 use crate::grid::{GridClient, VisibleNeighbour, VisibleNeighbours};
 use crate::simulation::SimulationState;
@@ -75,15 +76,14 @@ pub async fn run(
     client: SimulationClient,
 ) {
     let mut neighbours = VisibleNeighbours::new(GridClient::new(&config), &config);
-    let mut pending = VecDeque::new();
     loop {
-        let notice = match pending.pop_front() {
-            Some(notice) => notice,
-            None => match notices.recv().await {
-                Some(notice) => notice,
-                None => break,
-            },
+        let Some(notice) = notices.recv().await else {
+            break;
         };
+        // The lookup is the part this task waits for. Admission HTTP is a
+        // separate task, so the next position pass is not held behind a POST.
+        // Aborting this task does not abort that HTTP. The caller awaits
+        // those handles, then sends any close a guard staged.
         let visible = if notice.pass == ChildPass::Enable {
             neighbours
                 .in_view(notice.position, notice.draw_distance)
@@ -91,59 +91,29 @@ pub async fn run(
         } else {
             Vec::new()
         };
-        let mut inbox = Inbox {
-            notices: &mut notices,
-            pending: &mut pending,
-        };
-        apply_notice(
-            &simulation,
-            &config,
-            &frame,
-            &client,
-            &notice,
-            &visible,
-            Some(&mut inbox),
-        )
-        .await;
+        apply_notice(&simulation, &config, &frame, &client, &notice, &visible).await;
     }
 }
 
-/// Notices already queued while this task is inside one pass.
-struct Inbox<'a> {
-    notices: &'a mut tokio::sync::mpsc::Receiver<ChildNotice>,
-    pending: &'a mut VecDeque<ChildNotice>,
-}
-
-impl Inbox<'_> {
-    /// Position passes for `agent` that arrived before the viewer events.
-    /// Anything else stays queued for the outer loop.
-    fn take_positions(&mut self, agent: Uuid) -> Vec<ChildNotice> {
-        let mut positions = Vec::new();
-        let mut rest = VecDeque::new();
-        while let Some(notice) = self.pending.pop_front() {
-            if notice.pass == ChildPass::Position && notice.agent == agent {
-                positions.push(notice);
-            } else {
-                rest.push_back(notice);
-            }
-        }
-        *self.pending = rest;
-        while let Ok(notice) = self.notices.try_recv() {
-            if notice.pass == ChildPass::Position && notice.agent == agent {
-                positions.push(notice);
-            } else {
-                self.pending.push_back(notice);
-            }
-        }
-        positions
+/// Send a close that an aborted admission staged after logout. The drive
+/// task has stopped, so its guard has already dropped.
+pub async fn close_staged_after_stop(simulation: &SimulationState) {
+    let staged = simulation.child_book().take_every_staged_close();
+    if staged.is_empty() {
+        return;
     }
-}
-
-struct Drive<'a> {
-    simulation: &'a SimulationState,
-    config: &'a RegionConfig,
-    frame: &'a TerrainFrame,
-    client: &'a SimulationClient,
+    let client = match SimulationClient::new() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::error!("ferroan-region: simulation client unavailable: {error}");
+            return;
+        }
+    };
+    for (agent, session, end) in staged {
+        if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+            tracing::debug!("dropped admission close: {error}");
+        }
+    }
 }
 
 async fn apply_notice(
@@ -153,23 +123,18 @@ async fn apply_notice(
     client: &SimulationClient,
     notice: &ChildNotice,
     visible: &[VisibleNeighbour],
-    inbox: Option<&mut Inbox<'_>>,
 ) {
     let Some(identity) = simulation.child_identity(notice.agent) else {
         // Nothing to post. Still release a busy gate.
         finish(frame, notice, true);
         return;
     };
-    let drive = Drive {
-        simulation,
-        config,
-        frame,
-        client,
-    };
     match notice.pass {
         ChildPass::Enable => {
-            enable(&drive, notice, &identity, visible, inbox).await;
-            finish(frame, notice, true);
+            // The gate settles inside `enable`, before the HTTP task starts.
+            enable(
+                simulation, config, frame, client, notice, &identity, visible,
+            );
         }
         ChildPass::Position => {
             let updated =
@@ -188,87 +153,131 @@ fn finish(frame: &TerrainFrame, notice: &ChildNotice, committed: bool) {
     }
 }
 
-async fn enable(
-    drive: &Drive<'_>,
+/// One neighbour after the closes, in the order the lookup returned them.
+enum EnableStep {
+    /// A neighbour that was not already claimed. The guard is held until the
+    /// POST is reported or the task is cancelled.
+    Admit {
+        neighbour: VisibleNeighbour,
+        work: crate::children::ClaimWork,
+    },
+    /// An open child that stayed in view. One PUT, not folded by simulator.
+    Stay(RegionEnd),
+}
+
+/// `EnableChildAgents` after the neighbour lookup. Decisions and the gate
+/// settle here. HTTP runs on the returned task.
+fn enable(
+    simulation: &SimulationState,
+    config: &RegionConfig,
+    frame: &TerrainFrame,
+    client: &SimulationClient,
     notice: &ChildNotice,
     identity: &ChildIdentity,
     visible: &[VisibleNeighbour],
-    mut inbox: Option<&mut Inbox<'_>>,
 ) {
-    if let Err(error) = drive
-        .frame
-        .note_child_neighbours(notice.agent, !visible.is_empty())
-    {
+    if let Err(error) = frame.note_child_neighbours(notice.agent, !visible.is_empty()) {
         tracing::debug!("child neighbour flag was not stored: {error}");
     }
-    let book = drive.simulation.child_book();
+    let book = simulation.child_book();
     let before = book.tracked(notice.agent);
     let visible_ids: HashSet<Uuid> = visible
         .iter()
         .map(|neighbour| neighbour.region.region_id)
         .collect();
-    close_absent(drive.client, &book, notice.agent, &before, &visible_ids).await;
-    for neighbour in visible {
-        if before
-            .iter()
-            .any(|child| child.end.region_id == neighbour.region.region_id)
-        {
-            continue;
-        }
-        admit_one(drive, notice, identity, neighbour, inbox.as_deref_mut()).await;
-    }
-    let staying: HashSet<Uuid> = before
-        .iter()
-        .filter(|child| child.open && !child.promoted && visible_ids.contains(&child.end.region_id))
-        .map(|child| child.end.region_id)
-        .collect();
-    send_open_positions(
-        drive.simulation,
-        drive.config,
-        drive.client,
-        notice,
-        identity,
-        Some(&staying),
-    )
-    .await;
-}
-
-async fn close_absent(
-    client: &SimulationClient,
-    book: &crate::children::ChildBook,
-    agent: Uuid,
-    before: &[crate::children::TrackedChild],
-    visible_ids: &HashSet<Uuid>,
-) {
-    for child in before {
+    let mut closes = Vec::new();
+    for child in &before {
         if visible_ids.contains(&child.end.region_id) {
             continue;
         }
-        if let Admission::Close { end, session } = book.leave_view(agent, child.end.region_id) {
-            close_child(client, &end, agent, session).await;
+        if let Admission::Close { end, session } =
+            book.leave_view(notice.agent, child.end.region_id)
+        {
+            closes.push((end, session));
+        }
+    }
+    let mut steps = Vec::new();
+    for neighbour in visible {
+        let known = before
+            .iter()
+            .find(|child| child.end.region_id == neighbour.region.region_id);
+        if let Some(child) = known {
+            if child.open && !child.promoted {
+                steps.push(EnableStep::Stay(child.end.clone()));
+            }
+            continue;
+        }
+        if let Ok(work) = book.claim_work_sized(
+            notice.agent,
+            identity.generation,
+            neighbour.region.clone(),
+            neighbour.size,
+        ) {
+            steps.push(EnableStep::Admit {
+                neighbour: neighbour.clone(),
+                work,
+            });
+        }
+    }
+    // Pin8 stamps and clears busy when `EnableChildAgents` returns, which is
+    // after the lookup and the close and claim decisions, and before the
+    // fire-and-forget HTTP. An arrival notice does not settle, so this leaves
+    // the arrival stamp in place.
+    finish(frame, notice, true);
+    let pass = EnableHttp {
+        simulation: simulation.clone(),
+        config: config.clone(),
+        client: client.clone(),
+        notice: notice.clone(),
+        identity: identity.clone(),
+        closes,
+        steps,
+    };
+    simulation.track_admission(notice.agent, tokio::spawn(pass.run()));
+}
+
+struct EnableHttp {
+    simulation: SimulationState,
+    config: RegionConfig,
+    client: SimulationClient,
+    notice: ChildNotice,
+    identity: ChildIdentity,
+    closes: Vec<(RegionEnd, Uuid)>,
+    steps: Vec<EnableStep>,
+}
+
+impl EnableHttp {
+    async fn run(mut self) {
+        for (end, session) in &self.closes {
+            close_child(&self.client, end, self.notice.agent, *session).await;
+        }
+        // Take the steps so each admission can still borrow this pass.
+        for step in std::mem::take(&mut self.steps) {
+            match step {
+                EnableStep::Admit { neighbour, work } => {
+                    admit_one(&self, neighbour, work).await;
+                }
+                EnableStep::Stay(end) => {
+                    let _ = put_position(
+                        &self.client,
+                        &self.config,
+                        &self.notice,
+                        &self.identity,
+                        &end,
+                    )
+                    .await;
+                }
+            }
         }
     }
 }
 
 async fn admit_one(
-    drive: &Drive<'_>,
-    notice: &ChildNotice,
-    identity: &ChildIdentity,
-    neighbour: &VisibleNeighbour,
-    inbox: Option<&mut Inbox<'_>>,
+    pass: &EnableHttp,
+    neighbour: VisibleNeighbour,
+    work: crate::children::ClaimWork,
 ) {
-    let book = drive.simulation.child_book();
-    let Claim::New { seed } =
-        book.claim(notice.agent, identity.generation, neighbour.region.clone())
-    else {
-        return;
-    };
-    let work = ClaimWork::watch(
-        Arc::clone(&book),
-        notice.agent,
-        identity.generation,
-        neighbour.region.region_id,
-    );
+    let seed = work.seed().to_owned();
     let Some(addr) = neighbour.viewer_endpoint().await else {
         drop(work);
         return;
@@ -277,17 +286,17 @@ async fn admit_one(
         drop(work);
         return;
     };
-    let height = avatar_height(notice, identity);
+    let height = avatar_height(&pass.notice, &pass.identity);
     let mut circuit = child_circuit(
-        identity,
-        &home_end(drive.config),
+        &pass.identity,
+        &home_end(&pass.config),
         &neighbour.region,
-        notice.position,
-        notice.draw_distance,
+        pass.notice.position,
+        pass.notice.draw_distance,
         height,
         &seed,
     );
-    let report = match drive
+    let report = match pass
         .client
         .create_visible_child(&neighbour.region, &mut circuit)
         .await
@@ -301,57 +310,41 @@ async fn admit_one(
     if report == PostReport::Accepted {
         crate::children::pause_before_announce().await;
     }
+    let book = pass.simulation.child_book();
     let admission = book.report(
-        notice.agent,
-        identity.generation,
+        pass.notice.agent,
+        pass.identity.generation,
         neighbour.region.region_id,
         report,
     );
     match &admission {
         Admission::Announce { .. } => {
-            // The child is open. Deliver a position that arrived during the
-            // announce wait before the viewer learns the seed URL. The
-            // neighbour then sees the PUT finish, and only afterwards the
-            // viewer's seed request.
-            if let Some(inbox) = inbox {
-                for next in inbox.take_positions(notice.agent) {
-                    let updated = send_open_positions(
-                        drive.simulation,
-                        drive.config,
-                        drive.client,
-                        &next,
-                        identity,
-                        None,
-                    )
-                    .await;
-                    finish(drive.frame, &next, updated);
-                }
-            }
             let view = NeighbourView {
                 handle: region_handle(neighbour.region.loc_x, neighbour.region.loc_y),
                 address: ip,
                 port: addr.port(),
                 size_x: neighbour.size[0],
                 size_y: neighbour.size[1],
-                agent: notice.agent,
+                agent: pass.notice.agent,
                 seed,
             };
             for event in admission_events(&admission, &view) {
-                if let Err(error) = drive.simulation.caps().enqueue_for(notice.agent, event) {
+                if let Err(error) = pass.simulation.caps().enqueue_for(pass.notice.agent, event) {
                     tracing::debug!("child event was not queued: {error}");
                 }
             }
         }
         Admission::Close { end, session } => {
-            close_child(drive.client, end, notice.agent, *session).await
+            close_child(&pass.client, end, pass.notice.agent, *session).await
         }
         Admission::Quiet => {}
     }
     work.settle();
 }
 
-/// `Some(only)` limits the PUT to those regions. `None` updates every open
-/// child that is not the remote root.
+/// `Some(only)` is the enable pass: one PUT per neighbour that stayed.
+/// `None` is the position pass: one PUT per distinct `ServerURI`, which is
+/// what `LocalSimulationConnector.UpdateAgent` applies to every scene there.
 async fn send_open_positions(
     simulation: &SimulationState,
     config: &RegionConfig,
@@ -361,11 +354,15 @@ async fn send_open_positions(
     only: Option<&HashSet<Uuid>>,
 ) -> bool {
     let mut updated = false;
+    let mut sent_servers = HashSet::new();
     for child in simulation.child_book().tracked(notice.agent) {
         if !child.open || child.promoted {
             continue;
         }
         if only.is_some_and(|regions| !regions.contains(&child.end.region_id)) {
+            continue;
+        }
+        if only.is_none() && !sent_servers.insert(child.end.server_uri.clone()) {
             continue;
         }
         if put_position(client, config, notice, identity, &child.end).await {
@@ -571,9 +568,9 @@ mod tests {
             &client,
             &enable,
             std::slice::from_ref(&neighbour),
-            None,
         )
         .await;
+        state.finish_admissions(agent).await;
         let (method, path, body) = recorded_rx.recv().await.unwrap();
         assert_eq!(method, "POST");
         assert_eq!(path, format!("/agent/{agent}/"));
@@ -613,9 +610,9 @@ mod tests {
             &client,
             &enable,
             std::slice::from_ref(&neighbour),
-            None,
         )
         .await;
+        state.finish_admissions(agent).await;
         let (method, path, body) = recorded_rx.recv().await.unwrap();
         assert_eq!(method, "PUT");
         assert_eq!(path, format!("/agent/{agent}/"));
@@ -627,7 +624,7 @@ mod tests {
         position.pass = ChildPass::Position;
         position.position = [220.0, 128.0, 30.0];
         position.epoch = 2;
-        apply_notice(&state, &config, &frame, &client, &position, &[], None).await;
+        apply_notice(&state, &config, &frame, &client, &position, &[]).await;
         let (method, path, body) = recorded_rx.recv().await.unwrap();
         assert_eq!(method, "PUT");
         assert_eq!(path, format!("/agent/{agent}/"));
@@ -637,7 +634,8 @@ mod tests {
         assert_eq!(posted["size"], "<0.45, 0.6, 1.9>");
         assert!(recorded_rx.try_recv().is_err());
 
-        apply_notice(&state, &config, &frame, &client, &enable, &[], None).await;
+        apply_notice(&state, &config, &frame, &client, &enable, &[]).await;
+        state.finish_admissions(agent).await;
         let (method, path, _) = recorded_rx.recv().await.unwrap();
         assert_eq!(method, "DELETE");
         assert!(path.contains(&format!("/agent/{agent}/")));
@@ -647,5 +645,404 @@ mod tests {
         drop(accepted_rx);
         home_server.abort();
         neighbour_server.abort();
+    }
+
+    fn enable_notice(agent: Uuid) -> ChildNotice {
+        ChildNotice {
+            agent,
+            pass: ChildPass::Enable,
+            position: [200.0, 128.0, 30.0],
+            velocity: [0.0, 0.0, 0.0],
+            camera: [200.0, 128.0, 31.0],
+            draw_distance: 255.0,
+            height: 1.9,
+            god: false,
+            settle: true,
+            epoch: 1,
+        }
+    }
+
+    fn neighbour_at(uri: &str, id: u128, port: u16, size: [u32; 2]) -> VisibleNeighbour {
+        VisibleNeighbour::at(
+            RegionEnd {
+                server_uri: uri.to_owned(),
+                region_id: Uuid::from_u128(id),
+                name: "Neighbour".into(),
+                loc_x: 256_256,
+                loc_y: 256_000,
+            },
+            size,
+            "127.0.0.1",
+            port,
+        )
+    }
+
+    /// A teleport's `CreateAgent` has `child = true`. The drive still posts
+    /// once that generation is the root.
+    #[tokio::test]
+    async fn a_teleport_root_posts_children_after_it_is_marked_root() {
+        let mut body: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        body["child"] = json!(true);
+        body["teleport_flags"] = json!("16");
+        let agent = Uuid::parse_str(body["agent_id"].as_str().unwrap()).unwrap();
+        let session = Uuid::parse_str(body["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(body["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, mut accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(4);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let accepted = accepted_rx.recv().await.unwrap();
+        let stored = state.child_identity(agent).unwrap();
+        assert_eq!(stored.session_id, session);
+        accepted.mark_root();
+        assert_eq!(state.child_identity(agent).unwrap().session_id, session);
+
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let neighbour = neighbour_at(&neighbour_uri, 9, neighbour_addr.port(), [256, 256]);
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            std::slice::from_ref(&neighbour),
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        drop(accepted);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// A later visibility child must not replace the root identity still held.
+    #[tokio::test]
+    async fn a_visibility_child_does_not_replace_a_held_root_identity() {
+        let root_body: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(root_body["agent_id"].as_str().unwrap()).unwrap();
+        let root_session = Uuid::parse_str(root_body["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(root_body["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, mut accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let post = |body: Value| {
+            let http = http.clone();
+            let home_base = home_base.clone();
+            async move {
+                http.post(format!("{home_base}/agent/{agent}/"))
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(post(root_body).await.status(), reqwest::StatusCode::OK);
+        let root = accepted_rx.recv().await.unwrap();
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            root_session
+        );
+        let child_session = Uuid::from_u128(70);
+        let mut child_body: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        child_body["child"] = json!(true);
+        child_body["teleport_flags"] = json!("0");
+        child_body["session_id"] = json!(child_session.to_string());
+        child_body["secure_session_id"] = json!(Uuid::from_u128(71).to_string());
+        child_body["caps_path"] = json!("00000000000040008000000000000099");
+        child_body["circuit_code"] = json!("2");
+        assert_eq!(post(child_body).await.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            root_session,
+            "a visibility child replaced the root identity"
+        );
+        drop(root);
+        assert!(state.child_identity(agent).is_none());
+        let child = accepted_rx.recv().await.unwrap();
+        child.mark_root();
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            child_session
+        );
+        home_server.abort();
+    }
+
+    /// The position pass folds regions that share a simulator. The enable
+    /// pass still puts once per neighbour.
+    #[tokio::test]
+    async fn position_pass_sends_one_update_per_server_uri() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(8);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let neighbours = [
+            neighbour_at(&neighbour_uri, 9, port, [512, 512]),
+            VisibleNeighbour::at(
+                RegionEnd {
+                    server_uri: neighbour_uri.clone(),
+                    region_id: Uuid::from_u128(10),
+                    name: "Neighbour Two".into(),
+                    loc_x: 256_512,
+                    loc_y: 256_000,
+                },
+                [256, 256],
+                "127.0.0.1",
+                port,
+            ),
+        ];
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        assert!(recorded_rx.try_recv().is_err());
+
+        let mut position = enable_notice(agent);
+        position.pass = ChildPass::Position;
+        position.position = [220.0, 128.0, 30.0];
+        apply_notice(&state, &config, &frame, &client, &position, &[]).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "PUT");
+        assert!(
+            recorded_rx.try_recv().is_err(),
+            "one simulator received two position updates"
+        );
+
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "PUT");
+        assert_eq!(recorded_rx.recv().await.unwrap(), "PUT");
+        assert!(recorded_rx.try_recv().is_err());
+
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// Serve end aborts a blocked admission after logout and takes the close
+    /// the guard staged. The enable itself returns before that HTTP finishes.
+    #[tokio::test]
+    async fn a_cancelled_admission_is_taken_at_serve_end() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let session = Uuid::parse_str(args["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let hold = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hold_addr = hold.local_addr().unwrap();
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let neighbour = neighbour_at(
+            &format!("http://{hold_addr}/"),
+            11,
+            hold_addr.port(),
+            [256, 256],
+        );
+        let started = std::time::Instant::now();
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            std::slice::from_ref(&neighbour),
+        )
+        .await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(400),
+            "the enable waited for admission HTTP"
+        );
+        let (mut sock, _) = tokio::time::timeout(std::time::Duration::from_secs(2), hold.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let mut buf = [0u8; 64];
+        let _ = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::io::AsyncReadExt::read(&mut sock, &mut buf),
+        )
+        .await;
+        assert!(state.take_open_children(agent).is_empty());
+        state.abort_admissions(agent).await;
+        let staged = state.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session);
+        assert_eq!(staged[0].1.region_id, Uuid::from_u128(11));
+        assert!(state.take_staged_closes(agent).is_empty());
+        drop(sock);
+        drop(accepted_rx);
+        home_server.abort();
     }
 }

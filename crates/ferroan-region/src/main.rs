@@ -237,7 +237,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         frame.set_view_limits(minimum, maximum);
         match ferroan_region::simulation_client::SimulationClient::new() {
             Ok(client) => {
-                let (tx, rx) = mpsc::channel(64);
+                let (tx, rx) = mpsc::channel(ferroan_scene::CHILD_NOTICE_QUEUE);
                 frame.watch_children(tx);
                 child_drive = Some(tokio::spawn(ferroan_region::child_drive::run(
                     rx,
@@ -306,6 +306,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         if let Some(task) = child_drive.as_mut() {
             task.abort();
             let _ = task.await;
+            simulation.abort_every_admission().await;
+            ferroan_region::child_drive::close_staged_after_stop(&simulation).await;
         }
         let _ = stop_http.send(());
         http.abort();
@@ -374,6 +376,10 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     if let Some(task) = child_drive.as_mut() {
         task.abort();
         let _ = task.await;
+        // Spawned admissions outlive the drive task. Abort them so a guard
+        // that logout already won stages its close, then take every close.
+        simulation.abort_every_admission().await;
+        ferroan_region::child_drive::close_staged_after_stop(&simulation).await;
     }
     // PresenceDetector.RemoveRegion. A failure is logged and shutdown continues.
     notify_region_presence(&PresenceClient::new(&config.presence_server_uri), config.id).await;
@@ -1184,6 +1190,7 @@ async fn serve_agent(ctx: DispatchCtx, mut agent: AcceptedAgent) {
     // The sends do not hold this cleanup. Abort and await this circuit's
     // admission tasks before this take: a cancelled admission stages its
     // close when the guard drops, and an earlier take leaves it in the book.
+    hop.abort_admissions(agent.expect.agent_id).await;
     hop.close_staged(agent.expect.agent_id).await;
     // ActivityDetector reads AbsolutePosition and Lookat when the connection
     // closes: the walked position and the flattened camera at axis. Without

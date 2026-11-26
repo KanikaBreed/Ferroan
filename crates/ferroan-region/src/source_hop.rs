@@ -289,6 +289,15 @@ impl HopPresence {
         }
     }
 
+    async fn abort_admissions(&self, agent: Uuid) {
+        match self {
+            Self::Live(state) => state.abort_admissions(agent).await,
+            Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) | Self::Watch(_) => {}
+        }
+    }
+
     fn take_children(&self, agent: Uuid) -> Vec<RegionEnd> {
         match self {
             Self::Idle => Vec::new(),
@@ -421,6 +430,13 @@ impl HopEnv {
             },
             presence,
         }
+    }
+
+    /// Stop this circuit's admission tasks and wait until each guard drops.
+    /// A cancelled admission stages its close when logout already won, and
+    /// the following [`Self::close_staged`] takes that close.
+    pub async fn abort_admissions(&self, agent: Uuid) {
+        self.presence.abort_admissions(agent).await;
     }
 
     /// Close children a replaced root left behind. The auth token is the session
