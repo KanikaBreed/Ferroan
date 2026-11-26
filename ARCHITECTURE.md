@@ -63,11 +63,11 @@ isolation with SELECT and INSERT on the data table ([D43](docs/DECISIONS.md)).
 | `ferroan-physics` | The only crate that calls Jolt (native C++) | 3 |
 | `ferroan-scripting` | The only crate that calls Linden's SLua engine (native C++); the `ll`, `os` and `bot` functions | 4 |
 
-`ferroan-scene::prim_update` builds full LLUDP blocks for stored world prims. The caller supplies the frame's local IDs. A restored part retains its payload and cache revision across viewers. At send time `StoredPrimUpdate::block_for` applies the recipient's god state, group powers and friend grant under the region's permissions mode. Per-viewer queue delivery belongs to P2.5a3.
+`ferroan-scene::prim_update` builds full LLUDP blocks for stored world prims. The caller supplies the frame's local IDs and the recipient's god state, group powers and friend grant. `StoredPrimUpdate::block_for` uses these permissions under the region's configured mode. A restored part retains its payload and cache revision across viewers. Delivery through each viewer's queue is planned for Q65c2 (P2.5a3).
+
+The scene aggregates the root's permission masks with every linked part's inventory. For each recipient the dispatcher intersects its input with the permission module's result before writing `ObjectUpdate.UpdateFlags` (TB95). Parcel rights enter the later action checks. The [permissions oracle](tools/permissions-oracle/README.md) records the module and viewer words and the object and parcel decisions for P2.7b and P2.7c.
 
 ## Where code comes from
-
-The [permissions oracle](tools/permissions-oracle/README.md) records the pinned scene dispatcher's viewer flags and object and parcel decisions. P2.7b and P2.7c consume the same cases. The scene aggregates the root's masks with every linked part's inventory once. For each recipient it applies the permission module to the part's effective flags, then intersects the result with the dispatcher's input before writing `ObjectUpdate.UpdateFlags` (TB95). Parcel rights affect the later action checks. Tranquillity does not consult them for this word.
 
 The grid harness schedules scenarios individually and waits for bounded
 GridUser/Presence logout state between them. This separates receipt of the

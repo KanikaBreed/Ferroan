@@ -292,6 +292,20 @@ mod tests {
         user_level: i32,
         inventory_item: Option<Item>,
         friend_can_modify: bool,
+        #[serde(default)]
+        nil_owner: bool,
+        #[serde(default)]
+        nil_group: bool,
+        creation_date: Option<i32>,
+        child: Option<ChildPart>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct ChildPart {
+        owner_mask: u32,
+        inventory_item: Option<Item>,
+        observe: bool,
     }
 
     #[derive(Deserialize)]
@@ -316,6 +330,7 @@ mod tests {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Expected {
+        is_god: bool,
         effective_owner_mask: u32,
         effective_everyone_mask: u32,
         effective_group_or_everyone_mask: u32,
@@ -366,12 +381,24 @@ mod tests {
         assert_eq!(perms.viewer_flags(0x400, viewer), 0x1002_053c);
     }
 
+    fn set_inventory(part: &mut ObjectPart, item: Option<Item>) {
+        if let Some(item) = item {
+            let entry = &mut part.items[0];
+            entry.inv_type = 7; // notecard in the oracle
+            entry.current_permissions = item.current;
+            entry.group_permissions = item.group;
+            entry.everyone_permissions = item.everyone;
+        } else {
+            part.items.clear();
+        }
+    }
+
     #[test]
     fn every_module_and_viewer_flag_word_matches_pin8() {
         let fixture: Fixture =
             serde_json::from_str(include_str!("../../../fixtures/permissions/objects.json"))
                 .unwrap();
-        assert_eq!(fixture.cases.len(), 47);
+        assert_eq!(fixture.cases.len(), 59);
         let template = part_with_item();
         let (agent, owner, group) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         for Case {
@@ -381,29 +408,39 @@ mod tests {
         } in fixture.cases
         {
             let name = input.name;
-            let mut part = template.clone();
-            part.owner_id = if input.owns_object {
+            let mut root = template.clone();
+            root.group_id = if input.nil_group { Uuid::nil() } else { group };
+            root.owner_id = if input.nil_owner {
+                Uuid::nil()
+            } else if input.owns_object {
                 agent
             } else if input.deeded {
-                group
+                root.group_id
             } else {
                 owner
             };
-            part.group_id = group;
-            part.base_mask = input.base_mask;
-            part.owner_mask = input.owner_mask;
-            part.group_mask = input.group_mask;
-            part.everyone_mask = input.everyone_mask;
-            part.creation_date = 0;
-            if let Some(item) = input.inventory_item {
-                let entry = &mut part.items[0];
-                entry.inv_type = 7; // notecard in the oracle
-                entry.current_permissions = item.current;
-                entry.group_permissions = item.group;
-                entry.everyone_permissions = item.everyone;
+            root.base_mask = input.base_mask;
+            root.owner_mask = input.owner_mask;
+            root.group_mask = input.group_mask;
+            root.everyone_mask = input.everyone_mask;
+            root.creation_date = input.creation_date.unwrap_or_default();
+            set_inventory(&mut root, input.inventory_item);
+            let observe_child = input.child.as_ref().is_some_and(|linked| linked.observe);
+            let child = input.child.map(|linked| {
+                let mut child = template.clone();
+                child.uuid = Uuid::from_u128(4);
+                child.owner_id = root.owner_id;
+                child.group_id = root.group_id;
+                child.owner_mask = linked.owner_mask;
+                set_inventory(&mut child, linked.inventory_item);
+                child
+            });
+            let linkset = LinksetPermissions::from_parts(&root, child.as_slice());
+            let part = if observe_child {
+                child.as_ref().unwrap()
             } else {
-                part.items.clear();
-            }
+                &root
+            };
             // GodController's initial presence state; the module reads IsGod, not viewer UI state.
             let grid_god = (settings.force_grid_gods_only || settings.allow_grid_gods)
                 && input.user_level >= 200;
@@ -420,10 +457,10 @@ mod tests {
                 } else {
                     PermissionMode::Bypass
                 },
-                membership: input.member.then_some((group, input.powers)),
-                friend_grant_from: input.friend_can_modify.then_some(owner),
+                membership: input.member.then_some((root.group_id, input.powers)),
+                friend_grant_from: input.friend_can_modify.then_some(root.owner_id),
             };
-            let linkset = LinksetPermissions::from_parts(&part, &[]);
+            assert_eq!(viewer.is_god, expected.is_god, "{name}: god state");
             assert_eq!(
                 linkset.effective_owner, expected.effective_owner_mask,
                 "{name}: owner"
@@ -436,7 +473,7 @@ mod tests {
                 linkset.group_or_everyone, expected.effective_group_or_everyone_mask,
                 "{name}: group or everyone"
             );
-            let perms = PartPermissions::new(&part, linkset, input.attachment);
+            let perms = PartPermissions::new(part, linkset, input.attachment);
             let effective = input.flags | if part.items.is_empty() { 0x800 } else { 0 };
             let dispatcher_input = effective | DEFAULT_FLAGS;
             assert_eq!(
