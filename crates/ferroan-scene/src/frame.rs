@@ -38,6 +38,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TryS
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use ferroan_config::Config;
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
 use ferroan_physics::Physics;
 use tokio::sync::oneshot;
@@ -340,6 +341,7 @@ impl TerrainFrame {
             None,
             PhysicsScaleLimits::default(),
             true,
+            default_jolt_config()?,
         )
     }
 
@@ -356,10 +358,13 @@ impl TerrainFrame {
             limits,
             PhysicsScaleLimits::default(),
             true,
+            default_jolt_config()?,
         )
     }
 
-    /// Use the region's configured scale limits and CollidablePrims setting.
+    /// Use the region's configured scale limits, CollidablePrims setting and
+    /// ini. `config` is passed to `Physics::start`, so `[Jolt]` keys and the
+    /// warning for a `[Startup] physics` other than `Jolt` apply here.
     pub fn with_object_settings(
         map: Option<Heightmap>,
         parcels: Option<crate::parcels::ParcelMap>,
@@ -367,6 +372,7 @@ impl TerrainFrame {
         limits: Option<PrimScaleLimits>,
         physics: PhysicsScaleLimits,
         collidable_prims: bool,
+        config: Config,
     ) -> Result<Self, TerrainError> {
         let has_map = map.is_some();
         let (tx, rx) = mpsc::channel();
@@ -393,7 +399,7 @@ impl TerrainFrame {
         clock_ms(Instant::now());
         let thread = std::thread::Builder::new()
             .name("ferroan-scene".to_owned())
-            .spawn(move || run(map, scene, rx, inbound_rx, frame_wake, ready_tx))
+            .spawn(move || run(map, scene, rx, inbound_rx, frame_wake, ready_tx, config))
             .map_err(|_| TerrainError::Thread)?;
         ready_rx.recv().map_err(|_| TerrainError::Thread)?;
         Ok(Self {
@@ -949,6 +955,12 @@ fn look_rotation(look_at: [f32; 3]) -> [f32; 4] {
     [0.0, 0.0, sine, half.cos()]
 }
 
+/// `[Startup] physics = Jolt` and no `[Jolt]` keys. Callers that have the
+/// region's ini pass that to [`TerrainFrame::with_object_settings`] instead.
+fn default_jolt_config() -> Result<Config, TerrainError> {
+    Config::parse("[Startup]\nphysics = Jolt\n").map_err(|_| TerrainError::Thread)
+}
+
 fn run(
     map: Option<Heightmap>,
     mut scene: Scene,
@@ -956,11 +968,13 @@ fn run(
     inbound: Receiver<Inbound>,
     wake: Arc<AtomicBool>,
     ready: Sender<()>,
+    config: Config,
 ) {
     let layers = map.as_ref().map(compress::land_layers).unwrap_or_default();
-    // The frame's own period, not `[Startup] FrameTime`. Drop detaches this
-    // thread; the frame does not join it.
-    let Ok(physics) = Physics::for_frame(FRAME_TIME) else {
+    // The frame's own period, not `[Startup] FrameTime`. The region's ini
+    // supplies `[Jolt]` and `[Startup] physics`. Drop detaches this thread;
+    // the frame does not join it.
+    let Ok(physics) = Physics::start(&config, FRAME_TIME) else {
         return;
     };
     if ready.send(()).is_err() {

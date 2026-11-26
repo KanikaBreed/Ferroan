@@ -9,6 +9,7 @@ publish.workspace = true
 
 [dependencies]
 base64 = "0.23.1"
+ferroan-config = { path = "../ferroan-config" }
 ferroan-db = { path = "../ferroan-db" }
 ferroan-diag = { path = "../ferroan-diag" }
 ferroan-llsd = { path = "../ferroan-llsd" }

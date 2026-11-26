@@ -389,6 +389,7 @@ async fn priority_follows_the_stored_roots_physics_actor() {
             None,
             PhysicsScaleLimits::default(),
             collidable,
+            super::super::default_jolt_config().unwrap(),
         )
         .unwrap();
         let feed = frame.new_feed();
@@ -465,6 +466,7 @@ async fn a_stored_zero_scale_is_sent_as_pin8_bytes() {
             clamp,
             physics,
             rows[0].collidable,
+            super::super::default_jolt_config().unwrap(),
         )
         .unwrap();
         let stored = frame.stored_groups();
