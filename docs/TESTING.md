@@ -102,6 +102,10 @@ Release `ferroan-region`, idle `VmRSS` two seconds after initialization complete
 
 Release `open_objects` on stores that also have a shape and an item for every extra prim uses a `LIST SUBQUERY` for the item rows. The median of three runs was: one prim in the loaded region and 1,000 elsewhere, 3.9 ms (1 part, 1 item); 5,000 elsewhere, 11.1 ms; 40,000 elsewhere, 73.5 ms. The seeded region in those same stores loaded 7 parts and 4 items in 3.1 ms, 9.6 ms and 73.3 ms. Those times are not the idle RSS points above.
 
+## Parcel group memberships
+
+`cargo xtask live group-memberships` compares the Rust region reader with the pinned Robust Groups V2 service on SQLite. It records the three original XML replies and checks every request. The [fixture](../fixtures/group-memberships/README.md) covers inactive membership, combined role powers and the owners role.
+
 ## SQLite parcels
 
 `cargo xtask regionstore parcels` compares Pin8 and Rust on the same SQLite file, including access entries and the environment version. The checked-in seed and dump also run in the workspace tests. See the [parcel fixture](../fixtures/regionstore/README.md#sqlite-parcels).
