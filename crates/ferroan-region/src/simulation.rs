@@ -716,6 +716,32 @@ impl SimulationState {
         }
     }
 
+    /// A current generation with no circuit. Hop tests store a child size
+    /// through the live presence without a login.
+    #[cfg(test)]
+    pub(crate) fn seat_generation(&self, agent: Uuid, generation: Uuid, session: Uuid) {
+        let (_, logout_wait) = watch::channel(());
+        let (cancel, _) = oneshot::channel();
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .insert(
+                agent,
+                ActiveSession {
+                    session_id: session,
+                    generation,
+                    root: true,
+                    child: Arc::new(Mutex::new(None)),
+                    departed: Arc::new(AtomicBool::new(false)),
+                    rooted_when_replaced: Arc::new(AtomicBool::new(false)),
+                    cancel: Some(cancel),
+                    logout_done: logout_wait,
+                    slot: ReturnSlot::new(false),
+                    animations: Arc::new(Mutex::new(TransferAnimations::default())),
+                },
+            );
+    }
+
     /// Wait until this agent's admission tasks finish. Tests use it so a
     /// later assertion sees the POST's report.
     #[cfg(test)]

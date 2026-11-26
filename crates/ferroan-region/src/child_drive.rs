@@ -1513,6 +1513,217 @@ mod tests {
         neighbour_server.abort();
     }
 
+    /// A pass whose DELETEs are answered leaves no close staged. Without the
+    /// ack after each DELETE, both stay staged for a later take.
+    #[tokio::test]
+    async fn an_answered_close_is_not_staged() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(8);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let port = neighbour_addr.port();
+        let second = Uuid::from_u128(52);
+        let neighbours = [
+            neighbour_at(&neighbour_uri, 51, port, [256, 256]),
+            VisibleNeighbour::at(
+                RegionEnd {
+                    server_uri: neighbour_uri,
+                    region_id: second,
+                    name: "Neighbour Two".into(),
+                    loc_x: 256_512,
+                    loc_y: 256_000,
+                },
+                [256, 256],
+                "127.0.0.1",
+                port,
+            ),
+        ];
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &neighbours,
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+
+        apply_notice(&state, &config, &frame, &client, &enable_notice(agent), &[]).await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "DELETE");
+        assert_eq!(recorded_rx.recv().await.unwrap(), "DELETE");
+        assert_eq!(state.child_book().staged_outstanding(agent), 0);
+        assert!(
+            state.take_staged_closes(agent).is_empty(),
+            "an answered close was left staged"
+        );
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
+    /// The enable stores the size this pass reported for a child it already
+    /// knows. Removing the size refresh leaves the size from the claim.
+    #[tokio::test]
+    async fn an_enable_stores_a_new_size_for_a_known_child() {
+        let args: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(args["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(args["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let created = http
+            .post(format!("{home_base}/agent/{agent}/"))
+            .header("content-type", "application/json")
+            .body(CREATE_REQUEST)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(created.status(), reqwest::StatusCode::OK);
+        let (recorded_tx, mut recorded_rx) = mpsc::channel(4);
+        let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let neighbour_addr = neighbour_listener.local_addr().unwrap();
+        let neighbour_uri = format!("http://{neighbour_addr}/");
+        let neighbour_server = tokio::spawn(async move {
+            let app = axum::Router::new().fallback(move |request: Request| {
+                let recorded_tx = recorded_tx.clone();
+                async move {
+                    let method = request.method().to_string();
+                    let _ = axum::body::to_bytes(request.into_body(), 1024 * 1024).await;
+                    recorded_tx.send(method).await.unwrap();
+                    (
+                        axum::http::StatusCode::OK,
+                        r#"{"success":true,"reason":""}"#,
+                    )
+                }
+            });
+            axum::serve(neighbour_listener, app).await.unwrap();
+        });
+        let frame = Arc::new(TerrainFrame::start_without_map().unwrap());
+        let client = SimulationClient::new().unwrap();
+        let neighbour_id = Uuid::from_u128(61);
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &[neighbour_at(
+                &neighbour_uri,
+                61,
+                neighbour_addr.port(),
+                [256, 256],
+            )],
+        )
+        .await;
+        state.finish_admissions(agent).await;
+        assert_eq!(recorded_rx.recv().await.unwrap(), "POST");
+        assert_eq!(
+            state.child_book().destination_size(agent, neighbour_id),
+            Some([256, 256])
+        );
+
+        apply_notice(
+            &state,
+            &config,
+            &frame,
+            &client,
+            &enable_notice(agent),
+            &[neighbour_at(
+                &neighbour_uri,
+                61,
+                neighbour_addr.port(),
+                [512, 400],
+            )],
+        )
+        .await;
+        assert_eq!(
+            state.child_book().destination_size(agent, neighbour_id),
+            Some([512, 400])
+        );
+        drop(accepted_rx);
+        home_server.abort();
+        neighbour_server.abort();
+    }
+
     /// Eight admission tasks already running. The next enable stages the
     /// close it decided and does not claim the new neighbour.
     #[tokio::test]

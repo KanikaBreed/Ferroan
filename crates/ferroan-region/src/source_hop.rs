@@ -1044,6 +1044,49 @@ mod tests {
     }
 
     #[test]
+    fn a_hop_to_an_unclaimed_varregion_stores_its_size() {
+        let base = "http://127.0.0.1:9";
+        let region = Uuid::from_u128(9);
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nbind_ip_address=127.0.0.1\nhttp_listener_port=9000\n[GridService]\nGridServerURI={base}\n[PresenceService]\nPresenceServerURI={base}\n[GridUserService]\nGridUserServerURI={base}\n[Map]\nGenerateMaptiles=false\n"
+        ))
+        .unwrap();
+        let regions = ferroan_config::Config::parse(&format!(
+            "[Fixture Region]\nRegionUUID={region}\nLocation=1000,1000\nInternalAddress=127.0.0.1\nInternalPort=9000\nExternalHostName=127.0.0.1\n"
+        ))
+        .unwrap();
+        let config = crate::config::RegionConfig::from_configs(&server, &regions).unwrap();
+        let caps = ferroan_client::CapsRegistry::new(base).unwrap();
+        let (sender, _accepted) = tokio::sync::mpsc::channel(1);
+        let state = crate::simulation::SimulationState::new(&config, caps, sender);
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        let session = Uuid::from_u128(2);
+        state.child_book().attach(agent, generation, session);
+        state.seat_generation(agent, generation, session);
+        let end = RegionEnd {
+            server_uri: format!("{base}/"),
+            region_id: Uuid::from_u128(77),
+            name: "Var".to_string(),
+            loc_x: 768,
+            loc_y: 256,
+        };
+        HopPresence::live(state.clone()).note_child(agent, &end, "seed", [768, 512]);
+        assert_eq!(
+            state.child_book().destination_size(agent, end.region_id),
+            Some([768, 512])
+        );
+
+        let book = Arc::new(crate::children::ChildBook::new());
+        book.attach(agent, generation, session);
+        HopPresence::Seeded(Arc::clone(&book)).note_child(agent, &end, "seed", [768, 512]);
+        assert_eq!(
+            book.destination_size(agent, end.region_id),
+            Some([768, 512])
+        );
+    }
+
+    #[test]
     fn destination_origin_stays_in_view_inside_a_large_region() {
         let mut home = session();
         home.source.loc_x = 0;
