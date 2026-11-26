@@ -694,7 +694,9 @@ fn up_linux(ferroan_assets: bool) -> Result<String, String> {
 
 #[cfg(target_os = "linux")]
 fn run_linux(scenario: &str, basic_physics: bool) -> Result<String, String> {
-    if scenario == "ferrobot" {
+    if ferroan_bot::register::get(scenario)
+        .is_some_and(|row| row.runner == ferroan_bot::register::Runner::Ferrobot)
+    {
         return run_ferrobot(basic_physics);
     }
     if !ferroan_bot::register::runs_standalone(scenario) {

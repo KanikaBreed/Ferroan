@@ -110,8 +110,12 @@ pub enum Compare {
     Chat,
     Teleport,
     Neighbour,
-    /// Ferroan compares the login replies. C# finishes the capture.
+    /// A Ferroan run compares the login replies. A C# run finishes the capture.
+    /// Walk, texture, inventory, assets and caps use this.
     Region,
+    /// A C# run finishes the capture, as [`Compare::Region`] does on C#.
+    /// Build, `all`, child-view, store-handoff, prim-load and the parcel
+    /// overlays use this. Those rows deny the Ferroan region.
     Finish,
 }
 
@@ -168,6 +172,8 @@ pub struct Scenario {
     pub help: &'static str,
     pub in_all: bool,
     pub in_assets: bool,
+    /// Standalone `live run` accepts this name.
+    pub standalone: bool,
     pub login_only: bool,
     pub metrics_always: bool,
     pub patch_materials: bool,
@@ -204,6 +210,7 @@ const fn row(
         help: "",
         in_all: false,
         in_assets: false,
+        standalone: false,
         login_only: false,
         metrics_always: false,
         patch_materials: false,
@@ -226,6 +233,10 @@ impl Scenario {
     }
     const fn in_assets(mut self) -> Self {
         self.in_assets = true;
+        self
+    }
+    const fn standalone(mut self) -> Self {
+        self.standalone = true;
         self
     }
     const fn login_only(mut self) -> Self {
@@ -381,6 +392,7 @@ pub const SCENARIOS: &[Scenario] = &[
         Compare::Login,
     )
     .in_all()
+    .standalone()
     .login_only()
     .login_probe()
     .smoke_logs()
@@ -393,7 +405,8 @@ pub const SCENARIOS: &[Scenario] = &[
         Bot::Walk,
         Compare::Region,
     )
-    .in_all(),
+    .in_all()
+    .standalone(),
     row(
         "chat",
         Flags::Any,
@@ -402,6 +415,7 @@ pub const SCENARIOS: &[Scenario] = &[
         Compare::Chat,
     )
     .in_all()
+    .standalone()
     .settle_second(),
     row(
         "build",
@@ -410,7 +424,8 @@ pub const SCENARIOS: &[Scenario] = &[
         Bot::Build,
         Compare::Finish,
     )
-    .in_all(),
+    .in_all()
+    .standalone(),
     row(
         "teleport",
         Flags::Any,
@@ -418,7 +433,8 @@ pub const SCENARIOS: &[Scenario] = &[
         Bot::Teleport,
         Compare::Teleport,
     )
-    .in_all(),
+    .in_all()
+    .standalone(),
     row(
         "texture",
         Flags::Any,
@@ -428,6 +444,7 @@ pub const SCENARIOS: &[Scenario] = &[
     )
     .in_all()
     .in_assets()
+    .standalone()
     .inventory_probe(),
     row(
         "inventory",
@@ -438,6 +455,7 @@ pub const SCENARIOS: &[Scenario] = &[
     )
     .in_all()
     .in_assets()
+    .standalone()
     .inventory_probe(),
     row(
         "assets",
@@ -447,9 +465,11 @@ pub const SCENARIOS: &[Scenario] = &[
         Compare::Region,
     )
     .inventory_probe()
+    .standalone()
     .help(160, HELP_ASSETS),
     row("all", Flags::Any, Ferroan::Deny, Bot::All, Compare::Finish)
         .sequence(Sequence::Append(&["neighbour"]))
+        .standalone()
         .help(110, HELP_ALL),
     row(
         "caps",
@@ -503,7 +523,8 @@ pub const SCENARIOS: &[Scenario] = &[
         Bot::Uploads,
         Compare::TwoRoots,
     )
-    .settle_second(),
+    .settle_second()
+    .standalone(),
     row(
         "avatars",
         Flags::Any,
@@ -703,11 +724,9 @@ pub fn selection(name: &str) -> Option<&'static [&'static str]> {
     None
 }
 
-/// Standalone `live run` accepts `all`, the seven names, `assets` and `uploads`.
+/// Standalone `live run` accepts the rows marked [`Scenario::standalone`].
 pub fn runs_standalone(name: &str) -> bool {
-    get(name).is_some_and(|row| {
-        row.in_all || row.bot == Bot::All || row.bot == Bot::Assets || row.bot == Bot::Uploads
-    })
+    get(name).is_some_and(|row| row.standalone)
 }
 
 /// Logins the grid harness performs for one `live run` name.
@@ -765,6 +784,8 @@ pub fn ferroan_denied() -> String {
     format!("the Ferroan grid region currently supports {list} scenarios")
 }
 
+/// Frozen wording. The three sentences below keep the grouped parcel form and
+/// the prim-capture parenthetical. A new scenario row leaves them as they are.
 pub fn grid_unknown(scenario: &str) -> String {
     format!(
         "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
