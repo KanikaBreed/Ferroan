@@ -182,6 +182,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live down
        cargo xtask live run object-cross grid --physics basicphysics
        cargo xtask live object-cross-fixtures <capture-dir>
+       cargo xtask live run parcel-timing grid --physics basicphysics
+       cargo xtask live parcel-timing-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
        cargo xtask live run child-view grid --physics basicphysics
