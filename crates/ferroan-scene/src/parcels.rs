@@ -221,6 +221,8 @@ pub struct ParcelMap {
     parcels: Vec<Parcel>,
     /// Shared so a later estate read updates every holder of this map.
     ban: Arc<Mutex<EstateBan>>,
+    /// Empty element for this region plus 8192 bytes. Fixed with the map size.
+    text_limit: u64,
 }
 
 impl ParcelMap {
@@ -261,12 +263,25 @@ impl ParcelMap {
         }
         let width = size[0] as usize / 4;
         let count = width * (size[1] as usize / 4);
+        let cells_y = if width == 0 { 0 } else { count / width };
         Ok(Self {
             width,
             cells: vec![0; count],
             parcels: Vec::new(),
             ban: Arc::new(Mutex::new(EstateBan::fresh(Uuid::nil()))),
+            text_limit: properties::empty_text_limit(width, cells_y),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_description(&mut self, local_id: i32, description: String) {
+        if let Some(parcel) = self
+            .parcels
+            .iter_mut()
+            .find(|parcel| parcel.local_id == local_id)
+        {
+            parcel.description = description;
+        }
     }
 
     /// The stored estate row. `owner` of `None` keeps the owner already stored,
@@ -362,6 +377,21 @@ impl ParcelMap {
             parcel.simwide_area = owned_area[&parcel.owner];
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn limit_hits(id: &str, action: &str) -> u64 {
+    let needle = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"{action}\"}} ");
+    ferroan_diag::metrics()
+        .lines()
+        .find_map(|line| line.strip_prefix(&needle)?.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+pub(crate) fn limits_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// ConvertBytesToLandBitmap clips the input first. A resulting 512 bytes

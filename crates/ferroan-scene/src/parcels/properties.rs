@@ -324,9 +324,18 @@ impl ParcelMap {
         } else {
             0
         };
-        Some(encode(
-            parcel, send, min, max, &bitmap, max_prims, sim_prims,
-        ))
+        let bytes = encode(parcel, send, min, max, &bitmap, max_prims, sim_prims);
+        if bytes.len() as u64 > self.text_limit {
+            ferroan_diag::refuse(
+                PARCEL_TEXT,
+                Kind::Hard,
+                self.text_limit,
+                bytes.len() as u64,
+                "parcel-properties",
+            );
+            return None;
+        }
+        Some(bytes)
     }
 
     fn cell_size(&self) -> (usize, usize) {
@@ -341,7 +350,8 @@ impl ParcelMap {
     /// `last_sequence` is `LandObject.m_lastSeqId`, shared by every client.
     /// Snap with sequence 0 reads it. Any other request stores the sequence
     /// it sends. A scan that selects more than one parcel is capped (D127).
-    /// An element past [`text_limit`](Self::text_limit) is not sent.
+    /// An element past the stored text limit is not sent. Arrival, a walk and
+    /// this request share that check.
     pub fn properties_request(
         &self,
         agent: Uuid,
@@ -393,7 +403,6 @@ impl ParcelMap {
         } else {
             LAND_RESULT_SINGLE
         };
-        let limit = self.text_limit();
         let mut elements = Vec::with_capacity(local_ids.len());
         for local_id in local_ids {
             let sequence_id = sequence_for(last_sequence, local_id, request);
@@ -406,41 +415,9 @@ impl ParcelMap {
             let Some(element) = self.parcel_properties(local_id, &send) else {
                 continue;
             };
-            if element.len() as u64 > limit {
-                ferroan_diag::refuse(
-                    PARCEL_TEXT,
-                    Kind::Hard,
-                    limit,
-                    element.len() as u64,
-                    "parcel-properties",
-                );
-                continue;
-            }
             elements.push(element);
         }
         elements
-    }
-
-    /// Empty strings plus this region's bitmap, then [`TEXT_BYTES`].
-    fn text_limit(&self) -> u64 {
-        let (width, height) = self.cell_size();
-        let bitmap = vec![0u8; width.saturating_mul(height) / 8];
-        let mut parcel = Parcel::estate_land(Uuid::nil(), 0);
-        parcel.name.clear();
-        parcel.media_type.clear();
-        parcel.local_id = 0;
-        parcel.area = 0;
-        parcel.flags = 0;
-        let bytes = encode(
-            &parcel,
-            &ParcelPropertiesSend::notify(),
-            [0.0; 3],
-            [0.0; 3],
-            &bitmap,
-            0,
-            0,
-        );
-        bytes.len() as u64 + TEXT_BYTES
     }
 
     /// Land units, x outer and y inner. The first sight of a local id is kept
@@ -555,6 +532,28 @@ fn trunc_i32(value: f64) -> i32 {
         return 0;
     }
     value as i32
+}
+
+/// Empty strings plus this region's bitmap, then [`TEXT_BYTES`].
+/// The map stores this once, when its size is fixed.
+pub(crate) fn empty_text_limit(cells_x: usize, cells_y: usize) -> u64 {
+    let bitmap = vec![0u8; cells_x.saturating_mul(cells_y) / 8];
+    let mut parcel = Parcel::estate_land(Uuid::nil(), 0);
+    parcel.name.clear();
+    parcel.media_type.clear();
+    parcel.local_id = 0;
+    parcel.area = 0;
+    parcel.flags = 0;
+    let bytes = encode(
+        &parcel,
+        &ParcelPropertiesSend::notify(),
+        [0.0; 3],
+        [0.0; 3],
+        &bitmap,
+        0,
+        0,
+    );
+    bytes.len() as u64 + TEXT_BYTES
 }
 
 fn region_metres(cells_x: usize, cells_y: usize) -> [i32; 2] {
@@ -1672,7 +1671,7 @@ mod tests {
                 .is_empty()
         );
         assert_eq!(hits("parcel.text", "refuse"), texts + 1);
-        let limit = text.text_limit();
+        let limit = text.text_limit;
         assert!(limit > TEXT_BYTES);
         if texts == 0 {
             let rendered = ferroan_diag::render();
@@ -1735,16 +1734,11 @@ mod tests {
     }
 
     fn hits(id: &str, action: &str) -> u64 {
-        let needle = format!("ferroan_limit_hits_total{{limit=\"{id}\",action=\"{action}\"}} ");
-        ferroan_diag::metrics()
-            .lines()
-            .find_map(|line| line.strip_prefix(&needle)?.parse().ok())
-            .unwrap_or(0)
+        super::super::limit_hits(id, action)
     }
 
     fn limits_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|poison| poison.into_inner())
+        super::super::limits_lock()
     }
 
     fn mismatch(got: &[u8], expected: &[u8]) -> String {
