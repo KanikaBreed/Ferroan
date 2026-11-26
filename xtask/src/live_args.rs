@@ -472,8 +472,10 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
     if *scenario == "prim-arrival" && flags.region_ferroan && !grid {
         return Err(ParseFail::Usage);
     }
-    if (matches!(*scenario, "prim-capture" | "object-cross" | "store-handoff")
-        || (*scenario == "prim-arrival" && !flags.region_ferroan))
+    if (matches!(
+        *scenario,
+        "prim-capture" | "child-view" | "object-cross" | "store-handoff"
+    ) || (*scenario == "prim-arrival" && !flags.region_ferroan))
         && (!grid || flags.region_ferroan || !flags.basic_physics)
     {
         return Err(ParseFail::Message(format!(
@@ -759,6 +761,7 @@ mod tests {
             "prim-capture",
             "prim-arrival",
             "object-cross",
+            "child-view",
             "store-handoff",
         ] {
             assert!(parse(&["run", scenario, "grid"]).is_err());

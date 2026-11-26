@@ -74,6 +74,8 @@ use crate::live;
 
 #[path = "avatars_capture.rs"]
 mod avatars_capture;
+#[path = "child_capture.rs"]
+mod child_capture;
 #[path = "grid_capture.rs"]
 mod login_capture;
 #[path = "grid_probe.rs"]
@@ -745,6 +747,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             | "uploads"
             | "avatars"
             | "object-cross"
+            | "child-view"
             | "store-handoff"
             | "prim-capture"
             | "prim-arrival"
@@ -753,7 +756,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, store-handoff, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, store-handoff, parcel-{{empty,multi,lone,legacy}}, prim-arrival, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1065,10 +1068,10 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
-            store: if scenario == "object-cross" {
-                RegionStore::PrimFixture
-            } else {
-                RegionStore::Standard
+            store: match scenario {
+                "child-view" => RegionStore::PrimFixture,
+                "object-cross" => RegionStore::EmptyPrimCapture,
+                _ => RegionStore::Standard,
             },
             parcel_seed: None,
             basic_physics: spec.basic_physics,
@@ -1107,6 +1110,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         runtime
             .block_on(crate::ferrobot::run_with(&harness, &config, companion_udp))
             .map(|lines| BotReport {
+                child: None,
                 lines,
                 // Read the complete proxy evidence after grid.stop drains it.
                 http: Vec::new(),
@@ -1132,6 +1136,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             &format!("http://{ADVERTISED}:{private_proxy}"),
         ))?;
         Ok(BotReport {
+            child: None,
             lines: line,
             http: Vec::new(),
         })
@@ -1264,6 +1269,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if scenario == "object-cross" {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
+    } else if let Some(observation) = report.child {
+        let line = child_capture::finish(&root, &observation)?;
+        Ok(format!("{}\n{line}", report.lines))
     } else if scenario == "prim-capture" {
         let fixture = prim_capture::extract(&root)?;
         Ok(format!("{}\n{fixture}", report.lines))
@@ -1417,6 +1425,7 @@ struct ProxyPaths {
 
 #[cfg(target_os = "linux")]
 struct BotReport {
+    child: Option<ferroan_bot::scenario::child_view::Observation>,
     lines: String,
     http: Vec<ferroan_capture::Record>,
 }
@@ -1610,6 +1619,24 @@ fn run_bot(
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
     let (private_uri, directory, ferroan) = online;
+    if scenario == "child-view" {
+        let evidence = runtime.block_on(async {
+            let observed =
+                ferroan_bot::scenario::child_view::run(&harness, HOME_NAME, NEIGHBOUR_NAME).await?;
+            login_probe::offline(private_uri).await?;
+            login_probe::offline_user(private_uri, live::CHAT_USER).await?;
+            Ok::<_, String>(observed)
+        })?;
+        return Ok(BotReport {
+            lines: format!(
+                "child view: home root walked and logged out; neighbour avatar {}, stored prim {}",
+                evidence.avatar.is_some(),
+                evidence.prim.is_some()
+            ),
+            http: Vec::new(),
+            child: Some(evidence),
+        });
+    }
     let harness_ref = &harness;
     let lines = runtime.block_on(login_probe::run_scenarios(
         scenario,
@@ -1648,6 +1675,7 @@ fn run_bot(
         },
     ))?;
     Ok(BotReport {
+        child: None,
         lines,
         http: harness.http_trace.records(),
     })
@@ -2006,6 +2034,8 @@ fn in_process_user_account(log: &str) -> bool {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RegionStore {
     Standard,
+    // The object-cross destination accepts a transferred prim into an empty scene.
+    EmptyPrimCapture,
     PrimFixture,
     EditPrimFixture,
     Existing,
@@ -2061,12 +2091,29 @@ fn start_region(
         }
     } else {
         prepare_region_cwd(cwd, publish, source)?;
-        if spec.store != RegionStore::Standard && spec.name == HOME_NAME {
+        if matches!(
+            spec.store,
+            RegionStore::PrimFixture | RegionStore::EditPrimFixture
+        ) {
             fs::copy(
                 crate::repo_root().join("fixtures/prim-updates/scene.db"),
                 cwd.join("OpenSim.db"),
             )
             .map_err(|error| format!("install prim capture store: {error}"))?;
+            if spec.uuid == NEIGHBOUR_UUID {
+                // Put the existing Q65a linkset within sight of the west border.
+                let sql = format!(
+                    "UPDATE prims SET RegionUUID='{NEIGHBOUR_UUID}', GroupPositionX=GroupPositionX-110"
+                );
+                let status = std::process::Command::new("sqlite3")
+                    .arg(cwd.join("OpenSim.db"))
+                    .arg(sql)
+                    .status()
+                    .map_err(|e| e.to_string())?;
+                if !status.success() {
+                    return Err("could not place the capture prims on the neighbour".into());
+                }
+            }
         } else if let Some(seed) = spec.parcel_seed {
             seed.install(cwd)?;
         } else if spec.ferroan {
