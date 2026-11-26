@@ -81,7 +81,10 @@ use crate::throttle::{
     CircuitThrottle, ClientThrottle, LAND, RESEND, SceneThrottle, TASK, ThrottleClock,
 };
 use crate::{ArrivalConfig, HandshakeConfig};
-use ferroan_diag::{self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGINS, UDP_UNACKED};
+use ferroan_diag::{
+    self, Kind, UDP_CIRCUIT_INBOX, UDP_DATAGRAM, UDP_PENDING_LOGIN_BURST, UDP_PENDING_LOGINS,
+    UDP_UNACKED,
+};
 use ferroan_protocol::msgs::{
     AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
     CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
@@ -1928,6 +1931,10 @@ fn uuid_at(body: &[u8], offset: usize) -> Option<Uuid> {
 /// Remembered UseCircuitCode datagrams for logins that have not started serving.
 /// One slot per source address for 40 ordinary roots and the 21 staff bypass places.
 pub const PENDING_LOGINS: usize = 61;
+/// Datagrams kept for one pending login. Pin8's queue is unbounded.
+const PENDING_BURST_CAP: usize = 32;
+/// `LLUDPServer.PacketReceived` stores the pending queue with a 60 second expiry.
+const PENDING_LOGIN_TTL: Duration = Duration::from_secs(60);
 const INBOX_CAP: usize = 128;
 
 struct Datagram {
@@ -1941,6 +1948,8 @@ struct Datagram {
 /// `m_pendingCache` and replays once the client exists.
 struct PendingLogin {
     from: SocketAddr,
+    /// When this `UseCircuitCode` was stored. A resend does not refresh it.
+    seen: Instant,
     packets: VecDeque<Vec<u8>>,
 }
 
@@ -2105,12 +2114,36 @@ fn datagram_matches(bytes: &[u8], expect: &CircuitExpect) -> bool {
     use_circuit(bytes).is_some_and(|packet| expect_matches(&packet, expect))
 }
 
+/// Same circuit code, agent and session. A resend may carry a new sequence.
+fn login_matches(packet: &IncomingPacket, stored: &[u8]) -> bool {
+    let Ok(next) = packet.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    let Some(stored) = use_circuit(stored) else {
+        return false;
+    };
+    let Ok(first) = stored.decode::<UseCircuitCode>() else {
+        return false;
+    };
+    next.circuit_code.code == first.circuit_code.code
+        && next.circuit_code.id == first.circuit_code.id
+        && next.circuit_code.session_id == first.circuit_code.session_id
+}
+
+fn expire_pending(pending: &mut VecDeque<PendingLogin>, now: Instant) {
+    pending.retain(|login| now.saturating_duration_since(login.seen) < PENDING_LOGIN_TTL);
+}
+
 /// Route one datagram. Returns a source and sequence to ACK when the datagram
 /// is kept for a serve that has not started. A matching waiter ACKs it itself.
 ///
-/// While that login is waiting, Pin8 enqueues every later packet from the same
-/// endpoint (`LLUDPServer.PacketReceived`) and replays the queue after the
-/// client exists. A resent `UseCircuitCode` is acknowledged and not queued again.
+/// An unbound serve is matched before any pending login from the same
+/// endpoint, so a new `UseCircuitCode` is not swallowed by one nobody claimed.
+/// While a login is waiting, later packets from that endpoint stay in its
+/// burst. A `UseCircuitCode` with the same code, agent and session is
+/// acknowledged and not queued again. Any other `UseCircuitCode` replaces the
+/// entry and drops the old burst. The entry expires after 60 seconds, and a
+/// serve that accepts a different code drops it as well.
 fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(SocketAddr, u32)> {
     let mut fan = shared
         .fan
@@ -2133,41 +2166,59 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
         ferroan_diag::log_malformed("udp", &bytes, "datagram exceeds udp.datagram");
         return None;
     }
-    if let Some(pos) = fan.pending.iter().position(|queued| queued.from == from) {
-        let Some(packet) = use_circuit(&bytes) else {
-            if let Some(login) = fan.pending.get_mut(pos) {
-                if login.packets.len() >= INBOX_CAP {
-                    ferroan_diag::refuse(
-                        UDP_CIRCUIT_INBOX,
-                        Kind::Hard,
-                        INBOX_CAP as u64,
-                        (login.packets.len() + 1) as u64,
-                        "udp",
-                    );
-                    return None;
-                }
-                login.packets.push_back(bytes);
-            }
-            return None;
-        };
-        // A live resend must not be the oldest login when the cache is full.
-        if let Some(login) = fan.pending.remove(pos) {
-            fan.pending.push_back(login);
-        }
-        return Some((from, packet.sequence));
-    }
-    let packet = use_circuit(&bytes)?;
-    if let Some(pos) = fan
-        .unbound
-        .iter()
-        .position(|waiter| expect_matches(&packet, &waiter.expect))
-        && pos < fan.unbound.len()
+    let now = Instant::now();
+    expire_pending(&mut fan.pending, now);
+    if let Some(packet) = use_circuit(&bytes)
+        && let Some(pos) = fan
+            .unbound
+            .iter()
+            .position(|waiter| expect_matches(&packet, &waiter.expect))
         && let Some(waiter) = fan.unbound.remove(pos)
     {
+        // The new code won. Drop the burst HandleUseCircuitCode would remove
+        // when the earlier login is no longer the one being accepted.
+        fan.pending.retain(|login| login.from != from);
         fan.bound.insert(from, waiter.id);
         waiter.inbox.push(Datagram { from, bytes });
         return None;
     }
+    if let Some(pos) = fan.pending.iter().position(|queued| queued.from == from) {
+        if let Some(packet) = use_circuit(&bytes) {
+            let same = fan
+                .pending
+                .get(pos)
+                .and_then(|login| login.packets.front())
+                .is_some_and(|stored| login_matches(&packet, stored));
+            if same {
+                // A live resend must not be the oldest login when the cache is full.
+                if let Some(login) = fan.pending.remove(pos) {
+                    fan.pending.push_back(login);
+                }
+                return Some((from, packet.sequence));
+            }
+            fan.pending.remove(pos);
+            fan.pending.push_back(PendingLogin {
+                from,
+                seen: now,
+                packets: VecDeque::from([bytes]),
+            });
+            return Some((from, packet.sequence));
+        }
+        let login = fan.pending.get_mut(pos)?;
+        if login.packets.len() >= PENDING_BURST_CAP {
+            ferroan_diag::refuse(
+                UDP_PENDING_LOGIN_BURST,
+                Kind::Hard,
+                PENDING_BURST_CAP as u64,
+                (login.packets.len() + 1) as u64,
+                "udp",
+            );
+            return None;
+        }
+        login.packets.push_back(bytes);
+        return None;
+    }
+    let packet = use_circuit(&bytes)?;
     if fan.pending.len() >= PENDING_LOGINS {
         ferroan_diag::drop_bound(
             UDP_PENDING_LOGINS,
@@ -2180,6 +2231,7 @@ fn route(shared: &SharedUdp, from: SocketAddr, bytes: Vec<u8>) -> Option<(Socket
     }
     fan.pending.push_back(PendingLogin {
         from,
+        seen: now,
         packets: VecDeque::from([bytes]),
     });
     Some((from, packet.sequence))
@@ -2406,6 +2458,7 @@ impl CircuitServer {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         fan.senders.insert(id, Arc::clone(&inbox));
+        expire_pending(&mut fan.pending, Instant::now());
         if let Some(pos) = fan.pending.iter().position(|queued| {
             queued
                 .packets
@@ -2806,7 +2859,10 @@ async fn serve_socket_reporting(
         };
         // Pin8 replays the pending-login queue before the send loop runs again,
         // so AgentThrottle is applied before CompleteMovement's land pass drains.
-        // Keep handling datagrams that are already buffered, then maintain.
+        // One pass stops after a full inbox. The outer loop then runs
+        // maintenance and can observe CircuitStop, instead of a busy endpoint
+        // holding pings, resends, acks and the land and task drains.
+        let mut drain_budget = INBOX_CAP;
         loop {
             if len > MAX_DATAGRAM {
                 ferroan_diag::refuse(
@@ -2837,6 +2893,10 @@ async fn serve_socket_reporting(
                 if state.handle(sock, from, &expect, &packet, len).await? {
                     return Ok(());
                 }
+            }
+            drain_budget = drain_budget.saturating_sub(1);
+            if drain_budget == 0 {
+                break;
             }
             match sock.try_recv_from(&mut buf)? {
                 Some(next) => {
