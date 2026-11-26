@@ -20,6 +20,7 @@ static class Program
     static readonly UUID Agent = new("00000000-0000-4000-8000-000000000001");
     static readonly UUID Owner = new("00000000-0000-4000-8000-000000000002");
     static readonly UUID Group = new("00000000-0000-4000-8000-000000000003");
+    static readonly UUID OtherGroup = new("00000000-0000-4000-8000-000000000005");
     static readonly UUID LandOwner = new("00000000-0000-4000-8000-000000000004");
     static readonly Vector3 Position = new(32, 40, 22);
 
@@ -61,6 +62,8 @@ static class Program
         public bool NilOwner { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public bool NilGroup { get; init; }
+        [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
+        public bool MemberOfOtherGroup { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
         public int? CreationDate { get; init; }
         [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingDefault)]
@@ -163,6 +166,12 @@ static class Program
         new("bypass-missing-object") { Settings = new(serverside_object_permissions: false), Actions = new(MissingObject: true) },
         new("bypass-deleted-presence") { Settings = new(serverside_object_permissions: false), Actions = new(DeletedPresence: true) },
         new("bypass-forced-denial", OwnsObject: true) { Settings = new(serverside_object_permissions: false), Actions = new(ForceDeny: true) },
+        new("bypass-own-attachment", OwnsObject: true, Attachment: true)
+            { Settings = new(serverside_object_permissions: false) },
+        new("bypass-denied-deleted-object", OwnsObject: true)
+            { Settings = new(serverside_object_permissions: false), Actions = new(ForceDeny: true, DeletedObject: true) },
+        new("member-of-unrelated-group", Member: true, GroupMask: Mask.Modify | Mask.Move)
+            { MemberOfOtherGroup = true },
         new("unregistered-handler-missing-object") { Actions = new(NoHandler: true, MissingObject: true) },
         new("unregistered-handler-missing-presence") { Actions = new(NoHandler: true, MissingPresence: true) },
     ];
@@ -252,6 +261,7 @@ static class Program
     static object Observe(Case c)
     {
         UUID objectGroup = c.NilGroup ? UUID.Zero : Group;
+        UUID membershipGroup = c.MemberOfOtherGroup ? OtherGroup : objectGroup;
         UUID objectOwner = c.NilOwner ? UUID.Zero : c.OwnsObject ? Agent : c.Deeded ? objectGroup : Owner;
         var probe = c.Actions ?? new ActionProbe();
         UUID objectGrantee = UUID.Zero;
@@ -263,7 +273,7 @@ static class Program
         scene.RegisterModuleInterface<IUserAccountService>(InputProxy.For<IUserAccountService>((m, a) =>
             m == "GetUserAccount" && (UUID)a[1] == Agent ? new UserAccount { UserLevel = c.UserLevel } : throw Unexpected(m)));
         scene.RegisterModuleInterface<IGroupsModule>(InputProxy.For<IGroupsModule>((m, a) =>
-            m == "GetMembershipData" ? ((UUID)a[0] == objectGroup && (UUID)a[1] == Agent && (probe.ServiceMember ?? c.Member)
+            m == "GetMembershipData" ? ((UUID)a[0] == membershipGroup && (UUID)a[1] == Agent && (probe.ServiceMember ?? c.Member)
                 ? new GroupMembershipData { GroupPowers = (ulong)c.Powers } : null) : throw Unexpected(m)));
         bool GrantedTo(UUID grantee) => (grantee == Agent && c.FriendCanModify)
             || (!objectGrantee.IsZero() && grantee == objectGrantee);
@@ -290,8 +300,8 @@ static class Program
         var client = InputProxy.For<IClientAPI>((m, a) => m switch
         {
             "get_AgentId" => Agent, "get_SceneAgent" => presence,
-            "IsGroupMember" => (UUID)a[0] == objectGroup && c.Member,
-            "GetGroupPowers" => (UUID)a[0] == objectGroup && c.Member ? (ulong)c.Powers : 0ul,
+            "IsGroupMember" => (UUID)a[0] == membershipGroup && c.Member,
+            "GetGroupPowers" => (UUID)a[0] == membershipGroup && c.Member ? (ulong)c.Powers : 0ul,
             "get_FirstName" => "Fixture", "get_LastName" => "User",
             "get_StartPos" => Position, "get_StartFar" => 128f,
             "RefreshGroupMembership" => null,

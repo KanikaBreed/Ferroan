@@ -103,7 +103,10 @@ pub enum ObjectAction<'a> {
 /// membership cache. The friendship lookup takes (grantee, owner), including the
 /// object UUID in the three Pin8 TB96 paths.
 pub struct ActionPermissions<'a> {
-    pub viewer: ViewerPermissions,
+    pub agent: Uuid,
+    pub is_god: bool,
+    pub mode: PermissionMode,
+    pub membership: Option<(Uuid, u64)>,
     pub presence: PresenceState,
     pub administrator: bool,
     /// The permissions console's forced result in bypass mode (initially true).
@@ -115,16 +118,13 @@ pub struct ActionPermissions<'a> {
 impl ActionPermissions<'_> {
     /// Rez at the requested position. The land channel can return no parcel.
     pub fn can_rez(&self, parcel: Option<&Parcel>) -> bool {
-        match self.viewer.mode {
+        match self.mode {
             PermissionMode::NoModule => return true,
             PermissionMode::Bypass => return self.bypass_value,
             PermissionMode::Enforce => {}
         }
         let Some(parcel) = parcel else { return false };
-        if parcel.owner == self.viewer.agent
-            || parcel.flags & CREATE_OBJECTS != 0
-            || self.administrator
-        {
+        if parcel.owner == self.agent || parcel.flags & CREATE_OBJECTS != 0 || self.administrator {
             return true;
         }
         if parcel.group.is_nil() {
@@ -141,9 +141,18 @@ impl ActionPermissions<'_> {
     /// permission handler is installed.
     pub fn can_select(&self, target: Option<&ActionTarget<'_>>) -> bool {
         target.is_some_and(|obj| {
-            (self.viewer.mode == PermissionMode::NoModule
-                || self.presence != PresenceState::Missing)
-                && PartPermissions::new(obj.part, obj.masks, obj.attachment).selectable(self.viewer)
+            (self.mode == PermissionMode::NoModule || self.presence != PresenceState::Missing)
+                && PartPermissions::new(obj.part, obj.masks, obj.attachment).selectable(
+                    ViewerPermissions {
+                        agent: self.agent,
+                        is_god: self.is_god,
+                        mode: self.mode,
+                        membership: self.membership,
+                        friend_grant_from: self
+                            .has_friend_grant(self.agent, obj.part.owner_id)
+                            .then_some(obj.part.owner_id),
+                    },
+                )
         })
     }
 
@@ -151,11 +160,11 @@ impl ActionPermissions<'_> {
     /// run at different points for UUID and live-client calls.
     pub fn allows(&self, action: ObjectAction<'_>, target: Option<&ActionTarget<'_>>) -> bool {
         use ObjectAction::*;
-        if self.viewer.mode == PermissionMode::NoModule {
+        if self.mode == PermissionMode::NoModule {
             return true;
         }
         let by_id = matches!(action, EditById | DeleteById | Link | Delink);
-        let bypass = self.viewer.mode == PermissionMode::Bypass;
+        let bypass = self.mode == PermissionMode::Bypass;
         if by_id && bypass {
             return self.bypass_value;
         }
@@ -168,14 +177,14 @@ impl ActionPermissions<'_> {
                 return bypass && self.bypass_value && !matches!(action, Move | Duplicate(_));
             }
         }
-        let own = obj.root.owner_id == self.viewer.agent;
+        let own = obj.root.owner_id == self.agent;
         if bypass {
             return self.bypass_value && !(matches!(action, Move) && obj.attachment && !own);
         }
         let privileged = if by_id {
             self.administrator
         } else {
-            self.viewer.is_god
+            self.is_god
         };
         let mask = || self.object_mask(obj, by_id, privileged, !matches!(action, Duplicate(_)));
         match action {
@@ -192,7 +201,7 @@ impl ActionPermissions<'_> {
                 // TB96: the UUID overload asks about the addressed part. The two
                 // presence overloads ask about the linkset root, even on a child.
                 let grantee = if by_id { obj.part.uuid } else { obj.root.uuid };
-                (!grantee.is_nil() && (self.friend_grant)(grantee, obj.root.owner_id))
+                self.has_friend_grant(grantee, obj.root.owner_id)
                     || self
                         .member_powers(obj.root.group_id, by_id)
                         .is_some_and(|p| {
@@ -207,14 +216,17 @@ impl ActionPermissions<'_> {
         }
     }
 
+    fn has_friend_grant(&self, grantee: Uuid, owner: Uuid) -> bool {
+        !grantee.is_nil() && (self.friend_grant)(grantee, owner)
+    }
+
     fn member_powers(&self, group: Uuid, by_id: bool) -> Option<u64> {
         if group.is_nil() {
             None
         } else if by_id {
             (self.service_group_powers)(group)
         } else {
-            self.viewer
-                .membership
+            self.membership
                 .filter(|(id, _)| *id == group)
                 .map(|(_, powers)| powers)
         }
@@ -227,7 +239,7 @@ impl ActionPermissions<'_> {
         privileged: bool,
         honor_lock: bool,
     ) -> u32 {
-        let own = obj.root.owner_id == self.viewer.agent;
+        let own = obj.root.owner_id == self.agent;
         let mut mask = if privileged {
             PERM_ALL_EFFECTIVE
         } else if own {
@@ -242,10 +254,7 @@ impl ActionPermissions<'_> {
             } else {
                 owner
             };
-            if !deeded
-                && !self.viewer.agent.is_nil()
-                && (self.friend_grant)(self.viewer.agent, obj.root.owner_id)
-            {
+            if !deeded && self.has_friend_grant(self.agent, obj.root.owner_id) {
                 transferable_owner
             } else {
                 match self.member_powers(obj.root.group_id, by_id) {

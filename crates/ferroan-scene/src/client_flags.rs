@@ -290,6 +290,8 @@ mod tests {
         owns_object: bool,
         deeded: bool,
         member: bool,
+        #[serde(default)]
+        member_of_other_group: bool,
         powers: u64,
         owner_mask: u32,
         group_mask: u32,
@@ -314,6 +316,16 @@ mod tests {
         nil_group: bool,
         creation_date: Option<i32>,
         child: Option<ChildPart>,
+    }
+
+    impl Input {
+        fn membership_group(&self, object_group: Uuid) -> Uuid {
+            if self.member_of_other_group {
+                Uuid::from_u128(6)
+            } else {
+                object_group
+            }
+        }
     }
 
     #[derive(Deserialize)]
@@ -415,7 +427,7 @@ mod tests {
         let fixture: Fixture =
             serde_json::from_str(include_str!("../../../fixtures/permissions/objects.json"))
                 .unwrap();
-        assert_eq!(fixture.cases.len(), 80);
+        assert_eq!(fixture.cases.len(), 83);
         let template = part_with_item();
         let (agent, owner, group) = (Uuid::from_u128(1), Uuid::from_u128(2), Uuid::from_u128(3));
         for case in &fixture.cases {
@@ -474,7 +486,9 @@ mod tests {
                 } else {
                     PermissionMode::Bypass
                 },
-                membership: input.member.then_some((root.group_id, input.powers)),
+                membership: input
+                    .member
+                    .then_some((input.membership_group(root.group_id), input.powers)),
                 friend_grant_from: input.friend_can_modify.then_some(root.owner_id),
             };
             assert_eq!(viewer.is_god, expected.is_god, "{name}: god state");

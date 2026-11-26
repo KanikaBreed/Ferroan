@@ -65,13 +65,17 @@ fn twelve_object_decisions_match_pin8_case_by_case() {
             PresenceState::Active
         };
         let permissions = ActionPermissions {
-            viewer,
+            agent: viewer.agent,
+            is_god: viewer.is_god,
+            mode: viewer.mode,
+            membership: viewer.membership,
             presence,
             administrator,
             bypass_value: !probe.force_deny,
             service_group_powers: &|group| {
-                (group == target.root.group_id && probe.service_member.unwrap_or(input.member))
-                    .then_some(input.powers)
+                (group == input.membership_group(target.root.group_id)
+                    && probe.service_member.unwrap_or(input.member))
+                .then_some(input.powers)
             },
             friend_grant: &|grantee, owner| {
                 owner == target.root.owner_id
