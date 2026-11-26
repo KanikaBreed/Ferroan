@@ -179,7 +179,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q64 | P2.7c: the `Can*` checks for rez, edit, move, delete, take, link and copy | READY after Q63 |
 | Q65 | P2.5a: prim `ObjectUpdate`, the C#-to-Ferroan store swap, the 500-prim load | BLOCKED (split into Q65a–Q65d) |
 | Q65a | P2.5a1: capture full prim updates from a reopened Pin8 SQLite store | DONE (this PR) |
-| Q65b | P2.5a2: encode full prim update blocks against the capture | READY after Q65a |
+| Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | READY after Q65b and Q46c |
 | Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |

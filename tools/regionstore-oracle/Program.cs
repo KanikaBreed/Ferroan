@@ -206,6 +206,60 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
     tree.State = 4;
     tree.SetScale(2);
     var vegetation = new SceneObjectGroup(Part(3, "tree", tree, new Vector3(134, 128, 40), Vector3.Zero));
+    SceneObjectGroup RotatedVegetation(int n, PCode code)
+    {
+        var shape = PrimitiveBaseShape.Default;
+        shape.PCode = (byte)code;
+        shape.State = 3;
+        var part = Part(n, code.ToString(), shape, new Vector3(132 + n, 128, 40), Vector3.Zero);
+        part.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitX, 0.75f);
+        return new SceneObjectGroup(part);
+    }
+    var effects = PrimitiveBaseShape.Default;
+    effects.PathTwist = -19;
+    effects.PathTwistBegin = 7;
+    effects.PathRadiusOffset = -11;
+    effects.PathTaperX = -13;
+    effects.PathTaperY = -17;
+    effects.PathSkew = -23;
+    effects.FlexiEntry = true;
+    effects.FlexiSoftness = 2;
+    effects.FlexiTension = 2.5f;
+    effects.FlexiDrag = 1.5f;
+    effects.FlexiGravity = -3;
+    effects.FlexiWind = 0.5f;
+    effects.FlexiForceX = 0.75f;
+    effects.LightEntry = true;
+    effects.LightColorR = 0.25f;
+    effects.LightColorG = 0.5f;
+    effects.LightColorB = 0.75f;
+    effects.LightIntensity = 0.6f;
+    effects.LightRadius = 8;
+    effects.LightFalloff = 0.5f;
+    effects.LightCutoff = 1.25f;
+    effects.ProjectionEntry = true;
+    effects.ProjectionTextureUUID = Id(27);
+    effects.ProjectionFOV = 1.5f;
+    effects.ProjectionFocus = -0.25f;
+    effects.ProjectionAmbiance = 0.5f;
+    effects.ReflectionProbe = new Primitive.ReflectionProbe { Ambiance = 0.75f, ClipDistance = 3.5f, Flags = 1 };
+    var emitter = Part(6, "particle emitter", effects, new Vector3(138, 128, 40), Vector3.Zero);
+    emitter.RotationOffset = Quaternion.CreateFromAxisAngle(Vector3.UnitY, -0.75f);
+    emitter.Material = (byte)OpenMetaverse.Material.Glass;
+    emitter.ClickAction = (byte)OpenMetaverse.ClickAction.Sit;
+    emitter.Text = "Lumière 雪";
+    emitter.Color = 0xff4080bb;
+    emitter.ParticleSystem = new Primitive.ParticleSystem { BurstPartCount = 5, PartMaxAge = 4, Texture = Id(28) }.GetBytes();
+    var speaker = Part(7, "looping sound", PrimitiveBaseShape.Default, new Vector3(139, 128, 40), Vector3.Zero);
+    speaker.Sound = Id(29);
+    speaker.SoundFlags = 1;
+    speaker.SoundGain = 0.375;
+
+    var animatedMesh = PrimitiveBaseShape.CreateMesh(1, Id(30));
+    animatedMesh.SetScale(0.5f);
+    animatedMesh.AnimeshEnabled = true;
+    var animated = Part(8, "extended mesh flags", animatedMesh, new Vector3(140, 128, 40), Vector3.Zero);
+
     string connection = "Data Source=" + Path.GetFullPath(path) + ";Version=3;";
     var store = new SQLiteSimulationData();
     try
@@ -213,11 +267,28 @@ static void SeedPrimUpdates(string path, UUID region, UUID owner)
         store.Initialise(connection);
         store.StoreObject(group, region);
         store.StoreObject(vegetation, region);
+        store.StoreObject(RotatedVegetation(4, PCode.Grass), region);
+        store.StoreObject(RotatedVegetation(5, PCode.NewTree), region);
+        store.StoreObject(new SceneObjectGroup(emitter), region);
+        store.StoreObject(new SceneObjectGroup(speaker), region);
+        store.StoreObject(new SceneObjectGroup(animated), region);
     }
     finally
     {
         store.Dispose();
     }
+    // Exercise the restore path before the Text and MediaUrl setters cut to
+    // 254 UTF-8 bytes and Scene.LoadPrimsFromStorage clears Scripted on the root.
+    using var db = new SQLiteConnection(connection);
+    db.Open();
+    using var update = db.CreateCommand();
+    update.CommandText = "UPDATE prims SET Text=@text, MediaURL=@url, ObjectFlags=ObjectFlags | @scripted WHERE UUID=@id";
+    update.Parameters.AddWithValue("@text", new string('é', 126) + "雪");
+    update.Parameters.AddWithValue("@url", "https://example.invalid/".PadRight(250, 'a') + "🌐雪");
+    update.Parameters.AddWithValue("@scripted", (int)PrimFlags.Scripted);
+    update.Parameters.AddWithValue("@id", speaker.UUID.ToString());
+    if (update.ExecuteNonQuery() != 1)
+        throw new InvalidDataException("missing sound prim in capture seed");
 }
 
 static void Seed(string path)

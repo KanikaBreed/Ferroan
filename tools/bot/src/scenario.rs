@@ -29,6 +29,9 @@ const STEP: Duration = Duration::from_millis(100);
 const BODY_LIMIT: usize = 8 * 1024 * 1024;
 const UPLOAD_NAME: &str = "Ferroan Harness Texture";
 
+/// Number of parts in the persisted Pin8 prim-update capture scene.
+pub const PRIM_CAPTURE_COUNT: usize = 8;
+
 /// Called with the account's principal before [`login::login`].
 ///
 /// The harness installs this. A nil id is refused by the caller, and the hook
@@ -159,10 +162,9 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
         let logout = leave(harness, &mut session, &harness.owner).await;
         result?;
         logout?;
-        return Ok(
-            "prim-capture: viewer received three distinct full prim updates\nlive: run passed"
-                .into(),
-        );
+        return Ok(format!(
+            "prim-capture: viewer received {PRIM_CAPTURE_COUNT} distinct full prim updates\nlive: run passed"
+        ));
     }
     if name == "avatars" {
         let line = avatars_scenario(&http, harness).await?;
@@ -205,7 +207,7 @@ async fn run_traced(name: &str, harness: &Harness) -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
-/// The fixture contains one linkset of two prims and one tree.
+/// Wait for the full set of fixture parts, including the linked child.
 async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
     let mut ids = std::collections::BTreeSet::new();
     let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -222,19 +224,19 @@ async fn wait_for_stored_prims(session: &mut Session) -> Result<(), String> {
                 for block in update.object_data {
                     if block.p_code != 47 {
                         ids.insert(block.full_id);
-                        if ids.len() > 3 {
-                            return Err("unexpected fourth stored prim".into());
+                        if ids.len() > PRIM_CAPTURE_COUNT {
+                            return Err("unexpected extra stored prim".into());
                         }
                     }
                 }
             }
         }
-        if ids.len() == 3 {
+        if ids.len() == PRIM_CAPTURE_COUNT {
             return Ok(());
         }
     }
     Err(format!(
-        "expected three stored prims, received {}",
+        "expected {PRIM_CAPTURE_COUNT} stored prims, received {}",
         ids.len()
     ))
 }
