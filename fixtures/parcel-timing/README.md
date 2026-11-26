@@ -1,6 +1,6 @@
 # Parcel overlay arrival on the Land throttle
 
-Two fresh viewer circuits logged in to the same Pin8 region with the [Q60b multi-parcel store](../parcel-overlay/README.md). Only the requested Land rate varied. All times below are milliseconds since the first of the viewer's UseCircuitCode and seed request reached the simulator. In this recording both circuits began with UseCircuitCode.
+Two fresh viewer circuits logged in to the same Pin8 region with the [Q60b multi-parcel store](../parcel-overlay/README.md). Only the requested Land rate varied between the two throttle groups. The owner logged in first. All times below are milliseconds since the first of the viewer's UseCircuitCode and seed request reached the simulator. The owner's UseCircuitCode and seed request were recorded in the same millisecond on two different clocks, so their order is unresolved.
 
 | Viewer | Land requested (bit/s) | Parcel sequences 0, 1, 2, 3 | SendInitialData | Land terrain datagrams |
 | --- | --- | --- | ---: | ---: |

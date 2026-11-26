@@ -16,7 +16,7 @@ const OWNERS: [(&str, &str); 2] = [
 ];
 const LIMIT: u64 = 64 * 1024 * 1024;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 struct Event {
     ms: u64,
     name: String,
@@ -466,5 +466,51 @@ mod tests {
         assert!(passes.note(1, false, 0, &[0], 10).is_err());
         assert!(passes.note(1, true, 0, &[1], 10).is_err());
         assert!(passes.note(9, true, 0, &[0], 10).is_err());
+        assert!(passes.note(1, true, 1, &[0], 10).is_err());
+        assert!(passes.note(9, false, 1, &[1], 10).is_err());
+
+        let fixture = crate::repo_root().join("fixtures/parcel-timing");
+        let mut events: Vec<Event> =
+            serde_json::from_slice(&fs::read(fixture.join("owner.json")).unwrap()).unwrap();
+        let mut land = capture(&fixture.join("owner.cap")).unwrap();
+        let logout = events
+            .iter()
+            .position(|e| e.name == "LogoutRequest")
+            .unwrap();
+        let ms = events[logout].ms - 1;
+        let mut seq = events.iter().filter_map(|e| e.seq).max().unwrap();
+        let mut markers = Vec::new();
+        let mut datagrams = Vec::new();
+        let land_events = events
+            .iter()
+            .filter(|e| matches!(e.name.as_str(), "ParcelOverlay" | "LayerData"));
+        for (event, record) in land_events.zip(&land) {
+            if event.name == "ParcelOverlay" {
+                // Give each captured chunk a fresh LLUDP sequence for the second pass.
+                seq += 1;
+                let mut marker = event.clone();
+                marker.ms = ms;
+                marker.seq = Some(seq);
+                markers.push(marker);
+                let mut datagram = record.clone();
+                datagram.time_ms = ms;
+                datagram.bytes[1..5].copy_from_slice(&seq.to_be_bytes());
+                datagrams.push(datagram);
+            }
+        }
+        assert_eq!(markers.len(), 4);
+        events.splice(logout..logout, markers);
+        land.extend(datagrams);
+
+        let dir = std::env::temp_dir().join(format!("parcel-timing-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&dir).unwrap();
+        fs::write(dir.join("owner.json"), serde_json::to_vec(&events).unwrap()).unwrap();
+        fs::write(dir.join("owner.cap"), write_capture(&land).unwrap()).unwrap();
+        let result = viewer(&dir, "owner");
+        let _ = fs::remove_dir_all(dir);
+        assert_eq!(
+            result.err().as_deref(),
+            Some("owner: expected terrain and exactly one four-chunk overlay through logout")
+        );
     }
 }
