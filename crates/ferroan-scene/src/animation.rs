@@ -54,7 +54,7 @@
 //   Source/OpenSim.Region.Framework/Scenes/ScenePresence.cs (CopyTo, CopyFrom,
 //     RegionHeartbeatEnd)
 //   Source/OpenSim.Region.ClientStack.LindenUDP/LLClientView.cs
-//     (NextAnimationSequenceNumber)
+//     (NextAnimationSequenceNumber, HandleAgentAnimation)
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Movement animation ids from
 //   OpenMetaverse/Animations.cs
@@ -79,8 +79,10 @@
 //! heartbeat for a root that is not sitting (`RegionHeartbeatEnd`,
 //! `ScenePresence.cs` lines 1318–1342). A new state sets the default
 //! animation with the next sequence number and the agent as its object,
-//! which is when C# sends the animation pack ([`Animator::take_pack_due`];
-//! the packet is P2.3b2). The movement overrides that scripts set
+//! which is when C# sends the animation pack ([`Animator::take_pack_due`]);
+//! the frame then queues `AvatarAnimation` for every viewer
+//! ([`crate::avatars`]). A viewer's `AgentAnimation` starts and stops the
+//! other animations ([`Animator::viewer_change`]). The movement overrides that scripts set
 //! (`MovementAnimationOverrides`) are empty: no script runs yet. Nothing
 //! puts the presence in transit or sits it on an object, so those branches
 //! are not here.
@@ -596,6 +598,27 @@ impl Animator {
     /// Whether an animation pack is owed since the last call, and clears it.
     pub fn take_pack_due(&mut self) -> bool {
         std::mem::take(&mut self.pack_due)
+    }
+
+    /// `HandleAgentAnimation`: `avnChangeAnim` for each block, then the pack
+    /// once (`avnChangeAnim(UUID.Zero, false, true)`), whether or not the set
+    /// changed. A start adds the animation with the next sequence number and
+    /// no object; the number is taken even when the set already plays it or
+    /// is full. A stop removes it, and stopping the default plays `STAND`
+    /// with sequence 1. A nil id changes nothing. The caller refuses a child.
+    pub fn viewer_change(&mut self, changes: &[(Uuid, bool)]) {
+        for &(animation, start) in changes {
+            if animation.is_nil() {
+                continue;
+            }
+            if start {
+                let sequence = self.sequence.next();
+                self.set.add(animation, sequence, Uuid::nil());
+            } else {
+                self.set.remove(animation, false);
+            }
+        }
+        self.pack_due = true;
     }
 
     /// `ResetAnimations` (`MakeChildAgent`). The movement state and the
@@ -1496,5 +1519,74 @@ mod tests {
         assert!(sequence.next() > 0);
         let mut sequence = Sequence(10);
         assert_eq!(sequence.next(), 11);
+    }
+
+    /// `HandleAgentAnimation` through `avnChangeAnim`: a start takes the next
+    /// number and no object, even when the set already plays it; a stop of
+    /// the default plays `STAND` sequence 1; a nil id takes no number; and
+    /// the packet owes one pack whatever it changed.
+    #[test]
+    fn a_viewer_starts_and_stops_animations_with_one_pack_per_packet() {
+        let dance = Uuid::from_u128(0xda_0001);
+        let wave = Uuid::from_u128(0xda_0002);
+        let mut animator = Animator::new(AGENT);
+        animator.sequence = Sequence(100);
+        animator.viewer_change(&[(dance, true), (Uuid::nil(), true), (dance, true)]);
+        assert!(animator.take_pack_due());
+        assert!(!animator.take_pack_due());
+        assert_eq!(
+            animator.animations().others(),
+            [Anim {
+                animation: dance,
+                sequence: 101,
+                object_id: Uuid::nil(),
+            }]
+        );
+        // The repeat took 102.
+        animator.viewer_change(&[(wave, true)]);
+        assert_eq!(animator.animations().others()[1].sequence, 103);
+        assert_eq!(animator.animations().arrays()[0], Anim::STANDING);
+
+        animator.update(&ground(CONTROL_AT_POS, 0));
+        let walking = animator.animations().default_animation();
+        assert_eq!(walking.animation, walk_id());
+        assert_eq!(walking.sequence, 104);
+        let _ = animator.take_pack_due();
+        animator.viewer_change(&[
+            (walk_id(), false),
+            (dance, false),
+            (Uuid::from_u128(5), false),
+        ]);
+        assert!(animator.take_pack_due());
+        assert_eq!(animator.animations().default_animation(), Anim::STANDING);
+        assert_eq!(
+            animator.animations().arrays(),
+            [
+                Anim::STANDING,
+                Anim {
+                    animation: wave,
+                    sequence: 103,
+                    object_id: Uuid::nil(),
+                }
+            ]
+        );
+        // An empty list still owes the pack.
+        animator.viewer_change(&[]);
+        assert!(animator.take_pack_due());
+        assert_eq!(animator.sequence.next(), 105);
+    }
+
+    /// A full set drops the start but still takes its number.
+    #[test]
+    fn a_start_past_the_bound_takes_a_number_and_adds_nothing() {
+        let mut animator = Animator::new(AGENT);
+        animator.sequence = Sequence(0);
+        let starts: Vec<(Uuid, bool)> = (0..=MAX_OTHER_ANIMATIONS as u128)
+            .map(|n| (Uuid::from_u128(1_000 + n), true))
+            .collect();
+        animator.viewer_change(&starts);
+        assert_eq!(animator.animations().others().len(), MAX_OTHER_ANIMATIONS);
+        assert_eq!(animator.animations().arrays().len(), 255);
+        assert_eq!(animator.sequence.next(), 256);
     }
 }

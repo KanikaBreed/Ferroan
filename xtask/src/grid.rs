@@ -72,6 +72,8 @@ use std::time::{Duration, Instant};
 
 use crate::live;
 
+#[path = "animations_capture.rs"]
+mod animations_capture;
 #[path = "avatars_capture.rs"]
 mod avatars_capture;
 #[path = "child_capture.rs"]
@@ -1326,6 +1328,17 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         )?;
         Ok(format!(
             "{}\n{roots}\n{comparison}\n{capture}\n{proxy_report}",
+            report.lines
+        ))
+    } else if ferroan && compare == ferroan_bot::register::Compare::Animations {
+        let comparison = animations_capture::compare_animations(&root)?;
+        let capture = live::finish_capture(
+            &root.join("capture-udp.cap"),
+            &report.http,
+            &[&estate, &chat],
+        )?;
+        Ok(format!(
+            "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
     } else if ferroan && compare == ferroan_bot::register::Compare::Chat {

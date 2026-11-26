@@ -412,6 +412,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
             }
             SceneCall::AgentUpdate(_)
             | SceneCall::AlwaysRun(_)
+            | SceneCall::AgentAnimation(_)
             | SceneCall::HandshakeReply
             | SceneCall::InitialLand
             | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
@@ -630,8 +631,14 @@ impl crate::EntityUpdates for ferroan_scene::terse::ViewerFeed {
     }
 
     fn take_avatar_packets(&self, max: usize) -> Vec<AvatarPacket> {
-        // This frame has only the sender, with coarse locations disabled.
-        assert!(self.take_avatar_packets(max).is_empty());
+        // This frame has only the sender, with coarse locations disabled:
+        // the only avatar packets are its own animations, which this test
+        // does not send.
+        assert!(
+            self.take_avatar_packets(max)
+                .iter()
+                .all(|packet| matches!(packet, ferroan_scene::AvatarPacket::Animations { .. }))
+        );
         Vec::new()
     }
 
@@ -2193,6 +2200,60 @@ async fn an_agent_update_and_always_run_are_forwarded() {
     assert!(matches!(seen[1], SceneCall::AlwaysRun(true)));
 }
 
+/// `HandleAgentAnimation`: every block's id and `StartAnim`, in packet
+/// order, as one post; a nil id goes too, as C# invokes it. The ids must be
+/// the circuit's (`NeedValidateIDs`).
+#[tokio::test]
+async fn an_agent_animation_is_forwarded_block_by_block() {
+    let expect = identity(Uuid::from_u128(1));
+    let mut state = State::new(captured_config(), ArrivalConfig::default());
+    state.peer = Some(peer());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let store = Arc::clone(&seen);
+    state.login_scene = Some(Arc::new(move |_agent, call| {
+        store
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .push(call);
+        Ok(SceneReply::Applied).into()
+    }));
+    let mut message = ferroan_protocol::msgs::AgentAnimation::default();
+    message.agent_data.agent_id = expect.agent_id;
+    message.agent_data.session_id = expect.session_id;
+    for (id, start) in [(7u128, true), (0, true), (8, false)] {
+        message
+            .animation_list
+            .push(ferroan_protocol::msgs::agent_animation::AnimationList {
+                anim_id: Uuid::from_u128(id),
+                start_anim: start,
+            });
+    }
+    let bytes = wire(&message, 4, &[]);
+    let packet = parse_packet(&bytes).unwrap();
+    assert!(valid_packet_ids(&packet, &expect));
+    let io = FakeIo::default();
+    state
+        .handle(&io, peer(), &expect, &packet, bytes.len())
+        .await
+        .unwrap();
+    let seen = seen.lock().unwrap_or_else(|poison| poison.into_inner());
+    match seen.as_slice() {
+        [SceneCall::AgentAnimation(changes)] => assert_eq!(
+            changes.as_slice(),
+            [
+                (Uuid::from_u128(7), true),
+                (Uuid::nil(), true),
+                (Uuid::from_u128(8), false)
+            ]
+        ),
+        other => panic!("expected one animation post, got {other:?}"),
+    }
+    let mut forged = message.clone();
+    forged.agent_data.session_id = Uuid::from_u128(99);
+    let bytes = wire(&forged, 5, &[]);
+    assert!(!valid_packet_ids(&parse_packet(&bytes).unwrap(), &expect));
+}
+
 #[tokio::test]
 async fn a_local_teleport_without_a_scene_cannot_be_processed() {
     let region = crate::teleport::TeleportRegion::flat([128.0, 128.0, 25.0]);
@@ -3126,9 +3187,11 @@ async fn a_stalled_circuit_leaves_avatar_packets_in_the_feed() {
     assert_eq!(next.object_data[0].id, 2);
 }
 
-/// Another avatar's full update, appearance and kill leave in the order the
-/// region queued them, ahead of a terse block: the full update reliable and
-/// zero-coded, the appearance the same, the kill reliable and unencoded.
+/// Another avatar's full update, appearance, animations and kill leave in
+/// the order the region queued them, ahead of a terse block: the full update
+/// reliable and zero-coded, the appearance the same, the animations
+/// (`AvatarAnimationHeader`: reliable, High 20) and the kill reliable and
+/// unencoded.
 #[tokio::test]
 async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
     let source = Arc::new(BlockFeed::default());
@@ -3157,6 +3220,15 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
             other.live_update(0x0003_e800_0003_e800, &live),
         ));
         packets.push(crate::AvatarPacket::Appearance(other.appearance()));
+        packets.push(crate::AvatarPacket::Animation(crate::avatar_animation(
+            Uuid::from_u128(1),
+            Uuid::from_u128(9),
+            &[crate::Anim {
+                animation: Uuid::from_u128(5),
+                object_id: Uuid::from_u128(9),
+                sequence: 3,
+            }],
+        )));
         for kill in crate::kill_packets(&[77]) {
             packets.push(crate::AvatarPacket::Kill(kill));
         }
@@ -3167,7 +3239,7 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
     state.maintain(&io).await.unwrap();
     // The task bucket holds the rest until it refills.
     for _ in 0..20 {
-        if io.sent.lock().unwrap().len() >= 4 {
+        if io.sent.lock().unwrap().len() >= 5 {
             break;
         }
         state.advance_throttle(Duration::from_millis(200));
@@ -3183,11 +3255,16 @@ async fn avatar_packets_leave_in_order_before_the_terse_blocks() {
         [
             (0xc0, ferroan_protocol::msgs::ObjectUpdate::ID),
             (0xc0, ferroan_protocol::msgs::AvatarAppearance::ID),
+            (0x40, ferroan_protocol::msgs::AvatarAnimation::ID),
             (0x40, ferroan_protocol::msgs::KillObject::ID),
             (0xc0, ferroan_protocol::msgs::ImprovedTerseObjectUpdate::ID),
         ]
     );
-    let kill = parse_packet(&sent[2])
+    // `AvatarAnimationHeader`: the flags, four sequence bytes, no extra
+    // header, then message 20 in one byte.
+    assert_eq!(sent[2][0], 0x40);
+    assert_eq!(&sent[2][5..7], &[0, 20]);
+    let kill = parse_packet(&sent[3])
         .unwrap()
         .decode::<ferroan_protocol::msgs::KillObject>()
         .unwrap();

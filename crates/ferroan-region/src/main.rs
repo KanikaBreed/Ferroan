@@ -827,6 +827,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         }),
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
+        SceneCall::AgentAnimation(changes) => queued(frame.agent_animation(agent, changes)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
         SceneCall::ParcelRequest(query) => answered(
             frame.parcel_request(
@@ -1362,6 +1363,19 @@ impl ferroan_client::EntityUpdates for SceneFeed {
                 ferroan_scene::AvatarPacket::Appearance { agent, look } => {
                     out.push(ferroan_client::AvatarPacket::Appearance(
                         avatar_wire(agent, 0, &look).appearance(),
+                    ));
+                }
+                ferroan_scene::AvatarPacket::Animations { agent, animations } => {
+                    let set: Vec<ferroan_client::Anim> = animations
+                        .iter()
+                        .map(|anim| ferroan_client::Anim {
+                            animation: anim.animation,
+                            object_id: anim.object_id,
+                            sequence: anim.sequence,
+                        })
+                        .collect();
+                    out.push(ferroan_client::AvatarPacket::Animation(
+                        ferroan_client::avatar_animation(self.viewer, agent, &set),
                     ));
                 }
                 ferroan_scene::AvatarPacket::Kill(ids) => {
@@ -3667,7 +3681,8 @@ mod tests {
 
     /// The feed turns the frame's avatar packets into the wire messages:
     /// another avatar's full update with its local id, name and live values,
-    /// its appearance, and the kill.
+    /// its appearance, its animations as another viewer gets them, and the
+    /// kill.
     #[test]
     fn the_scene_feed_writes_another_avatars_packets() {
         let frame = TerrainFrame::start_without_map().unwrap();
@@ -3723,14 +3738,14 @@ mod tests {
                 .unwrap();
             frame.remove(agent).unwrap().wait().await.unwrap();
             let scene_feed = SceneFeed {
-                viewer: agent,
+                viewer: watcher,
                 object_animations: Arc::default(),
                 supports_pbr: Arc::default(),
                 feed,
                 region_handle: 77,
             };
             let packets = scene_feed.take_avatar_packets(usize::MAX);
-            assert_eq!(packets.len(), 3);
+            assert_eq!(packets.len(), 4);
             let ferroan_client::AvatarPacket::Full(update) = &packets[0] else {
                 panic!("the full update comes first");
             };
@@ -3749,7 +3764,18 @@ mod tests {
             };
             assert_eq!(appearance.sender.id, agent);
             assert_eq!(appearance.visual_param.len(), 2);
-            let ferroan_client::AvatarPacket::Kill(kill) = &packets[2] else {
+            let ferroan_client::AvatarPacket::Animation(animation) = &packets[2] else {
+                panic!("the animations follow");
+            };
+            assert_eq!(animation.sender.id, agent);
+            assert_eq!(animation.animation_list.len(), 1);
+            assert_eq!(
+                animation.animation_list[0].anim_id,
+                Uuid::from_u128(0x2408fe9e_df1d_1d7d_f4ff_1384fa7b350f)
+            );
+            assert_eq!(animation.animation_list[0].anim_sequence_id, 1);
+            assert!(animation.animation_source_list.is_empty());
+            let ferroan_client::AvatarPacket::Kill(kill) = &packets[3] else {
                 panic!("the kill comes last");
             };
             assert_eq!(kill.object_data[0].id, local_id);

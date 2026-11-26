@@ -75,6 +75,7 @@ pub enum Bot {
     MaterialOverride,
     Stored(Stored),
     Avatars,
+    Animations,
     ChildView,
     ParcelTiming,
     ParcelProperties,
@@ -108,6 +109,9 @@ pub enum Compare {
     Proxy,
     TwoRoots,
     Avatars,
+    /// A Ferroan run compares the walker's `AvatarAnimation` bytes with the
+    /// C# capture in `fixtures/animations/`. A C# run finishes the capture.
+    Animations,
     Chat,
     Teleport,
     Neighbour,
@@ -536,6 +540,14 @@ pub const SCENARIOS: &[Scenario] = &[
     )
     .settle_second(),
     row(
+        "animations",
+        Flags::Pin8OrFerroan,
+        Ferroan::Allow(21),
+        Bot::Animations,
+        Compare::Animations,
+    )
+    .settle_second(),
+    row(
         "neighbour",
         Flags::Any,
         Ferroan::Allow(14),
@@ -889,7 +901,7 @@ mod tests {
     fn ferroan_refusal_lists_the_allowed_rows_in_order() {
         assert_eq!(
             ferroan_denied(),
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing and parcel-properties scenarios"
+            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing, parcel-properties and animations scenarios"
         );
     }
 }

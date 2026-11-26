@@ -52,7 +52,7 @@ use ferroan_physics::{Physics, Pose};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use crate::animation::AnimationTransfer;
+use crate::animation::{Anim, AnimationTransfer};
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
 use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
@@ -317,6 +317,11 @@ enum Inbound {
     Agent {
         agent: Uuid,
         update: MotionUpdate,
+    },
+    /// `AgentAnimation`: each block's id and `StartAnim`, in packet order.
+    Animations {
+        agent: Uuid,
+        changes: Vec<(Uuid, bool)>,
     },
     AlwaysRun {
         agent: Uuid,
@@ -688,6 +693,17 @@ impl TerrainFrame {
         self.push(Inbound::Agent { agent, update })
     }
 
+    /// One forwarded `AgentAnimation`: each block's id and `StartAnim`. A
+    /// missing avatar, or a child, is left alone (`avnChangeAnim`). One
+    /// inbound slot, no answer.
+    pub fn agent_animation(
+        &self,
+        agent: Uuid,
+        changes: Vec<(Uuid, bool)>,
+    ) -> Result<(), TerrainError> {
+        self.push(Inbound::Animations { agent, changes })
+    }
+
     /// One forwarded `SetAlwaysRun`. A missing avatar is left alone. One
     /// inbound slot, no answer.
     pub fn set_always_run(&self, agent: Uuid, always_run: bool) -> Result<(), TerrainError> {
@@ -805,6 +821,8 @@ fn drain_inbound(rx: &Receiver<Inbound>, wake: &AtomicBool, scene: &mut Scene) {
     wake.swap(false, Ordering::AcqRel);
     while let Ok(post) = rx.try_recv() {
         apply(post, scene);
+        // C# sends the pack from the packet handler that changed the set.
+        scene.send_animation_packs();
     }
 }
 
@@ -827,6 +845,11 @@ fn apply(post: Inbound, scene: &mut Scene) {
         Inbound::Agent { agent, update } => {
             if let Some(avatar) = presences.get_mut(&agent) {
                 avatar.body.apply(&update, &mut avatar.pose);
+            }
+        }
+        Inbound::Animations { agent, changes } => {
+            if let Some(avatar) = presences.get_mut(&agent) {
+                avatar.body.viewer_animations(&changes);
             }
         }
         Inbound::AlwaysRun { agent, always_run } => {
@@ -1213,6 +1236,8 @@ fn run(
         ) {
             break;
         }
+        // A local teleport stands a sitter up (`StandUp`), which sends.
+        scene.send_animation_packs();
     }
 }
 
@@ -1220,11 +1245,14 @@ fn run(
 /// the frame, and send the minimap dots on every 50th. Returns the count.
 fn tick(scene: &mut Scene, map: Option<&Heightmap>, frames: u64) -> u64 {
     step_avatars(&mut scene.presences, map);
+    // The delayed stop's `AddNewMovement` can change the movement state.
+    scene.send_animation_packs();
     // `EventManagerOnClientMovement` after the avatar has moved. A teleport
     // only stores the new position; this is the send on the next tick.
     note_parcel_crossings(scene);
     update_presences(scene);
     heartbeat_end(&mut scene.presences);
+    scene.send_animation_packs();
     // `Scene.Update` counts the frame first, then tests it.
     let frames = frames.saturating_add(1);
     if frames.is_multiple_of(COARSE_EVERY_FRAMES) {
@@ -1454,13 +1482,24 @@ impl Scene {
     }
 
     /// `CompleteMovement`: the avatar's full update to every other viewer
-    /// (`SendInitialAvatarDataToAllAgents`), then its appearance to each
-    /// (`SendAppearanceToAgentNF`). Its own viewer gets both from its
-    /// circuit, with the arrival packet.
+    /// (`SendInitialAvatarDataToAllAgents`), then its appearance and its
+    /// animations to each (`SendAppearanceToAgentNF`,
+    /// `SendAnimPackToAgentNF`). Its own viewer gets the full update and the
+    /// appearance from its circuit, with the arrival packet, and its
+    /// animations here (`SendAnimPackToAgent`): the circuit takes this feed
+    /// only after it has queued those two.
     fn announce(&self, agent: Uuid) {
         let Some(full) = self.full_of(agent) else {
             return;
         };
+        let animations = self.animations_of(agent).unwrap_or_default();
+        self.send(
+            &agent,
+            AvatarPacket::Animations {
+                agent,
+                animations: animations.clone(),
+            },
+        );
         let others: Vec<Uuid> = self
             .viewer_order()
             .into_iter()
@@ -1478,11 +1517,61 @@ impl Scene {
                     look: Arc::clone(&full.look),
                 },
             );
+            self.send(
+                other,
+                AvatarPacket::Animations {
+                    agent,
+                    animations: animations.clone(),
+                },
+            );
+        }
+    }
+
+    /// `Animator.GetArrays`: the default first unless it is nil, then the others.
+    fn animations_of(&self, agent: Uuid) -> Option<Vec<Anim>> {
+        self.presences
+            .get(&agent)
+            .map(|avatar| avatar.body.animator().animations().arrays())
+    }
+
+    /// `ScenePresenceAnimator.SendAnimPack` for every avatar whose animator
+    /// owes one: a root's set to every open viewer, its own and children
+    /// included (`ForEachScenePresence`). A child owes nothing and sends
+    /// nothing (`IsChildAgent`).
+    fn send_animation_packs(&mut self) {
+        let mut due = Vec::new();
+        for (agent, avatar) in &mut self.presences {
+            if avatar.body.take_animation_pack() && !avatar.body.is_child() {
+                due.push((*agent, avatar.body.animator().animations().arrays()));
+            }
+        }
+        if due.is_empty() {
+            return;
+        }
+        let order = self.viewer_order();
+        due.sort_by_key(|(agent, _)| {
+            order
+                .iter()
+                .position(|(viewer, _)| viewer == agent)
+                .unwrap_or(usize::MAX)
+        });
+        for (agent, animations) in due {
+            for (viewer, _) in &order {
+                if self.is_open(viewer) {
+                    self.send(
+                        viewer,
+                        AvatarPacket::Animations {
+                            agent,
+                            animations: animations.clone(),
+                        },
+                    );
+                }
+            }
         }
     }
 
     /// `SendOtherAgentsAvatarFullToMe`: every other root avatar's full update,
-    /// then its appearance, to this viewer.
+    /// then its appearance, then its animations, to this viewer.
     fn send_initial_data(&mut self, agent: Uuid) {
         // ScenePresence.cs 4337 logs before the teleport-flag check.
         tracing::info!("SendInitialData for \"{agent}\"");
@@ -1508,6 +1597,15 @@ impl Scene {
             let look = Arc::clone(&full.look);
             self.send(&agent, AvatarPacket::Full(full));
             self.send(&agent, AvatarPacket::Appearance { agent: other, look });
+            if let Some(animations) = self.animations_of(other) {
+                self.send(
+                    &agent,
+                    AvatarPacket::Animations {
+                        agent: other,
+                        animations,
+                    },
+                );
+            }
         }
         if let (Some(viewer), Some(avatar)) = (self.viewers.get(&agent), self.presences.get(&agent))
         {
@@ -2145,14 +2243,15 @@ mod tests {
         assert_eq!(local_ids(&feed.take_terse(0)), [local_id]);
     }
 
-    /// The agent ids of the full updates and appearances, and the kills, in
-    /// the order a feed holds them.
+    /// The agent ids of the full updates, appearances and animations, and
+    /// the kills, in the order a feed holds them.
     fn packet_kinds(feed: &ViewerFeed) -> Vec<(char, u128)> {
         feed.take_avatar_packets(usize::MAX)
             .into_iter()
             .filter_map(|packet| match packet {
                 AvatarPacket::Full(full) => Some(('F', full.agent.as_u128())),
                 AvatarPacket::Appearance { agent, .. } => Some(('A', agent.as_u128())),
+                AvatarPacket::Animations { agent, .. } => Some(('M', agent.as_u128())),
                 AvatarPacket::Kill(ids) => Some(('K', u128::from(ids[0]))),
                 // The frame thread's clock decides when a minimap list falls.
                 AvatarPacket::Coarse(_) => None,
@@ -2171,10 +2270,9 @@ mod tests {
         let (_, first_feed, _) = attach(&frame, first);
         login(&frame, first, pose_at([128.0, 128.0, 25.0]));
         reuse(&frame, first);
-        assert!(
-            packet_kinds(&first_feed).is_empty(),
-            "its own update is the circuit's"
-        );
+        // Its own full update and appearance are the circuit's; its
+        // animations follow them (`SendAnimPackToAgent`).
+        assert_eq!(packet_kinds(&first_feed), [('M', 60)]);
         let (_, second_feed, second_seeds) = attach(&frame, second);
         login(&frame, second, pose_at([120.0, 128.0, 25.0]));
         // The newcomer turns to the arrival look before it is announced.
@@ -2186,7 +2284,7 @@ mod tests {
             .unwrap();
         assert_eq!(arrived.rotation, look_rotation(look));
         let announced = first_feed.take_avatar_packets(usize::MAX);
-        assert_eq!(announced.len(), 2);
+        assert_eq!(announced.len(), 3);
         let AvatarPacket::Full(full) = &announced[0] else {
             panic!("the full update comes first");
         };
@@ -2200,7 +2298,26 @@ mod tests {
             &announced[1],
             AvatarPacket::Appearance { agent, .. } if *agent == second
         ));
-        assert!(packet_kinds(&second_feed).is_empty());
+        // A new set: `STAND` sequence 1, no object.
+        let standing = vec![Anim {
+            animation: crate::animation::STAND,
+            sequence: 1,
+            object_id: Uuid::nil(),
+        }];
+        assert_eq!(
+            announced[2],
+            AvatarPacket::Animations {
+                agent: second,
+                animations: standing.clone()
+            }
+        );
+        assert_eq!(
+            second_feed.take_avatar_packets(usize::MAX),
+            [AvatarPacket::Animations {
+                agent: second,
+                animations: standing
+            }]
+        );
         // The wait: the reply and the seeds, then four frames. The frame
         // thread ticks on the wall clock, so the test does not count frames
         // by sleeping. The counter is read before the reply is posted, so
@@ -2223,7 +2340,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         };
         let seen = frames(&frame);
-        assert_eq!(sent, [('F', 60), ('A', 60)]);
+        assert_eq!(sent, [('F', 60), ('A', 60), ('M', 60)]);
         assert!(
             seen >= before + 4,
             "SendInitialData ran {} frames after the reply, before the fourth",
@@ -2251,6 +2368,7 @@ mod tests {
         let (_, feed, seeds) = attach(&frame, newcomer);
         login(&frame, newcomer, pose_at([128.0, 128.0, 25.0]));
         reuse(&frame, newcomer);
+        assert_eq!(packet_kinds(&feed), [('M', newcomer.as_u128())]);
         seeds.store(true, Ordering::Release);
         frame.handshake_reply(newcomer).unwrap();
         wait_frames(&frame, 7);
@@ -3082,10 +3200,16 @@ mod tests {
         assert!(packet_kinds(&feed).is_empty());
         open.store(true, Ordering::Release);
         arrive_in(&mut scene, coming, [130.0, 128.0, 25.0]);
+        // Its own animations, from `CompleteMovement`.
+        assert_eq!(packet_kinds(&feed), [('M', coming.as_u128())]);
         scene.send_initial_data(coming);
         assert_eq!(
             packet_kinds(&feed),
-            [('F', there.as_u128()), ('A', there.as_u128())]
+            [
+                ('F', there.as_u128()),
+                ('A', there.as_u128()),
+                ('M', there.as_u128())
+            ]
         );
     }
 
@@ -3699,6 +3823,158 @@ mod tests {
         assert_eq!(moved.flags, 16);
         assert!(!motion(&frame, agent).sit_ground);
         assert_eq!(default(&frame), STAND);
+    }
+
+    /// The `AvatarAnimation` sets a feed holds, dropping the rest.
+    fn animations_in(feed: &ViewerFeed) -> Vec<(Uuid, Vec<Anim>)> {
+        feed.take_avatar_packets(usize::MAX)
+            .into_iter()
+            .filter_map(|packet| match packet {
+                AvatarPacket::Animations { agent, animations } => Some((agent, animations)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Wait until `feed` holds an animation set, then take them all.
+    fn next_animations(feed: &ViewerFeed) -> Vec<(Uuid, Vec<Anim>)> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = animations_in(feed);
+            if !seen.is_empty() {
+                return seen;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no animation pack arrived"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    /// A closed viewer link: attached, but its `UseCircuitCode` has not come.
+    fn attach_closed(frame: &TerrainFrame, agent: Uuid) -> Arc<ViewerFeed> {
+        let feed = frame.new_feed();
+        let link = ViewerLink {
+            feed: Arc::clone(&feed),
+            seeds_sent: Arc::new(AtomicBool::new(false)),
+            circuit_open: Arc::new(AtomicBool::new(false)),
+            look: look_of("closed"),
+            teleport_flags: 1 << 7,
+        };
+        frame.attach(agent, link).unwrap().blocking_wait().unwrap();
+        feed
+    }
+
+    /// `SendAnimPack` (`ForEachScenePresence`): a root's new movement state
+    /// goes to its own viewer and every other open one, children included,
+    /// as soon as the update that changed it applies; the release stands on
+    /// the heartbeat with the next number. A child's animator sends nothing,
+    /// and nothing goes to a viewer whose circuit is not open.
+    #[test]
+    fn a_walk_and_its_stop_reach_every_open_viewer_children_included() {
+        use crate::animation::{STAND, default_animation};
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let walker = Uuid::from_u128(110);
+        let watcher = Uuid::from_u128(111);
+        let child = Uuid::from_u128(112);
+        let (_, walker_feed, _) = attach(&frame, walker);
+        let (_, watcher_feed, _) = attach(&frame, watcher);
+        let (_, child_feed, _) = attach(&frame, child);
+        let closed_feed = attach_closed(&frame, Uuid::from_u128(113));
+        for agent in [walker, watcher, child] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        frame.set_child(child, true).unwrap();
+        wait_frames(&frame, 3);
+        let feeds = [&walker_feed, &watcher_feed, &child_feed];
+        for feed in feeds {
+            let _ = feed.take_avatar_packets(usize::MAX);
+        }
+        frame
+            .agent_update(walker, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        // The answer comes after the post has applied, and so sent.
+        let _ = frames(&frame);
+        let walk = {
+            let seen = animations_in(&walker_feed);
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].0, walker);
+            assert_eq!(seen[0].1.len(), 1);
+            seen[0].1[0]
+        };
+        assert_eq!(walk.animation, default_animation("WALK").unwrap());
+        assert_eq!(walk.object_id, walker);
+        for feed in [&watcher_feed, &child_feed] {
+            assert_eq!(animations_in(feed), [(walker, vec![walk])]);
+        }
+        frame
+            .agent_update(walker, walking_update(1_100, 2, 0))
+            .unwrap();
+        let stand = Anim {
+            animation: STAND,
+            sequence: walk.sequence + 1,
+            object_id: walker,
+        };
+        assert_eq!(next_animations(&walker_feed), [(walker, vec![stand])]);
+        for feed in [&watcher_feed, &child_feed] {
+            assert_eq!(animations_in(feed), [(walker, vec![stand])]);
+        }
+        frame
+            .agent_update(child, walking_update(1_000, 1, CONTROL_AT_POS))
+            .unwrap();
+        wait_frames(&frame, 3);
+        for feed in feeds {
+            assert!(animations_in(feed).is_empty());
+        }
+        assert!(animations_in(&closed_feed).is_empty());
+    }
+
+    /// `HandleAgentAnimation`: one pack per packet to every open viewer, with
+    /// the started animation after the default and no object, and one even
+    /// when nothing changed. A child is refused: no change and no pack.
+    #[test]
+    fn a_viewer_animation_packet_sends_one_pack_and_a_child_is_refused() {
+        let frame = TerrainFrame::start_without_map().unwrap();
+        let dancer = Uuid::from_u128(120);
+        let watcher = Uuid::from_u128(121);
+        let (_, dancer_feed, _) = attach(&frame, dancer);
+        let (_, watcher_feed, _) = attach(&frame, watcher);
+        for agent in [dancer, watcher] {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+            reuse(&frame, agent);
+        }
+        wait_frames(&frame, 3);
+        for feed in [&dancer_feed, &watcher_feed] {
+            let _ = feed.take_avatar_packets(usize::MAX);
+        }
+        let dance = Uuid::from_u128(0xda);
+        frame.agent_animation(dancer, vec![(dance, true)]).unwrap();
+        let _ = frames(&frame);
+        let started = animations_in(&dancer_feed);
+        assert_eq!(started.len(), 1);
+        let set = &started[0].1;
+        assert_eq!(set.len(), 2);
+        assert_eq!(set[1].animation, dance);
+        assert_eq!(set[1].object_id, Uuid::nil());
+        assert_eq!(animations_in(&watcher_feed), started);
+        frame.agent_animation(dancer, vec![(dance, false)]).unwrap();
+        frame.agent_animation(dancer, Vec::new()).unwrap();
+        let _ = frames(&frame);
+        let default = vec![set[0]];
+        let stopped = vec![(dancer, default.clone()), (dancer, default)];
+        assert_eq!(animations_in(&dancer_feed), stopped);
+        assert_eq!(animations_in(&watcher_feed), stopped);
+
+        frame.set_child(dancer, true).unwrap();
+        frame.agent_animation(dancer, vec![(dance, true)]).unwrap();
+        let _ = frames(&frame);
+        frame.set_child(dancer, false).unwrap();
+        frame.agent_animation(dancer, Vec::new()).unwrap();
+        let _ = frames(&frame);
+        // The refused start left the set as it was.
+        assert_eq!(animations_in(&watcher_feed), [(dancer, vec![set[0]])]);
     }
 
     /// The checked `enableflyslow` reaches every avatar: one already there

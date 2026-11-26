@@ -46,7 +46,8 @@ pub use circuit::{
     SceneResult, TeleportRequest, UdpCounters,
 };
 pub use entity_feed::{
-    AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, coarse_update, kill_packets,
+    AVATAR_TERSE_LEN, AvatarPacket, EntityFeed, EntityUpdates, avatar_animation, coarse_update,
+    kill_packets,
 };
 pub use event_queue::EventQueueError;
 pub use handshake::{HandshakeConfig, StoredHandshake};

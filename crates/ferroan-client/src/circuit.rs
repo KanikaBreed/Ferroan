@@ -86,11 +86,11 @@ use ferroan_diag::{
     UDP_UNACKED,
 };
 use ferroan_protocol::msgs::{
-    AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer, CompleteAgentMovement,
-    CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply, LogoutRequest,
-    PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply, SetAlwaysRun,
-    StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode,
-    logout_reply, packet_ack, start_ping_check,
+    AgentAnimation, AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer,
+    CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply,
+    LogoutRequest, PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply,
+    SetAlwaysRun, StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest,
+    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
@@ -297,6 +297,9 @@ pub enum SceneCall {
     /// `SetAlwaysRun`. One inbound slot, no answer. A refused post waits on
     /// the circuit (the latest only) and is posted again first.
     AlwaysRun(bool),
+    /// `AgentAnimation`: each block's id and `StartAnim`. One inbound slot,
+    /// no answer. A refused post is dropped with the inbound readout.
+    AgentAnimation(Vec<(Uuid, bool)>),
     /// `RegionHandshakeReply`, which starts `SendInitialData`'s wait. One
     /// inbound slot, no answer. A refused post waits on the circuit.
     HandshakeReply,
@@ -863,6 +866,7 @@ impl State {
                 AvatarPacket::Full(update) => encode_payload(update)?,
                 AvatarPacket::Appearance(appearance) => encode_payload(appearance)?,
                 AvatarPacket::Kill(kill) => encode_payload(kill)?,
+                AvatarPacket::Animation(animation) => encode_payload(animation)?,
                 // `CoarseLocationUpdateHeader` leaves the reliable flag off.
                 AvatarPacket::Coarse(coarse) => Payload {
                     reliable: false,
@@ -1376,6 +1380,10 @@ impl State {
             if let Ok(update) = packet.decode::<AgentUpdate>() {
                 self.forward_agent_update(expect, packet.sequence, &update);
             }
+        } else if packet.id == AgentAnimation::ID {
+            if let Ok(animation) = packet.decode::<AgentAnimation>() {
+                self.forward_agent_animation(expect, &animation);
+            }
         } else if packet.id == SetAlwaysRun::ID {
             if let Ok(update) = packet.decode::<SetAlwaysRun>() {
                 self.forward_always_run(expect, update.agent_data.always_run);
@@ -1538,6 +1546,20 @@ impl State {
         };
         self.pending_update = Some((expect.agent_id, update));
         self.flush_motion();
+    }
+
+    /// `HandleAgentAnimation` onto the frame, without waiting. The frame
+    /// refuses a child. The ids were checked with the packet.
+    fn forward_agent_animation(&mut self, expect: &CircuitExpect, message: &AgentAnimation) {
+        let Some(scene) = self.login_scene.clone() else {
+            return;
+        };
+        let changes = message
+            .animation_list
+            .iter()
+            .map(|block| (block.anim_id, block.start_anim))
+            .collect();
+        let _ = scene(expect.agent_id, SceneCall::AgentAnimation(changes));
     }
 
     /// `SetAlwaysRun` onto the frame, without waiting. Only the latest value
@@ -3344,6 +3366,7 @@ mod tests {
                 }
                 SceneCall::AgentUpdate(_)
                 | SceneCall::AlwaysRun(_)
+                | SceneCall::AgentAnimation(_)
                 | SceneCall::HandshakeReply
                 | SceneCall::InitialLand
                 | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
