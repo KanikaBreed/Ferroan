@@ -169,7 +169,6 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         );
     }
     let terrain = load_terrain(&config).await?;
-    let objects = load_stored_objects(&config).await?;
     let _region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
@@ -225,8 +224,8 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let (accepted, agents) = ferroan_region::simulation::dispatch_queue();
     let mut simulation =
         SimulationState::with_meters(&config, caps.clone(), accepted, meters.clone());
-    simulation.keep_objects(objects);
     if let Some(frame) = &terrain {
+        simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
     }
     if let Some(connection) = config.estate_store.as_deref() {
@@ -447,8 +446,15 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
             Some(parcels)
         }
     };
-    let frame = TerrainFrame::start_region(map, parcels)
-        .map_err(|error| RunError::Terrain(error.to_string()))?;
+    let objects = load_stored_objects(config).await?;
+    let frame = TerrainFrame::with_object_settings(
+        map,
+        parcels,
+        objects,
+        config.prim_scale_limits,
+        config.collidable_prims,
+    )
+    .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
 }
 
@@ -1120,7 +1126,7 @@ struct SceneFeed {
 
 impl ferroan_client::EntityUpdates for SceneFeed {
     fn has_updates(&self) -> bool {
-        self.feed.has_updates()
+        self.feed.has_avatar_terse()
     }
 
     fn take_terse(&self, max_bytes: i32) -> Vec<[u8; ferroan_client::AVATAR_TERSE_LEN]> {
@@ -1436,7 +1442,7 @@ mod tests {
         let path = dir.join("RegionStore.db");
         std::fs::copy(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../fixtures/db/sqlite/RegionStore.db"),
+                .join("../../fixtures/prim-updates/scene.db"),
             &path,
         )
         .unwrap();
@@ -1446,6 +1452,13 @@ mod tests {
         .await
         .unwrap();
         sqlx::raw_sql(include_str!("../../../fixtures/regionstore/parcels.sql"))
+            .execute(&seed)
+            .await
+            .unwrap();
+        // Put the parcel fixture's home rows in the prim fixture's region.
+        sqlx::query("UPDATE land SET RegionUUID = ? WHERE RegionUUID = ?")
+            .bind("6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01")
+            .bind("11111111-1111-1111-1111-111111111111")
             .execute(&seed)
             .await
             .unwrap();
@@ -1464,12 +1477,14 @@ mod tests {
             path.display()
         ))
         .unwrap();
-        let regions = ferroan_config::Config::parse(
-            "[Ferroan Test]\nRegionUUID=11111111-1111-1111-1111-111111111111\n\
+        let mut regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=6d1a7f4e-0c3b-4f53-9a1e-5f0e3c2a9b01\n\
              Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
              ExternalHostName=127.0.0.1\n",
         )
         .unwrap();
+        regions.set("Ferroan Test", "ClampPrimSize", "true");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "2");
         let config = RegionConfig::from_configs(&server, &regions).unwrap();
         let terrain = load_terrain(&config).await.unwrap().unwrap();
         assert!(terrain.has_map());
@@ -1477,6 +1492,12 @@ mod tests {
         assert_eq!(parcels.parcels().len(), 3);
         assert_eq!(parcels.at_cell(1, 0).unwrap().name, "West");
         assert_eq!(parcels.at_cell(2, 0).unwrap().name, "East");
+        let groups = terrain.stored_groups();
+        let linked = groups.iter().find(|group| group.parts.len() == 2).unwrap();
+        let child = &linked.parts[1]; // Persisted scale (0.5, 0.5, 0.5).
+        assert_ne!(linked.parts[0].local_id, 0);
+        assert_eq!(child.parent_id, linked.parts[0].local_id);
+        assert_eq!(child.shape.scale, [2.0; 3]);
         let stored = ferroan_scene::open_terrain(
             &format!("URI=file:{};UseUTF16Encoding=True", path.display()),
             config.id,

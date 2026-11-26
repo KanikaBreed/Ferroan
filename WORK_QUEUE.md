@@ -175,7 +175,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q59 | P2.S3: coalesced objects and `ExtraToXmlString` | DONE (this PR) |
 | Q60 | P2.6a: parcels from the store, the default parcel, `ParcelOverlay` (D39) | BLOCKED (split into Q60a–Q60c) |
 | Q60a | P2.6a1: load SQLite parcels and create the in-memory default | DONE (this PR) |
-| Q60b | P2.6a2: capture and encode the viewer's parcel overlay | READY after Q60a |
+| Q60b | P2.6a2: capture and encode the viewer's parcel overlay | DONE (this PR) |
 | Q60c | P2.6a3: deliver the overlay on the Land throttle with Pin8 arrival timing | BLOCKED (split into Q60c1–Q60c3) |
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | READY after Q60b |
@@ -189,7 +189,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65b | P2.5a2: encode full prim update blocks against the capture | DONE (this PR) |
 | Q65c | P2.5a3: deliver stored linksets through the viewer queue and Task throttle | BLOCKED (split into Q65c1–Q65c3) |
 | Q65c1 | P2.5a3a: capture prim arrival on two viewer circuits | DONE (this PR) |
-| Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | READY after Q65c1 |
+| Q65c2 | P2.5a3b: give stored linksets frame ids and feed each arriving viewer | DONE (this PR) |
 | Q65c3 | P2.5a3c: send and verify the mixed full and terse feed on Task | BLOCKED (split into Q65c3a–Q65c3b) |
 | Q65c3a | P2.5a3c1: the mixed full and terse drain on Task, two-viewer live comparison | READY after Q65c2 |
 | Q65c3b | P2.5a3c2: the negotiated material-override send, with its own Pin8 capture | READY after Q65c3a |
