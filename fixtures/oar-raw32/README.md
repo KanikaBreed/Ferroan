@@ -4,7 +4,7 @@ Pin8 `c401bceecd` ran `load oar` on [region.oar](region.oar). The scene name is 
 
 [loaded.r32](loaded.r32) is `TerrainModule.SaveToStream("loaded.r32")` after that load: 256 by 256 little-endian floats, Y outer and X inner. The same process decoded the member with `RAW32.LoadStream` and `SaveStream`. The run required the two saves to be equal. `load_raw32` matches `loaded.r32`.
 
-The member's first row holds NaN, positive infinity, negative infinity, a zero with the sign bit set, 1.0001, -12.5, the subnormal with bits 1, and 100. Later cells are `((x * 17 + y * 3) % 10007) * 0.01`. NaN, both infinities, and the signed zero are stored as +0. The finite values keep their bits. No sample is the merge mask -65535, and none is at or above 4095, so the console bounding merge copies every cell and the `.r32` save is accepted.
+The member's first row holds NaN, positive infinity, negative infinity, a zero with the sign bit set, 1.0001, -12.5, the subnormal with bits 1, and 100. Later cells are `((x * 17 + y * 3) % 10007) * 0.01`. NaN, both infinities, and the signed zero are stored as +0. The finite values keep their bits. No sample is the merge mask -65535, and none is at or above 4095, so the console bounding merge copies every cell and the `.r32` save is accepted. The merge reads only the region-sized corner of a larger square, so "load oar equals LoadStream" is a statement about this 256-square.
 
 [trim-in.r32](trim-in.r32) is 300 by 300 floats, value `i * 0.001` in file order. [trim-out.r32](trim-out.r32) is `LoadStream` then `SaveStream`: the first 256 by 256 samples, read straight through the file.
 
@@ -16,4 +16,6 @@ The member's first row holds NaN, positive infinity, negative infinity, a zero w
 
 ## Reproduce
 
-Build [tools/raw32-oracle](../../tools/raw32-oracle/README.md) against a scratch clone of the pin. Run the built program from `tools/raw32-oracle/bin/Debug/net10.0`, so `OpenSim.Tests.Common.dll` loads, under the shared live lock with a free port base and `UseSharedCompilation=false`. Pass an empty output directory. The run prints `load oar matches LoadStream`.
+`cargo xtask raw32 verify` rebuilds [tools/raw32-oracle](../../tools/raw32-oracle/README.md) against a task-owned clone of the pin and diffs a fresh run with this directory.
+
+To run it by hand, build that project against a scratch clone of the pin. Run the built program from `tools/raw32-oracle/bin/Debug/net10.0`, so `OpenSim.Tests.Common.dll` loads, under the shared live lock with a free port base and `UseSharedCompilation=false`. Pass an empty output directory. The run prints `load oar matches LoadStream`.
