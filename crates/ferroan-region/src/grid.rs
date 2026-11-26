@@ -80,6 +80,9 @@ pub enum GridError {
     Rejected { message: String },
     #[error("grid service reply has no recognized Result")]
     InvalidReply,
+    /// The local groups store could not be read. Callers paint group cells as non-member.
+    #[error("groups store: {0}")]
+    Store(String),
 }
 
 #[derive(Clone)]

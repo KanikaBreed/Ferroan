@@ -465,50 +465,12 @@ fn parse_run(args: &[&str]) -> Result<Command, ParseFail> {
             ParseFail::Usage
         });
     }
+    let policy = ferroan_bot::register::get(scenario)
+        .map(|row| row.flags)
+        .unwrap_or(ferroan_bot::register::Flags::Any);
+    enforce_flags(scenario, policy, grid, &flags)?;
     if flags.running {
-        if *scenario != "assets"
-            || grid
-            || flags.region_ferroan
-            || flags.rust_services.is_some()
-            || flags.basic_physics
-        {
-            return Err(ParseFail::Usage);
-        }
         return Ok(Command::RunningAssets { db: flags.db });
-    }
-    if matches!(*scenario, "prim-arrival" | "material-override") && flags.region_ferroan && !grid {
-        return Err(ParseFail::Usage);
-    }
-    // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
-    // scenario on the Ferroan home region and does not select that engine.
-    if *scenario == "parcel-timing" {
-        let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
-        let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
-        if !pin8 && !ferroan {
-            return Err(ParseFail::Message(
-                "use live run parcel-timing grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
-                    .to_string(),
-            ));
-        }
-    } else if *scenario == "parcel-properties" {
-        let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
-        let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
-        if !pin8 && !ferroan {
-            return Err(ParseFail::Message(
-                "use live run parcel-properties grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
-                    .to_string(),
-            ));
-        }
-    } else if (matches!(
-        *scenario,
-        "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
-    ) || (matches!(*scenario, "prim-arrival" | "material-override")
-        && !flags.region_ferroan))
-        && (!grid || flags.region_ferroan || !flags.basic_physics)
-    {
-        return Err(ParseFail::Message(format!(
-            "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
-        )));
     }
     Ok(Command::Run(RunSpec {
         scenario: (*scenario).to_string(),
@@ -529,6 +491,49 @@ struct Flags {
     running: bool,
     backend: Option<AssetBackend>,
     basic_physics: bool,
+}
+
+fn enforce_flags(
+    scenario: &str,
+    policy: ferroan_bot::register::Flags,
+    grid: bool,
+    flags: &Flags,
+) -> Result<(), ParseFail> {
+    use ferroan_bot::register::Flags as Policy;
+    if flags.running {
+        if !matches!(policy, Policy::Assets)
+            || grid
+            || flags.region_ferroan
+            || flags.rust_services.is_some()
+            || flags.basic_physics
+        {
+            return Err(ParseFail::Usage);
+        }
+        return Ok(());
+    }
+    if matches!(policy, Policy::Pin8OrFerroan) && flags.region_ferroan && !grid {
+        return Err(ParseFail::Usage);
+    }
+    // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
+    // scenario on the Ferroan home region and does not select that engine.
+    if matches!(policy, Policy::ParcelTiming) {
+        let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
+        let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
+        if !pin8 && !ferroan {
+            return Err(ParseFail::Message(format!(
+                "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+            )));
+        }
+        return Ok(());
+    }
+    let restricted = matches!(policy, Policy::Pin8)
+        || (matches!(policy, Policy::Pin8OrFerroan) && !flags.region_ferroan);
+    if restricted && (!grid || flags.region_ferroan || !flags.basic_physics) {
+        return Err(ParseFail::Message(format!(
+            "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
+        )));
+    }
+    Ok(())
 }
 
 fn flags(args: &[&str]) -> Result<Flags, ParseFail> {
@@ -993,5 +998,144 @@ mod tests {
         let error = require_known_services(&["assets".into(), "inventory".into()]).unwrap_err();
         assert!(error.contains("inventory"));
         assert!(error.contains("assets"));
+    }
+
+    /// Every scenario's grid / `--region ferroan` / `--physics basicphysics` /
+    /// `--running` combinations, recorded before the registration table.
+    #[test]
+    fn every_scenario_keeps_its_accepted_flags() {
+        const KNOWN: &[&str] = &[
+            "login",
+            "walk",
+            "chat",
+            "build",
+            "teleport",
+            "texture",
+            "inventory",
+            "assets",
+            "all",
+            "caps",
+            "ferrobot",
+            "limits",
+            "roots",
+            "hop",
+            "uploads",
+            "avatars",
+            "neighbour",
+            "report",
+            "prim-capture",
+            "prim-arrival",
+            "material-override",
+            "object-cross",
+            "child-view",
+            "store-handoff",
+            "prim-load",
+            "parcel-timing",
+            "parcel-properties",
+            "parcel-empty",
+            "parcel-multi",
+            "parcel-lone",
+            "parcel-legacy",
+            "not-a-scenario",
+        ];
+        for scenario in KNOWN {
+            for grid in [false, true] {
+                for region in [false, true] {
+                    for physics in [false, true] {
+                        for running in [false, true] {
+                            expect_flags(scenario, grid, region, physics, running);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn expect_flags(scenario: &str, grid: bool, region: bool, physics: bool, running: bool) {
+        let mut args = vec!["run", scenario];
+        if grid {
+            args.push("grid");
+        }
+        if region {
+            args.extend_from_slice(&["--region", "ferroan"]);
+        }
+        if physics {
+            args.extend_from_slice(&["--physics", "basicphysics"]);
+        }
+        if running {
+            args.push("--running");
+        }
+        let parsed = parse(&args);
+        let label = args.join(" ");
+        if running {
+            if scenario == "assets" && !grid && !region && !physics {
+                match parsed {
+                    Ok(Command::RunningAssets { db }) => {
+                        assert_eq!(db, Database::Sqlite, "{label}")
+                    }
+                    other => {
+                        panic!("{label} should keep the running asset services, got {other:?}")
+                    }
+                }
+            } else {
+                assert!(
+                    matches!(parsed, Err(ParseFail::Usage)),
+                    "{label} should be usage, got {parsed:?}"
+                );
+            }
+            return;
+        }
+        if matches!(scenario, "prim-arrival" | "material-override") && region && !grid {
+            assert!(
+                matches!(parsed, Err(ParseFail::Usage)),
+                "{label} should be usage, got {parsed:?}"
+            );
+            return;
+        }
+        if matches!(scenario, "parcel-timing" | "parcel-properties") {
+            let pin8 = grid && physics && !region;
+            let ferroan = grid && region && !physics;
+            if !pin8 && !ferroan {
+                match parsed {
+                    Err(ParseFail::Message(text)) => assert_eq!(
+                        text,
+                        format!(
+                            "use live run {scenario} grid --physics basicphysics for the Pin8 capture, or --region ferroan to compare it"
+                        ),
+                        "{label}"
+                    ),
+                    other => panic!("{label} should name both forms, got {other:?}"),
+                }
+                return;
+            }
+        } else if (matches!(
+            scenario,
+            "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
+        ) || (matches!(scenario, "prim-arrival" | "material-override") && !region))
+            && (!grid || region || !physics)
+        {
+            match parsed {
+                Err(ParseFail::Message(text)) => assert_eq!(
+                    text,
+                    format!(
+                        "use live run {scenario} grid --physics basicphysics for the Pin8 capture"
+                    ),
+                    "{label}"
+                ),
+                other => panic!("{label} should require the Pin8 capture form, got {other:?}"),
+            }
+            return;
+        }
+        match parsed {
+            Ok(Command::Run(spec)) => {
+                assert_eq!(spec.scenario, scenario, "{label}");
+                assert_eq!(spec.grid, grid, "{label}");
+                assert_eq!(spec.ferroan_region, region, "{label}");
+                assert_eq!(spec.basic_physics, physics, "{label}");
+                assert!(spec.rust_services.is_empty(), "{label}");
+                assert_eq!(spec.db, Database::Sqlite, "{label}");
+            }
+            other => panic!("{label} should parse as a run, got {other:?}"),
+        }
     }
 }

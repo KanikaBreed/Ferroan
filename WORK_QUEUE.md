@@ -122,10 +122,11 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR39 | R39: `setauthinfo` never writes back a consumed web key | READY after QR13 |
 | QR40 | R40: a zero-scale stored prim is sent as Pin8 sends it | DONE (this PR) |
 | QR41 | R41: the grid stop-order test does not race a proxy that has already stopped | DONE (this PR) |
-| QR42 | R42: live scenarios register in one table | READY |
+| QR42 | R42: live scenarios register in one table | DONE (this PR) |
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
-| Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | READY after Q60c1 |
+| QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
+| Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
 | Q13c2 | P0.13c2: bound the redaction list and expire remote console sessions | DONE (#122) |
@@ -208,16 +209,39 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65d | P2.5a4: C#-to-Ferroan store swap and 500-prim viewer load | DONE (split into Q65d1–Q65d2, all done) |
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
-| Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | READY after Q65 |
-| Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | READY after Q65 |
-| Q68 | P2.8a: rez a new prim and select it | READY after Q67 and Q64 |
+| Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | BLOCKED (split into Q206–Q207) |
+| Q206 | P2.5b1: compressed object updates | READY |
+| Q207 | P2.5b2: cached object probes | READY |
+| Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | BLOCKED (split into Q208–Q209) |
+| Q208 | P2.5c1: object properties and kills | READY |
+| Q209 | P2.5c2: distance culling | READY after Q208 |
+| Q68 | P2.8a: rez a new prim and select it | READY after Q208 and Q64 |
 | Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`) | READY after Q68 |
-| Q70 | P2.8b2: edit, texture, shape, extra params, flags and permissions; `build: pass` | READY after Q69 |
-| Q71 | P2.8c: link, unlink and duplicate, `link: pass` | READY after Q70 |
-| Q72 | P2.8d: take and delete to trash, `take: pass` | READY after Q68 and Q57 |
-| Q73 | P2.8e: rez from inventory | READY after Q72 and Q58 |
-| Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q70 |
+| Q70 | P2.8b2: edit, texture, shape, extra params, flags and permissions; `build: pass` | BLOCKED (split into Q210–Q211) |
+| Q210 | P2.8b21: texture, shape, extra params, click action and material | READY after Q69 |
+| Q211 | P2.8b22: flags and permissions | READY after Q210 |
+| Q71 | P2.8c: link, unlink and duplicate, `link: pass` | READY after Q211 |
+| Q72 | P2.8d: take and delete to trash, `take: pass` | BLOCKED (split into Q212–Q213) |
+| Q212 | P2.8d1: take and take-copy | READY after Q68 |
+| Q213 | P2.8d2: delete to trash, and the store check for take and delete | READY after Q212 and Q74 |
+| Q73 | P2.8e: rez from inventory | READY after Q212 and Q58 |
+| Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
+| Q214 | P2.0e4.1: OAR control file and region path | READY |
+| Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
+| Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
+| Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
+| Q218 | P2.0e4.5a: OAR owner and group resolution | READY |
+| Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
+| Q220 | P2.0e4.6a: OAR parcels in memory | READY |
+| Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |
+| Q222 | P2.0e4.7: OAR region, environment and estate settings | READY after Q225, Q226 and Q227 |
+| Q223 | P2.0e4.8: OAR assets | READY after Q218 |
+| Q224 | P2.0e4.w1: parcel removal and non-default parcels on all three databases | READY after Q74 and Q75 |
+| Q225 | P2.0e4.w2: region settings writer on all three databases | READY after Q74 |
+| Q226 | P2.0e4.w3: environment settings writer on all three databases | READY |
+| Q227 | P2.0e4.w4: estate settings writer on all three databases | READY |
+| Q228 | P2.0g2: Ferrobot local chat against a Ferroan region | READY |
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
 | Q76b | P2.10a2: object-crossing fixture with a seated avatar, two C# regions | READY after Q76 |
 | Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
@@ -281,87 +305,211 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | BLOCKED (needs Q102 and Q103, deferred to a later upgrade) |
+| Q100 | P3.0: Jolt oracle | BLOCKED (the matched-native oracle waits on the deferred upgrade, 26 November 2026; file compiles are Q100a; stock recordings are Q177) |
+| Q100a | P3.0f: Engine-independent file oracle | READY |
+| Q177 | P3.57: Stock Pin8 integrated recordings | READY |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
-| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q103 | P3.0d: Pin move | BLOCKED (the pin change waits on the deferred C# module move, 26 November 2026) |
+| Q104 | P3.0e: Decision entry | BLOCKED (the upgrade decision waits on the pin change, 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
-| Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
-| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | READY |
+| Q106 | P3.1b: Notices and the vendored-fork fallback | DONE (this PR) |
+| Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | DONE (this PR) |
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
-| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q141, Q157, Q122 and Q123 |
-| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
-| Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
-| Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
-| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
-| Q113 | P3.2d: Slope and hill | READY after Q112 |
+| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q193, Q157, Q122, Q123, Q115 and Q156 |
+| Q109 | P3.13a: Capsule, marker and intent | READY |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
+| Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
+| Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
+| Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
-| Q115 | P3.3: Physics thread and the request queue | READY after Q111 |
-| Q116 | P3.3b: Time dilation on terse updates | READY after Q111, Q115 and Q65c3b |
-| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q111 |
+| Q115 | P3.3: Physics thread and the request queue | READY |
+| Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
+| Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
+| Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
-| Q119 | P3.18a: Box contacts terrain and another box | READY after Q118 |
-| Q120 | P3.6: Buoyancy and gravity scale | READY after Q118 |
+| Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
+| Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
+| Q120 | P3.6: Gravity command matrix | READY after Q100a |
+| Q185 | P3.65: Three falling boxes | READY after Q120 and Q118 |
 | Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
-| Q122 | P3.41: Resize and reshape, uncut | READY after Q117, Q118, Q69 and Q70 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117 and Q118 |
 | Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
 | Q124 | P3.43: Grab | READY after Q118 |
-| Q125 | P3.44: Angular lock | READY after Q118 |
-| Q126 | P3.45: Impulse and push | READY after Q118 and Q101 |
+| Q125 | P3.44: Angular lock | READY after Q126 |
+| Q126 | P3.45: Impulse and push | READY after Q118 |
 | Q127 | P3.46: Constant force and torque | READY after Q118 |
 | Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
 | Q129 | P3.48: Look-at | READY after Q118 |
-| Q130 | P3.49: Keyframed motion | READY after Q118 and Q101 |
-| Q131 | P3.50: Materials | READY after Q120 and Q107 |
-| Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
-| Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
-| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
-| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
-| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
-| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
-| Q138 | P3.51: Physics shape type | READY after Q134, Q135 and Q69 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 and Q118 |
+| Q132 | P3.7a: Profile and path rings | READY after Q100a |
+| Q187 | P3.67: Ray through the cut | READY after Q132 and Q117 |
+| Q133 | P3.7b: Straight extrusions | READY after Q132 |
+| Q188 | P3.68: Circular extrusions, including a torus | READY after Q132 |
+| Q189 | P3.69: Hollow and cut seams | READY after Q132 |
+| Q190 | P3.70: Profile and path parameter sweep | READY after Q132 |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q118 |
+| Q192 | P3.72: Single-hull fallback after failed cells | READY after Q134, Q191, Q193 and Q139 |
+| Q135 | P3.9: Cell candidates | READY after Q132 |
+| Q191 | P3.71: Hole stays open | READY after Q135 and Q118 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q191 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q191 |
+| Q138 | P3.51: Physics shape type | READY after Q134, Q191 and Q142 |
 | Q139 | P3.10a: Sculpt vertices | READY after Q132 |
 | Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
-| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q141 | P3.11b: Hull-list and triangle selection | READY after Q110 |
+| Q193 | P3.73: Shared mesh cache and asynchronous cook | READY after Q141 and Q117 |
 | Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
-| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
-| Q144 | P3.18b: Linkset struck child | READY after Q142 and Q119 |
-| Q145 | P3.13b: Walk and run | READY after Q109, Q115 and Q112 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q191 |
+| Q144 | P3.18b: Linkset struck child | READY after Q186 |
+| Q145 | P3.13b: Walk and run | READY after Q109 and Q115 and Q112 |
 | Q146 | P3.13c: Fly | READY after Q145 |
 | Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
-| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147, Q130 and Q113 |
+| Q148 | P3.14b: Stairs, slope and a loose object | READY after Q147 and Q113 |
+| Q195 | P3.75: Moving, stopping and dropping support | READY after Q148 and Q130 |
 | Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
-| Q150 | P3.14d: Avatar position set | READY after Q109, Q103 and Q105 |
-| Q151 | P3.14e: Avatar size | READY after Q109, Q103 and Q105 |
-| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q119 |
-| Q153 | P3.15: Remove the walking stand-in | READY after Q145, Q118 and Q152 |
-| Q154 | P3.16: Arrival landing ray | READY after Q109, Q118 and Q115 |
+| Q150 | P3.14d: Avatar position set | READY after Q109 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q186 |
+| Q153 | P3.15: Jolt live selection before the stand-in is removed | READY after Q145 and Q118 and Q152 |
+| Q196 | P3.76: Remove the walking stand-in | READY after Q153 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109 and Q118 and Q115 |
 | Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
-| Q156 | P3.17: Camera ray | READY after Q118 and Q115 |
+| Q156 | P3.17: Camera ray | READY after Q115 and Q118 |
 | Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
-| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 |
-| Q159 | P3.19: Vehicle parameter store | READY after Q118 and Q107 |
-| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q100 and Q159 |
-| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120 and Q115 |
+| Q158 | P3.56: Ordinary-prim crossing failure and out of bounds | READY after Q100a |
+| Q204 | P3.84: Motor-stop on a vehicle | READY after Q158 and Q161 |
+| Q159 | P3.19: Vehicle parameter store | READY |
+| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q159 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120, Q177 and Q118 |
 | Q162 | P3.20c: Angular motor and banking | READY after Q161 |
-| Q163 | P3.21a: Hover | READY after Q161 and Q114 |
+| Q163 | P3.21a: Hover | READY after Q161 |
 | Q164 | P3.21b: Vertical attraction | READY after Q162 |
-| Q165 | P3.22a: Car | READY after Q163 and Q162 |
+| Q165 | P3.22a: Car | READY after Q163, Q162 and Q112 |
+| Q205 | P3.85: Vehicle crash scenarios | READY after Q165 |
 | Q166 | P3.22b: Sled | READY after Q165 and Q113 |
 | Q167 | P3.23a: Airplane | READY after Q164 |
 | Q168 | P3.23b: Mouselook | READY after Q167 |
 | Q169 | P3.23c: Balloon | READY after Q163 |
 | Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
-| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
-| Q172 | P3.24b: Saved `VehicleData` | READY after Q171 and Q142 |
-| Q173 | P3.25: Sit | READY after Q157 and Q147 |
+| Q171 | P3.24a: Motorcycle | READY after Q165 and Q161 |
+| Q197 | P3.77: Sailboat | READY after Q171, Q170 and Q161 |
+| Q172 | P3.24b: Saved `VehicleData` | READY after Q197 |
+| Q173 | P3.25: Untargeted actor ray and callback statuses | READY after Q157 and Q142 |
+| Q198 | P3.78: Explicit sit target | READY after Q173 and Q147 |
+| Q199 | P3.79: Stand, failure and the wide-top sit | READY after Q198 |
 | Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
-| Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
-| Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
+| Q175 | P3.27: `jolt` console commands | READY after Q100a |
+| Q176 | P3.28: Gate captures | BLOCKED (the same-native cross-platform gate waits on the deferred upgrade, the pin change and its decision, 26 November 2026) |
+| Q178 | P3.58: `PhysicsEnabled` off | READY after Q115 |
+| Q179 | P3.59: `PhysicsEnabled` on | READY after Q178 |
+| Q180 | P3.60: Fast body and a sensor between samples | READY after Q118 and Q177 |
+| Q181 | P3.61: Compound hull-count threshold | READY after Q142 and Q191 |
+| Q182 | P3.62: Terrain diagnostic probe | READY after Q112 and Q175 |
+| Q200 | P3.80: Sensor diagnostic query | READY after Q118 and Q175 |
+| Q201 | P3.81: Avatar diagnostic query | READY after Q145 and Q175 |
+| Q202 | P3.82: Sit diagnostic query | READY after Q199 and Q175 |
+| Q203 | P3.83: Vehicle diagnostic query | READY after Q161 and Q175 |
+| Q230 | P4.1a: Crate and script thread | READY |
+| Q231 | P4.1b: C interface over `Executor` | READY after Q230 |
+| Q232 | P4.1c: Default script reaches `llSay` | READY after Q231 |
+| Q233 | P4.1d: Object say on channel 0 | READY after Q232 |
+| Q234 | P4.2: Event queue of 64 | READY after Q232 |
+| Q235 | P4.1e: Start scripts already in loaded prims | READY after Q232 and Q234 |
+| Q236 | P4.1f: Restored start, and a worn attachment | READY after Q235 and Q248 |
+| Q237 | P4.3: Park and wake | READY after Q232 |
+| Q238 | P4.4: Memory account | READY after Q231 |
+| Q239 | P4.5: Detect parameters | READY after Q234 and Q257 |
+| Q240 | P4.6: Timers | READY after Q234, Q237 and Q258 |
+| Q241 | P4.7: Listens | READY after Q234, Q259 and Q233 |
+| Q242 | P4.8: Sensors | READY after Q239 and Q260 |
+| Q243 | P4.9: Link messages | READY after Q234, Q239 and Q261 |
+| Q244 | P4.10: Minimum event delay | READY after Q234 and Q262 |
+| Q245 | P4.11: Reset and state change | READY after Q234, Q240, Q241 and Q263 |
+| Q246 | P4.12: Permission grants | READY after Q245 and Q264 |
+| Q247 | P4.13a: Read globals and the state name | READY after Q232 and Q265 |
+| Q248 | P4.13b: Read the queue and detect data | READY after Q247, Q234, Q239 and Q266 |
+| Q249 | P4.13c: Read listens, the timer, sensors and the minimum delay | READY after Q248, Q240, Q241, Q242, Q244 and Q267 |
+| Q250 | P4.13d: Read permissions | READY after Q247, Q246 and Q268 |
+| Q251 | P4.14: Write `<Variables>` | READY after Q248, Q249 and Q250 |
+| Q252 | P4.15: Refuse the Phlox protobuf | READY after Q247 |
+| Q253 | P4.16: OSSL gate, no functions | READY after Q232 |
+| Q254 | P4.17: Script stats on the wire | READY after Q230 |
+| Q255 | P4.18: Bounds and native-boundary fuzz | READY after Q231, Q234 and Q238 |
+| Q256 | P4.19: Script oracle | READY after Q233 and Q234 |
+| Q257 | P4.19a: Oracle: detect | READY after Q256 |
+| Q258 | P4.19b: Oracle: timers | READY after Q256 |
+| Q259 | P4.19c: Oracle: listens | READY after Q256 |
+| Q260 | P4.19d: Oracle: sensors | READY after Q256 |
+| Q261 | P4.19e: Oracle: link messages | READY after Q256 |
+| Q262 | P4.19f: Oracle: minimum event delay | READY after Q256 |
+| Q263 | P4.19g: Oracle: reset and state change | READY after Q256 |
+| Q264 | P4.19h: Oracle: permission grants | READY after Q256 |
+| Q265 | P4.19i: Oracle: `<Variables>` globals | READY after Q256 |
+| Q266 | P4.19j: Oracle: restored queue | READY after Q256 and Q265 |
+| Q267 | P4.19k: Oracle: listens, timer, sensors, delay | READY after Q256 and Q265 |
+| Q268 | P4.19l: Oracle: restored permissions | READY after Q256, Q264 and Q265 |
+| Q269 | P4.19m: Oracle: touch and collision | READY after Q256 |
+| Q270 | P4.19n: Oracle: service-call lane | READY after Q256 |
+| Q271 | P4.19o: Oracle: function sleeps | READY after Q256 |
+| Q272 | P4.20: Touch and collision posts | READY after Q239, Q269 and Q119 |
+| Q273 | P4.21: Service-call lane | READY after Q237 and Q270 |
+| Q274 | P4.22: Between-events store, and object XML | READY after Q248, Q249 and Q250 |
+| Q275 | P4.23: Function sleep numbers | READY after Q237 and Q271 |
+| Q276 | P4.24: YEngine token stream, source hash and global declarations | READY |
+| Q277 | P4.24a: YEngine slot map | READY after Q276 |
+| Q278 | P4.24b: `MigrateOut` value codec | READY after Q277 |
+| Q279 | P4.24c: Snapshot wrapper and frame refusal | READY after Q278, Q234 and Q239 |
+| Q280 | P4.24d: Load snapshot globals into Luau | READY after Q277, Q278 and Q232 |
+| Q281 | P4.24e: Live compare of a YEngine read | READY after Q279, Q280 and Q251 |
+| Q282 | P4.25a: Write the snapshot value codec | READY after Q278 |
+| Q283 | P4.25b: Write the snapshot wrapper | READY after Q282, Q279 and Q276 |
+| Q284 | P4.25c: Live compare of a YEngine write | READY after Q283 and Q251 |
+| Q285 | P4.26: Portable LLSD state | BLOCKED (the C# LLSD spec is not in Pin8) |
+| Q286 | P4.27a: Save and restore a Luau thread | READY after Q231, Q232 and Q237 |
+| Q287 | P4.27b: Save and restore the host section | READY after Q286, Q234, Q240, Q241, Q242 and Q246 |
+| Q288 | P4.28a1: Conformance: values and UUID helpers | READY after Q232 and Q237 |
+| Q289 | P4.28a2: Conformance: integers and base64 | READY after Q288 |
+| Q290 | P4.28a3: Conformance: require and Ares | READY after Q288 |
+| Q291 | P4.28a4: Conformance: events, timers and prims | READY after Q288 |
+| Q292 | P4.28a5: Conformance: memory | READY after Q288 and Q238 |
+| Q293 | P4.28b: `slua`'s own conformance file | READY after Q231 |
+| Q294 | P4.29: Refuse a script only YEngine can compile | READY after Q232 |
+| Q295 | P4.S1: `ll` math, strings and crypto | BLOCKED (stage 2 plan pending) |
+| Q296 | P4.S2: `ll` lists and JSON | BLOCKED (stage 2 plan pending) |
+| Q297 | P4.S3: `ll` communication, beyond the channel-0 say in P4.1d | BLOCKED (stage 2 plan pending) |
+| Q298 | P4.S4: `ll` link messages and linkset data | BLOCKED (stage 2 plan pending) |
+| Q299 | P4.S5: `ll` HTTP, XML-RPC and experience | BLOCKED (stage 2 plan pending) |
+| Q300 | P4.S6: `ll` inventory, rez and notecards | BLOCKED (stage 2 plan pending) |
+| Q301 | P4.S7: `ll` land, estate, region and environment | BLOCKED (stage 2 plan pending) |
+| Q302 | P4.S8: `ll` physics-backed | BLOCKED (stage 2 plan pending) |
+| Q303 | P4.S9: `ll` avatars, animation, camera, permissions, money | BLOCKED (stage 2 plan pending) |
+| Q304 | P4.S10: `ll` sound and media | BLOCKED (stage 2 plan pending) |
+| Q305 | P4.S11: `ll` sensors and detect | BLOCKED (stage 2 plan pending) |
+| Q306 | P4.S12: `ll` object, prim and script control | BLOCKED (stage 2 plan pending) |
+| Q307 | P4.S13: `os` math, strings, lists, crypto | BLOCKED (stage 2 plan pending) |
+| Q308 | P4.S14: `os` avatars, teleport, attach, groups | BLOCKED (stage 2 plan pending) |
+| Q309 | P4.S15: `os` land, estate, region, sun, terrain | BLOCKED (stage 2 plan pending) |
+| Q310 | P4.S16: `os` drawing | BLOCKED (stage 2 plan pending) |
+| Q311 | P4.S17: `os` NPC | BLOCKED (stage 2 plan pending) |
+| Q312 | P4.S18: `os` physics, wind, health | BLOCKED (stage 2 plan pending) |
+| Q313 | P4.S19: `os` inventory and notecards | BLOCKED (stage 2 plan pending) |
+| Q314 | P4.S20: `os` sound | BLOCKED (stage 2 plan pending) |
+| Q315 | P4.S21: `os` object, prim, sit, particles, script engine | BLOCKED (stage 2 plan pending) |
+| Q316 | P4.S22: `os` grid and simulator queries | BLOCKED (stage 2 plan pending) |
+| Q317 | P4.S23: `os` time and creation stamps | BLOCKED (stage 2 plan pending) |
+| Q318 | P4.S24: `os` HTTP | BLOCKED (stage 2 plan pending) |
+| Q319 | P4.S25: `os` communication | BLOCKED (stage 2 plan pending) |
+| Q320 | P4.S26: `bot` | BLOCKED (stage 2 plan pending) |
+| Q321 | P4.S27: `iw*` | BLOCKED (stage 2 plan pending) |
 
-Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 to Q108 are READY. The other rows wait on the queue items named in their status, in the plan's dependency order.
+Q100 to Q205 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q108 stays blocked because it is split into Q108a and Q108b. Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is taken with Q100a. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+
+Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q321 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). P4.S1 to P4.S27 stay blocked until the stage 2 plan.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
@@ -813,6 +961,8 @@ QR27 (24 November 2026, `fix/upload-offer-bounds`): An offer shortens the name t
 QR29 (25 November 2026, `fix/qr29-teleport-flake`): The failing check was the return landing, not the hop: the home `AgentMovementComplete` after the return carried (128, 128, 2.1), the snapped walking height, while GridUser and Presence had been given (128, 128, 30). The hop completion made the actor live, the region then reported the root to GridUser and Presence, and a frame tick in that window (about 16 ms locally of a 90.9 ms frame) moved the avatar before the arrival packet sampled it. The completion now holds the actor until that sample, as a login pose does. Evidence is on the R29 row.
 
 QR30 (25 November 2026, `fix/qr30-harness-flakes`): Two harness flakes, no server change. The C# neighbour's arrival may now lie up to 1.0 m below the landing: it adds the physics actor, then makes two synchronous Robust calls (Presence and GridUser) before it samples the position, so the fall is wall time and grows on a slow runner; X, Y, the look and every Ferroan arrival stay exact. A grid proxy whose server the harness is stopping keeps a later request that finds it gone (refused, or reset or closed before any response byte) instead of failing: the C# neighbour's CloseAgent to home, sent after the bot logs out of it, reached the home proxy after home had stopped. Evidence is on the R30 row.
+
+QR46 (26 November 2026, `fix/qr46-neighbour-teleport`): The C#-to-C# neighbour arrival at Z 30.021477 came from the harness terrain seed. R29 holds the Ferroan return until the arrival sample. R30 allows the C# fall below the landing. The 29 m seed used the visual height. Pin8's physics box is 0.2 m taller, so the capsule started inside the terrain and the contact push lifted Z through the landing. The seed now leaves 5 cm under that capsule. The landing window is unchanged. No new TB or D. Evidence is on the R46 row.
 
 QR31 (25 November 2026, `fix/qr31-kill-groups`, urgent): the maintainer traced the anubis runner deaths to procps-ng 4.0.4's `/usr/bin/kill`, which reads `kill -TERM -<pgid>` without `--` as `kill(-1, SIGTERM)` and killed every process of the runner user. Every harness signal now goes through one helper that passes `--` and refuses 0 and 1. anubis stays paused with a temporary wrapper until this merges. Evidence is on the R31 row.
 

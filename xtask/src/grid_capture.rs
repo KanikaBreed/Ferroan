@@ -615,6 +615,36 @@ const LANDING_POS: &str = "<128, 128, 30>";
 const SERVICE_08: f64 = 0.8;
 const SERVICE_03: f64 = 0.3;
 
+/// Visual height of the captured neighbour avatar (`packed_appearance.height`).
+///
+/// Pin8 `AvatarAppearance.SetSize` (`AvatarAppearance.cs` 488–514 at
+/// `c401bceecd`) copies this into the physics box and then adds `AVBOXAJUST`
+/// (0.2, line 44) to Z only. `AddToPhysicalScene` passes that box to ubODE
+/// (`ScenePresence.cs` 5530–5542). `OdeCharacter` stores half of it as the
+/// capsule half-height and puts the capsule centre at the requested position
+/// (`ODECharacter.cs` 194–204). The feet-offset argument is not applied there,
+/// so a 1.9 m avatar extends about 1.05 m below the landing.
+pub(super) const NEIGHBOUR_AVATAR_HEIGHT: f32 = 1.9;
+
+/// `AvatarAppearance.AVBOXAJUST` at Pin8. Added to the physics box Z only.
+pub(super) const NEIGHBOUR_PHYSICS_BOX_ADJUST: f32 = 0.2;
+
+/// Air under the capsule when it is created, in metres.
+///
+/// The resting centre is this far below `LANDING`. A C# arrival may fall
+/// (`CSHARP_LANDING_FALL`) and may not rise, so the seed must not start the
+/// capsule inside the terrain: that contact push lifts Z through the landing.
+/// Five centimetres does not reach the FALLDOWN gate (faster than 3 m/s for
+/// longer than 800 ms) before the return transfer's standing-animation check.
+pub(super) const NEIGHBOUR_FOOT_CLEARANCE: f32 = 0.05;
+
+/// Flat terrain that leaves `NEIGHBOUR_FOOT_CLEARANCE` under the capsule of a
+/// `visual_height` avatar spawned at `LANDING`.
+pub(super) fn neighbour_landing_floor(visual_height: f32) -> f32 {
+    let half_box = (visual_height + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
+    LANDING[2] - half_box - NEIGHBOUR_FOOT_CLEARANCE
+}
+
 /// Which server runs a region whose captures a check reads.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RegionServer {
@@ -2355,7 +2385,9 @@ mod tests {
             .unwrap();
         let body = json_body(&create, "neighbour").unwrap();
         assert_eq!(body["start_pos"], LANDING_POS);
-        let half_height = body["packed_appearance"]["height"].as_f64().unwrap() as f32 / 2.0;
+        let height = body["packed_appearance"]["height"].as_f64().unwrap() as f32;
+        assert_eq!(height, NEIGHBOUR_AVATAR_HEIGHT);
+        let half_box = (height + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
 
         let dir = std::env::temp_dir().join(format!("neighbour-landing-{}", uuid::Uuid::new_v4()));
         super::super::prepare_neighbour_landing("child-view", &dir)
@@ -2377,10 +2409,41 @@ mod tests {
         .unwrap();
         let _ = fs::remove_dir_all(dir);
         let [x, y, z] = LANDING;
-        let clearance = z - half_height - map.height_at(x, y);
+        let seeded = map.height_at(x, y);
+        assert_eq!(seeded, neighbour_landing_floor(height));
+        let clearance = z - half_box - seeded;
         assert!(
             (0.01..0.1).contains(&clearance),
-            "foot clearance at the Q18a landing: {clearance} m"
+            "capsule clearance at the Q18a landing: {clearance} m"
+        );
+    }
+
+    #[test]
+    fn neighbour_landing_floor_clears_the_physics_capsule() {
+        let half_box = (NEIGHBOUR_AVATAR_HEIGHT + NEIGHBOUR_PHYSICS_BOX_ADJUST) * 0.5_f32;
+        let bottom = LANDING[2] - half_box;
+        // The 29 m seed sat above this bottom. ubODE's contact push then
+        // raised the centre through the landing (run 45801235266, Z 30.021477).
+        assert!(29.0_f32 > bottom, "old seed penetrates: bottom {bottom}");
+        let floor = neighbour_landing_floor(NEIGHBOUR_AVATAR_HEIGHT);
+        let clearance = bottom - floor;
+        assert!(
+            (clearance - NEIGHBOUR_FOOT_CLEARANCE).abs() < 1.0e-6,
+            "clearance {clearance}"
+        );
+        assert!((0.01..0.1).contains(&clearance), "{clearance}");
+        let resting = floor + half_box;
+        assert!(
+            resting < LANDING[2],
+            "resting {resting} is above the landing"
+        );
+        assert!(
+            resting > LANDING[2] - CSHARP_LANDING_FALL,
+            "resting {resting} is outside the arrival window"
+        );
+        assert!(
+            29.0_f32 + half_box > LANDING[2],
+            "old resting height would not cross the landing"
         );
     }
 
@@ -2398,6 +2461,11 @@ mod tests {
             assert!(
                 !is_landing([128.0, 128.0, 30.002], look, server),
                 "{server:?} above"
+            );
+            // PR #330 run 45801235266: the contact push through a 29 m seed.
+            assert!(
+                !is_landing([128.0, 128.0, 30.021477], look, server),
+                "{server:?} contact push"
             );
             assert!(
                 !is_landing([128.01, 128.0, 30.0], look, server),

@@ -737,64 +737,19 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     let rust_assets = spec.rust_assets();
     let rust_accounts = spec.rust_accounts();
     let rust_auth = spec.rust_auth();
-    if ferroan
-        && !matches!(
-            scenario,
-            "login"
-                | "caps"
-                | "ferrobot"
-                | "texture"
-                | "inventory"
-                | "assets"
-                | "limits"
-                | "roots"
-                | "chat"
-                | "teleport"
-                | "hop"
-                | "uploads"
-                | "avatars"
-                | "neighbour"
-                | "walk"
-                | "prim-arrival"
-                | "material-override"
-                | "report"
-                | "parcel-timing"
-                | "parcel-properties"
-        )
-    {
-        return Err(
-            "the Ferroan grid region currently supports login, caps, ferrobot, texture, inventory, assets, limits, roots, chat, teleport, hop, uploads, avatars, neighbour, walk, prim-arrival, material-override, report, parcel-timing and parcel-properties scenarios"
-                .to_string(),
-        );
+    let Some(row) = ferroan_bot::register::get(scenario) else {
+        if ferroan {
+            return Err(ferroan_bot::register::ferroan_denied());
+        }
+        return Err(ferroan_bot::register::grid_unknown(scenario));
+    };
+    if ferroan && matches!(row.ferroan, ferroan_bot::register::Ferroan::Deny) {
+        return Err(ferroan_bot::register::ferroan_denied());
     }
-    if scenario == "limits" && !ferroan {
-        return Err("the limits scenario runs on the Ferroan region".to_string());
-    }
-    if !matches!(
-        scenario,
-        "neighbour"
-            | "caps"
-            | "ferrobot"
-            | "limits"
-            | "roots"
-            | "hop"
-            | "uploads"
-            | "avatars"
-            | "object-cross"
-            | "child-view"
-            | "prim-load"
-            | "store-handoff"
-            | "prim-capture"
-            | "prim-arrival"
-            | "material-override"
-            | "report"
-    ) && ParcelSeed::scenario(scenario).is_none()
-        && ferroan_bot::scenario::selection(scenario).is_none()
+    if let Some(message) = row.ferroan.require_message()
+        && !ferroan
     {
-        return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
-            ferroan_bot::scenario::NAMES.join(", ")
-        ));
+        return Err(message.to_string());
     }
     if let Some(pid) = live::standalone_is_up()? {
         return Err(format!(
@@ -808,12 +763,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     } else {
         None
     };
-    let ferrobot_binary = if scenario == "ferrobot" {
+    let ferrobot_binary = if row.runner == ferroan_bot::register::Runner::Ferrobot {
         Some(crate::ferrobot_build::build()?)
     } else {
         None
     };
-    let needs_region_metrics = ferroan || scenario == "prim-load";
+    let needs_region_metrics = ferroan || row.metrics_always;
     let port_count = 6
         + usize::from(rust_assets || rust_accounts || rust_auth)
         + usize::from(needs_region_metrics)
@@ -879,7 +834,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             captures.neighbour.clone(),
         ),
     ])?);
-    let udp_relay = if ferroan && scenario == "ferrobot" {
+    let udp_relay = if ferroan && row.relay {
         Some(
             require_started(&grid.proxies, "proxies")?
                 .block_on(ferrobot_capture::start_udp(
@@ -963,8 +918,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     };
     // Parcel timing, and any Ferroan parcel seed, reads memberships from Robust.
     // Other C# parcel scenarios keep the local connector and their region groups.db.
-    let remote_groups =
-        scenario == "parcel-timing" || (ferroan && ParcelSeed::scenario(scenario).is_some());
+    let remote_groups = ferroan_bot::register::remote_groups(row, ferroan);
     let groups_connection = if remote_groups {
         let db = root.join("groups.db");
         parcel_capture::seed_memberships(&db)?;
@@ -1034,14 +988,14 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     println!("live: grid region {HOME_NAME} on {HOME_BIND}:{home_port}");
     let home = RegionStart {
         ferroan,
-        login_only: ferroan || matches!(scenario, "login" | "caps" | "ferrobot"),
+        login_only: ferroan || row.login_only,
         name: HOME_NAME,
         uuid: live::REGION_UUID,
         x: HOME_X,
         y: HOME_Y,
         http_bind: HOME_BIND,
         advertised: ADVERTISED,
-        udp_bind: if ferroan && scenario == "ferrobot" {
+        udp_bind: if ferroan && row.relay {
             HOME_BIND
         } else {
             ADVERTISED
@@ -1053,7 +1007,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         // writers on one path, each at its own offset, overwrote each
         // other's records (the `live images` re-encode failures on
         // AgentUpdate), so the region's own capture goes beside it.
-        capture: Some(root.join(if ferroan && scenario == "ferrobot" {
+        capture: Some(root.join(if ferroan && row.relay {
             "capture-udp-region.cap"
         } else {
             "capture-udp.cap"
@@ -1063,23 +1017,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         auth_uri: auth_uri.clone(),
         metrics_port: region_metrics,
         parcel_seed: ParcelSeed::scenario(scenario),
-        store: if scenario == "prim-load" {
-            RegionStore::LoadFixture
-        } else if scenario == "store-handoff" {
-            RegionStore::EditPrimFixture
-        } else if matches!(
-            scenario,
-            "prim-capture" | "prim-arrival" | "object-cross" | "material-override"
-        ) {
-            RegionStore::PrimFixture
-        } else {
-            RegionStore::Standard
-        },
-        patch_materials: scenario == "material-override",
+        store: region_store(row.home_store),
+        patch_materials: row.patch_materials,
         basic_physics: spec.basic_physics && !ferroan,
         groups_uri: groups_uri.clone(),
     };
-    if matches!(scenario, "store-handoff" | "prim-load") {
+    if row.runner == ferroan_bot::register::Runner::Handoff {
         if docker {
             return Err(format!(
                 "{scenario} needs local region processes on the same SQLite file"
@@ -1109,7 +1052,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         &estate,
         &RegionStart {
             ferroan: false,
-            login_only: matches!(scenario, "login" | "caps" | "ferrobot"),
+            login_only: row.login_only,
             name: NEIGHBOUR_NAME,
             uuid: NEIGHBOUR_UUID,
             x: NEIGHBOUR_X + u32::from(ParcelSeed::scenario(scenario) == Some(ParcelSeed::Legacy)),
@@ -1127,11 +1070,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             account_uri: account_uri.clone(),
             auth_uri: auth_uri.clone(),
             metrics_port: None,
-            store: match scenario {
-                "child-view" => RegionStore::PrimFixture,
-                "object-cross" => RegionStore::EmptyPrimCapture,
-                _ => RegionStore::Standard,
-            },
+            store: region_store(row.neighbour_store),
             patch_materials: false,
             parcel_seed: None,
             groups_uri: None,
@@ -1163,7 +1102,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         };
         // The relay carries Ferrobot's circuit only.
         let companion_udp =
-            (ferroan && scenario == "ferrobot").then(|| SocketAddr::from((HOME_BIND, home_port)));
+            (ferroan && row.relay).then(|| SocketAddr::from((HOME_BIND, home_port)));
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -1176,9 +1115,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
                 // Read the complete proxy evidence after grid.stop drains it.
                 http: Vec::new(),
             })
-    } else if scenario == "limits" {
-        if !ferroan {
-            return Err("the limits scenario runs on the Ferroan region".to_string());
+    } else if row.runner == ferroan_bot::register::Runner::Limits {
+        if let Some(message) = row.ferroan.require_message().filter(|_| !ferroan) {
+            return Err(message.to_string());
         }
         let Some(metrics_port) = region_metrics else {
             return Err("the limits scenario needs the region metrics listener".to_string());
@@ -1218,7 +1157,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         (&format!("http://{ADVERTISED}:{private_proxy}"), &root, ferroan),
         status.as_ref().map(|(region, metrics)| (region.as_str(), metrics.as_str())),
     ).and_then(|mut report| {
-        if scenario == "login" {
+        if row.login_probe {
             let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()
                 .map_err(|error| format!("could not start login probe runtime: {error}"))?;
             let private_uri = format!("http://{ADVERTISED}:{private_proxy}");
@@ -1241,7 +1180,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             capture_missing_presence(SocketAddr::from((ROBUST_BIND, robust_private)), &root)?;
             report.lines.push('\n'); report.lines.push_str(&line);
         }
-        if ferroan && matches!(scenario, "texture" | "inventory" | "assets") {
+        if ferroan && row.inventory_probe {
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
@@ -1327,33 +1266,34 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         }
     };
     let proxy_report = proxy_report(&captures, &grid.passwords)?;
-    if scenario == "login" && !ferroan {
+    let compare = row.compare;
+    if compare == ferroan_bot::register::Compare::Login && !ferroan {
         login_probe::verify_csharp_login_position(&root)?;
     }
-    if scenario == "parcel-timing" {
+    if compare == ferroan_bot::register::Compare::ParcelTiming {
         let timing = parcel_timing::extract(&root)?;
         Ok(format!("{}\n{timing}", report.lines))
-    } else if scenario == "parcel-properties" {
+    } else if compare == ferroan_bot::register::Compare::ParcelProperties {
         let properties = parcel_properties::extract(&root, ferroan)?;
         Ok(format!("{}\n{properties}", report.lines))
-    } else if scenario == "object-cross" {
+    } else if compare == ferroan_bot::register::Compare::ObjectCross {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
     } else if let Some(observation) = report.child {
         let line = child_capture::finish(&root, &observation)?;
         Ok(format!("{}\n{line}", report.lines))
-    } else if scenario == "prim-capture" {
+    } else if compare == ferroan_bot::register::Compare::PrimCapture {
         let fixture = prim_capture::extract(&root)?;
         Ok(format!("{}\n{fixture}", report.lines))
-    } else if scenario == "prim-arrival" {
+    } else if compare == ferroan_bot::register::Compare::PrimArrival {
         let fixture =
             prim_arrival::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
-    } else if scenario == "material-override" {
+    } else if compare == ferroan_bot::register::Compare::MaterialOverride {
         let fixture =
             material_override::extract(&root, &home_log, ferroan).map_err(|e| e.to_string())?;
         Ok(format!("{}\n{fixture}", report.lines))
-    } else if scenario == "report" {
+    } else if compare == ferroan_bot::register::Compare::Report {
         // The capture still has to pass check, redact and replay. Its packet
         // counts are not report lines: the two regions do not send the same
         // number of datagrams, and the compare is the lines below.
@@ -1363,7 +1303,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             &[&estate, &chat],
         )?;
         Ok(report.lines)
-    } else if scenario == "ferrobot" {
+    } else if compare == ferroan_bot::register::Compare::Ferrobot {
         let http = ferrobot_capture::http_records(&[
             captures.robust_public.clone(),
             captures.home.clone(),
@@ -1371,12 +1311,12 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let capture =
             live::finish_capture(&root.join("capture-udp.cap"), &http, &[&estate, &chat])?;
         Ok(format!("{}\n{capture}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "limits" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Proxy {
         Ok(format!("{}\n{proxy_report}", report.lines))
-    } else if ferroan && (scenario == "roots" || scenario == "uploads") {
+    } else if ferroan && compare == ferroan_bot::register::Compare::TwoRoots {
         let comparison = login_capture::compare_two_roots(&root)?;
         Ok(format!("{}\n{comparison}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "avatars" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Avatars {
         let roots = login_capture::compare_two_roots(&root)?;
         let comparison = avatars_capture::compare_avatars(&root)?;
         let capture = live::finish_capture(
@@ -1388,7 +1328,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{roots}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "chat" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Chat {
         let comparison = login_capture::compare_local_chat(&root)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
@@ -1399,9 +1339,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "hop" {
-        Ok(format!("{}\n{proxy_report}", report.lines))
-    } else if ferroan && scenario == "teleport" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Teleport {
         let comparison = login_capture::compare_local_teleport(&root)?;
         let capture = live::finish_capture(
             &root.join("capture-udp.cap"),
@@ -1412,7 +1350,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\n{comparison}\n{capture}\n{proxy_report}",
             report.lines
         ))
-    } else if ferroan && scenario == "neighbour" {
+    } else if ferroan && compare == ferroan_bot::register::Compare::Neighbour {
         let comparison =
             login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::Ferroan)?;
         let capture = live::finish_capture(
@@ -1426,7 +1364,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         ))
     } else if ferroan {
         let comparison = login_capture::compare(&root)?;
-        let arrival = if scenario == "login" {
+        let arrival = if compare == ferroan_bot::register::Compare::Login {
             login_capture::compare_root_arrival(&root)?
         } else {
             String::new()
@@ -1436,7 +1374,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
             "{}\nlogout: LogoutReply\n{comparison}\n{arrival}\n{logout_region}\n{proxy_report}",
             report.lines
         ))
-    } else if scenario == "neighbour" {
+    } else if compare == ferroan_bot::register::Compare::Neighbour {
         let comparison =
             login_capture::compare_neighbour_teleport(&root, login_capture::RegionServer::CSharp)?;
         let capture = live::finish_capture(
@@ -1625,7 +1563,8 @@ fn scrape_running(
 
 #[cfg(target_os = "linux")]
 fn observe_smoke_logs(docker: bool, ferroan: bool, scenario: &str) -> Result<String, String> {
-    if !docker || !ferroan || scenario != "login" || crate::docker::smoke_otlp().is_none() {
+    let smoke = ferroan_bot::register::get(scenario).is_some_and(|row| row.smoke_logs);
+    if !docker || !ferroan || !smoke || crate::docker::smoke_otlp().is_none() {
         return Ok(String::new());
     }
     let logs = crate::docker::container_logs(crate::docker::NAME_HOME)?;
@@ -1678,7 +1617,7 @@ fn run_bot(
         .map_err(|_| "the neighbour uuid is not a uuid".to_string())?;
     let mut harness = live::harness(login_uri, online.0, estate, chat, region_log)?;
     harness.require_logout_reply = strict_logout;
-    if scenario == "roots" {
+    if ferroan_bot::register::get(scenario).is_some_and(|row| row.pass_metrics) {
         harness.metrics = status.map(|(_, metrics)| metrics.to_string());
     }
     harness.neighbour = Some(ferroan_bot::scenario::Neighbour {
@@ -1693,7 +1632,9 @@ fn run_bot(
         .build()
         .map_err(|error| format!("could not start tokio: {error}"))?;
     let (private_uri, directory, ferroan) = online;
-    if scenario == "child-view" {
+    if ferroan_bot::register::get(scenario)
+        .is_some_and(|row| row.bot == ferroan_bot::register::Bot::ChildView)
+    {
         let evidence = runtime.block_on(async {
             let observed =
                 ferroan_bot::scenario::child_view::run(&harness, HOME_NAME, NEIGHBOUR_NAME).await?;
@@ -1716,12 +1657,15 @@ fn run_bot(
         scenario,
         private_uri,
         |selected| async move {
-            if selected == "parcel-timing" {
+            let selected_row = ferroan_bot::register::get(selected);
+            if selected_row.is_some_and(|row| row.bot == ferroan_bot::register::Bot::ParcelTiming) {
                 harness_ref
                     .http_trace
                     .scope(ferroan_bot::scenario::parcel_timing(harness_ref))
                     .await
-            } else if selected == "parcel-properties" {
+            } else if selected_row
+                .is_some_and(|row| row.bot == ferroan_bot::register::Bot::ParcelProperties)
+            {
                 harness_ref
                     .http_trace
                     .scope(ferroan_bot::scenario::parcel_properties(
@@ -1745,7 +1689,7 @@ fn run_bot(
                     "{selected}: both viewers received {} ParcelOverlay packets",
                     seed.packets()
                 ))
-            } else if scenario == "login" {
+            } else if ferroan_bot::register::get(scenario).is_some_and(|row| row.observe_login) {
                 ferroan_bot::scenario::run_login_observed(harness_ref, |arrival| async move {
                     let mut line =
                         login_probe::online(private_uri, directory, ferroan, arrival).await?;
@@ -2118,6 +2062,17 @@ fn in_process_user_account(log: &str) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn region_store(store: ferroan_bot::register::Store) -> RegionStore {
+    match store {
+        ferroan_bot::register::Store::Standard => RegionStore::Standard,
+        ferroan_bot::register::Store::EmptyPrim => RegionStore::EmptyPrimCapture,
+        ferroan_bot::register::Store::Prim => RegionStore::PrimFixture,
+        ferroan_bot::register::Store::EditPrim => RegionStore::EditPrimFixture,
+        ferroan_bot::register::Store::Load => RegionStore::LoadFixture,
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RegionStore {
     Standard,
@@ -2486,11 +2441,14 @@ fn prepare_region_cwd(cwd: &Path, publish: &Path, source: &Path) -> Result<(), S
 /// Q18a checks a standing avatar on both departures. The C# neighbour's
 /// default island peaks at 25 m, below the 30 m landing: ubODE can put the
 /// avatar into FALLDOWN before the return PUT (Pin8 ScenePresenceAnimator).
+/// The seeded floor is the physics capsule, not the visual height: Pin8 adds
+/// 0.2 m to the box, so a 29 m seed intersects it and the contact push lifts
+/// the arrival through the landing.
 #[cfg(target_os = "linux")]
 async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), String> {
     use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 
-    if scenario != "neighbour" {
+    if !ferroan_bot::register::get(scenario).is_some_and(|row| row.neighbour_terrain) {
         return Ok(());
     }
     fs::create_dir_all(cwd).map_err(|e| e.to_string())?;
@@ -2503,9 +2461,11 @@ async fn prepare_neighbour_landing(scenario: &str, cwd: &Path) -> Result<(), Str
 
     // TerrainData.FromCompressedTerrainSerializationV2D at Pin8 reads
     // revision 22 as two little-endian dimensions followed by float heights.
-    // At 29 m the captured 1.9 m avatar's feet have just 5 cm to settle.
+    // The height is the capsule floor: visual height plus Pin8's 0.2 m box
+    // adjustment, then 5 cm of air under that capsule.
+    let floor = login_capture::neighbour_landing_floor(login_capture::NEIGHBOUR_AVATAR_HEIGHT);
     let mut heights = 256_i32.to_le_bytes().repeat(2);
-    heights.extend_from_slice(&29_f32.to_le_bytes().repeat(256 * 256));
+    heights.extend_from_slice(&floor.to_le_bytes().repeat(256 * 256));
     let mut conn = SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(db))
         .await
         .map_err(|e| e.to_string())?;

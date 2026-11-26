@@ -163,27 +163,20 @@ where
     F: FnMut(&'a str) -> Fut,
     Fut: std::future::Future<Output = Result<String, String>>,
 {
-    let mut names =
-        ferroan_bot::scenario::selection(scenario).map_or_else(|| vec![scenario], <[_]>::to_vec);
-    if scenario == "all" {
-        names.push("neighbour");
-    }
-    if scenario == "report" {
-        // Login, chat, the in-region teleport and the neighbour teleport.
-        // One grid, then the compare keeps only those report lines.
-        names = vec!["login", "chat", "teleport", "neighbour"];
-    }
+    // `all` appends the neighbour login. `report` keeps login, chat, the
+    // in-region teleport and the neighbour teleport, and the compare keeps
+    // only those lines.
+    let registered = ferroan_bot::register::grid_names(scenario);
+    let names: Vec<&str> = match &registered {
+        Some(names) => names.to_vec(),
+        None => vec![scenario],
+    };
     let mut lines = Vec::new();
     for name in names {
         let result = async {
             let line = run(name).await?;
             offline(private_uri).await?;
-            if name == "chat"
-                || name == "roots"
-                || name == "uploads"
-                || name == "avatars"
-                || name == "object-cross"
-            {
+            if ferroan_bot::register::get(name).is_some_and(|row| row.settle_second) {
                 offline_user(private_uri, crate::live::CHAT_USER).await?;
             }
             Ok::<_, String>(line)
