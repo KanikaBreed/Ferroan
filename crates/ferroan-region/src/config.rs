@@ -130,6 +130,7 @@ pub struct RegionConfig {
     pub grid_server_uri: String,
     pub presence_server_uri: String,
     pub grid_user_server_uri: String,
+    pub groups: crate::groups::GroupsClient,
     pub control_plane: ControlPlaneAccess,
     pub estate_owner: Uuid,
     pub staff_permissions: StaffPermissions,
@@ -423,6 +424,7 @@ impl RegionConfig {
             region_owner_is_god,
             region_manager_is_god,
             user_account_server_uri,
+            groups: crate::groups::GroupsClient::from_config(server)?,
             grid_home,
             estate_store: estate_connection(server),
             handshake,
@@ -641,7 +643,7 @@ fn log_config_error(error: ferroan_log::LogError) -> RegionConfigError {
     }
 }
 
-fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {
+pub(crate) fn value(section: &str, key: &'static str, reason: &'static str) -> RegionConfigError {
     RegionConfigError::Value {
         section: section.to_owned(),
         key,
@@ -1080,7 +1082,11 @@ fn prim_scale_limits(
     )
 }
 
-fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {
+pub(crate) fn boolean(
+    config: &Config,
+    section: &str,
+    key: &'static str,
+) -> Result<bool, RegionConfigError> {
     boolean_or(config, section, key, false)
 }
 
@@ -1159,7 +1165,7 @@ fn library_file(config_dir: &Path, config: &Config) -> Result<Option<PathBuf>, R
     }
 }
 
-fn check_uri(text: &str) -> Result<(), &'static str> {
+pub(crate) fn check_uri(text: &str) -> Result<(), &'static str> {
     if text.len() > 2048 {
         return Err("URI exceeds 2048 bytes");
     }

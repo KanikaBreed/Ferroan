@@ -6,6 +6,8 @@
 
 pub const AVATAR_ROWS: &str = "avatar.rows";
 pub const AVATAR_ROW_BYTES: &str = "avatar.row-bytes";
+pub const BAKES_BYTES: &str = "bakes.bytes";
+pub const BAKES_ID_BYTES: &str = "bakes.id-bytes";
 pub const HTTP_POST_BODY: &str = "http.post-body";
 pub const HTTP_ASSET_BODY: &str = "http.asset-body";
 pub const HTTP_XML_CHARS: &str = "http.xml-chars";

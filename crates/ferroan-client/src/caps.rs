@@ -29,6 +29,8 @@
 // and Source/OpenSim.Framework.Servers.HttpServer/{BaseHttpServer,PollServiceHttpRequest}.cs,
 // plus OSHttpServer/HttpResponse.cs there (default MIME and error connection close),
 // OpenSim-NGC/OpenSim-Tranquillity @ 858321883f5487a5d192d36ea9d7b90fa468310c.
+// ObjectAnimation seed negotiation follows BunchOfCaps.cs at
+// KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -178,6 +180,7 @@ struct CapsState {
     granted: Vec<GrantedCap>,
     /// `CapsFlags.SentSeeds`: set once a seed request has been answered.
     seeds_sent: Arc<AtomicBool>,
+    object_animations: Arc<AtomicBool>,
 }
 
 #[derive(Clone)]
@@ -290,6 +293,7 @@ impl CapsRegistry {
                 agent_id,
                 granted,
                 seeds_sent: Arc::new(AtomicBool::new(false)),
+                object_animations: Arc::default(),
             },
             events_path,
         });
@@ -309,12 +313,22 @@ impl CapsRegistry {
     /// The flag a seed answer sets for this agent's registration
     /// (`CapsFlags.SentSeeds`). `None` when the agent has no seed here.
     pub fn seeds_sent(&self, agent_id: Uuid) -> Option<Arc<AtomicBool>> {
+        self.seed_flags(agent_id).map(|(sent, _)| sent)
+    }
+
+    /// Generation-specific SentSeeds and ObjectAnim flags for the region circuit.
+    pub fn seed_flags(&self, agent_id: Uuid) -> Option<(Arc<AtomicBool>, Arc<AtomicBool>)> {
         self.active
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .iter()
             .find(|registered| registered.state.agent_id == agent_id)
-            .map(|registered| Arc::clone(&registered.state.seeds_sent))
+            .map(|registered| {
+                (
+                    Arc::clone(&registered.state.seeds_sent),
+                    Arc::clone(&registered.state.object_animations),
+                )
+            })
     }
 
     /// Close one agent's seed, event queue and granted paths.
@@ -562,6 +576,7 @@ impl CapsServer {
             agent_id: Uuid::nil(),
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
         };
         let queue = state.queue.clone();
         let app = Router::new()
@@ -636,6 +651,9 @@ async fn seed(State(state): State<CapsState>, request: Request) -> Response {
     }
     for name in names {
         let text = name.to_osd_string();
+        if text == "ObjectAnimation" {
+            state.object_animations.store(true, Ordering::Release);
+        }
         if text == "EventQueueGet" {
             continue;
         }
@@ -810,6 +828,7 @@ mod tests {
             agent_id: Uuid::nil(),
             granted: Vec::new(),
             seeds_sent: Arc::new(AtomicBool::new(false)),
+            object_animations: Arc::default(),
         };
         // C# treats even OPTIONS and malformed bodies as polls on an EQ route.
         let request = Request::builder()
@@ -913,13 +932,16 @@ mod tests {
             404
         );
         registry.register(&path).unwrap();
+        let (_, animations) = registry.seed_flags(Uuid::nil()).unwrap();
+        assert!(!animations.load(Ordering::Acquire));
         assert!(matches!(registry.register(&path), Err(CapsError::Occupied)));
         let (status, bytes, _) = post(
             &seed_url,
             "application/llsd+xml",
-            name_list(["EventQueueGet"]),
+            name_list(["EventQueueGet", "ObjectAnimation"]),
         )
         .await;
+        assert!(animations.load(Ordering::Acquire));
         assert_eq!(status, 200);
         let map = from_xml(&bytes).unwrap();
         let events = map.get("EventQueueGet").as_str().to_owned();

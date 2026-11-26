@@ -74,7 +74,7 @@ impl AuthHttp {
             config_bool(config, SECTION, "AllowGetAuthInfo", false)?,
             config_bool(config, SECTION, "AllowSetAuthInfo", false)?,
             config_bool(config, SECTION, "AllowSetPassword", false)?,
-            !config_bool_either(config, "AllowllHTTPRequestIn", false)?,
+            !config_bool_either(config, SECTION, "AllowllHTTPRequestIn", false)?,
         ))
     }
 }
@@ -90,7 +90,7 @@ pub fn open_authorization(config: &Config) -> Result<(), AuthError> {
     refuse_transport(config, "AuthorizationService")
 }
 
-fn refuse_transport(config: &Config, section: &str) -> Result<(), AuthError> {
+pub(crate) fn refuse_transport(config: &Config, section: &str) -> Result<(), AuthError> {
     if https_main(config)? {
         return Err(AuthError::Config(
             "https_main is set and this build serves HTTP only",
@@ -133,9 +133,14 @@ fn https_main(config: &Config) -> Result<bool, AuthError> {
     config_bool(config, "Network", "https_main", false)
 }
 
-fn config_bool_either(config: &Config, key: &str, default: bool) -> Result<bool, AuthError> {
+pub(crate) fn config_bool_either(
+    config: &Config,
+    service: &str,
+    key: &str,
+    default: bool,
+) -> Result<bool, AuthError> {
     let mut value = default;
-    for section in ["Network", SECTION] {
+    for section in ["Network", service] {
         if config.get(section, key).is_some() {
             value = config_bool(config, section, key, value)?;
         }

@@ -15,6 +15,8 @@ mod chat;
 mod circuit;
 mod datagram_log;
 mod entity_feed;
+mod task_batch;
+pub use task_batch::TaskBatch;
 mod event_queue;
 mod handshake;
 mod names;
