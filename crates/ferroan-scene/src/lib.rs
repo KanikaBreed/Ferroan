@@ -128,7 +128,7 @@ pub use payloads::{
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
 pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
-pub use raw32::{load_raw32, load_raw32_section};
+pub use raw32::load_raw32;
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;

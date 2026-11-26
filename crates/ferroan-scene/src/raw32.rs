@@ -26,6 +26,8 @@
 // Ported to Rust for Ferroan from
 //   Source/OpenSim.Region.CoreModules/World/Terrain/FileLoaders/RAW32.cs
 //   Source/OpenSim.Region.Framework/Scenes/TerrainChannel.cs (the indexer)
+//   Source/OpenSim.Framework/TerrainData.cs (the setter and the constructor)
+//   Source/OpenSim.Framework/TerrainTaintsArray.cs (Set, calclen)
 //   KanikaBreed/OpenSim-Tranquillity @ c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
@@ -35,10 +37,11 @@
 //! Y outer and X inner. `TerrainChannel`'s setter drops NaN and infinity.
 //! `TerrainData` then skips a write when the cell already compares equal, so
 //! the initial +0 stays +0 when the file says -0. A file shorter than that
-//! square fails. The section reader is `LoadFile` with offsets. `fileHeight`
-//! is unused. A changed sample whose taint word lies outside the array
-//! `TerrainData` allocated fails, as `TerrainTaintsArray.Set` throws. Saving
-//! a tile is not this loader.
+//! square fails. A square trimmed above 4096 reports `terrain.edge`. Pin8
+//! allocates that square. The section reader is `LoadFile` with offsets.
+//! `fileHeight` is unused. A changed sample whose taint word lies outside the
+//! array `TerrainData` allocated fails, as `TerrainTaintsArray.Set` throws.
+//! No load path calls this decoder yet.
 
 use crate::error::TerrainError;
 use crate::height::{Heightmap, MAX_EDGE};
@@ -62,8 +65,15 @@ pub fn load_raw32(bytes: &[u8]) -> Result<Heightmap, TerrainError> {
 
 /// `RAW32.LoadFile` for one section of a larger raw file.
 ///
-/// `file_height` is the C# parameter. The method never reads it.
-pub fn load_raw32_section(
+/// `file_height` is the C# parameter. The method never reads it. A negative
+/// `file_width` with `offset_y` at most 0 matches Pin8: the Y-strip loop does
+/// not run, and the X tail does not run, so the section is still read. A
+/// positive `offset_y` refuses a negative `file_width`. C# multiplies that
+/// strip in an unchecked `int`, which can wrap for a very wide file. This
+/// loader does not wrap it. Neither case is `load oar`. Crate-private until
+/// the terrain load-tile caller exists.
+#[allow(dead_code)]
+pub(crate) fn load_raw32_section(
     bytes: &[u8],
     offset_x: i32,
     offset_y: i32,
@@ -75,20 +85,20 @@ pub fn load_raw32_section(
     let _ = file_height;
     let width = section_edge(section_width)?;
     let height = section_edge(section_height)?;
-    if file_width < 0 || section_width < 0 {
-        return Err(TerrainError::Raw32);
-    }
     let width_i = i32::try_from(width).map_err(|_| TerrainError::Raw32)?;
     let height_i = i32::try_from(height).map_err(|_| TerrainError::Raw32)?;
     let mut cells = vec![0.0; width.checked_mul(height).ok_or(TerrainError::Raw32)?];
     let mut pos = 0usize;
-    let strip = y_strip_bytes(section_height, file_width, section_width)?;
     let row_skip = (section_width as usize)
         .checked_mul(4)
         .ok_or(TerrainError::Raw32)?;
+    // `offset_y <= 0` never reads the Y strip, so `file_width` is not multiplied.
     let rows = offset_y.max(0);
-    for _ in 0..rows {
-        skip(bytes, &mut pos, strip);
+    if rows > 0 {
+        let strip = y_strip_bytes(section_height, file_width, section_width)?;
+        for _ in 0..rows {
+            skip(bytes, &mut pos, strip);
+        }
     }
     for y in 0..height {
         let mut curr_x = 0i32;
@@ -113,11 +123,14 @@ pub fn load_raw32_section(
     Ok(Heightmap::from_cells(width_i, height_i, cells))
 }
 
-/// `LoadStream`'s dimension trim. A square above [`MAX_EDGE`] is
-/// [`TerrainError::Edge`]. Pin8 allocates that square; this loader does not.
+/// `LoadStream`'s dimension trim. A square above [`MAX_EDGE`] reports
+/// `terrain.edge` and returns [`TerrainError::Edge`]. Pin8 allocates that
+/// square. This loader refuses it.
 fn trimmed_edge(byte_len: usize) -> Result<i32, TerrainError> {
     let floats = byte_len / 4;
     let dimension = (floats as f64).sqrt();
+    // A real slice cannot make this square root exceed `i32::MAX`. The guard
+    // still refuses a `usize` argument that is not a real allocation.
     if !dimension.is_finite() || dimension < 0.0 || dimension > f64::from(i32::MAX) {
         return Err(TerrainError::Raw32);
     }
@@ -126,9 +139,7 @@ fn trimmed_edge(byte_len: usize) -> Result<i32, TerrainError> {
     if trimmed < REGION {
         trimmed = REGION;
     }
-    if trimmed > MAX_EDGE {
-        return Err(TerrainError::Edge);
-    }
+    crate::height::check_edge(trimmed)?;
     Ok(trimmed)
 }
 
@@ -146,8 +157,17 @@ fn index(edge: i32, x: i32, y: i32) -> Result<usize, TerrainError> {
         .ok_or(TerrainError::Raw32)
 }
 
+/// A section side. `0..=MAX_EDGE` is accepted, including a side under 16 or
+/// not a multiple of 16. A side past [`MAX_EDGE`] reports `terrain.edge`. A
+/// negative side is [`TerrainError::Raw32`] and does not report that limit.
 fn section_edge(side: i32) -> Result<usize, TerrainError> {
-    if !(0..=MAX_EDGE).contains(&side) {
+    if side > MAX_EDGE {
+        // 4096 itself stays `Ok`: `check_edge` accepts it. Only a larger side
+        // reaches this arm, and that call reports `terrain.edge`.
+        crate::height::check_edge(side)?;
+        return Err(TerrainError::Edge);
+    }
+    if side < 0 {
         return Err(TerrainError::Raw32);
     }
     Ok(side as usize)
@@ -322,9 +342,43 @@ mod tests {
 
     #[test]
     fn a_square_above_the_region_cap_is_refused() {
+        assert_eq!(trimmed_edge(4096 * 4096 * 4).unwrap(), 4096);
+        assert_eq!(trimmed_edge(4351 * 4351 * 4).unwrap(), 4096);
+        let _guard = crate::parcels::limits_lock();
+        let before = crate::parcels::limit_hits("terrain.edge", "refuse");
+        assert_eq!(section_edge(4096).unwrap(), 4096);
+        assert_eq!(crate::parcels::limit_hits("terrain.edge", "refuse"), before);
         let edge: i64 = 4352;
         let len = usize::try_from(edge * edge * 4).unwrap();
         let err = trimmed_edge(len).unwrap_err();
         assert!(matches!(err, TerrainError::Edge));
+        assert_eq!(
+            crate::parcels::limit_hits("terrain.edge", "refuse"),
+            before + 1
+        );
+        let err = section_edge(4097).unwrap_err();
+        assert!(matches!(err, TerrainError::Edge));
+        assert_eq!(
+            crate::parcels::limit_hits("terrain.edge", "refuse"),
+            before + 2
+        );
+        let err = section_edge(-1).unwrap_err();
+        assert!(matches!(err, TerrainError::Raw32));
+        assert_eq!(
+            crate::parcels::limit_hits("terrain.edge", "refuse"),
+            before + 2
+        );
+    }
+
+    #[test]
+    fn a_negative_file_width_with_no_y_offset_reads_the_section() {
+        let mut bytes = vec![0u8; 16 * 16 * 4];
+        bytes[..4].copy_from_slice(&1.5f32.to_le_bytes());
+        let map = load_raw32_section(&bytes, 0, 0, -1, 0, 16, 16).unwrap();
+        assert_eq!(map.width(), 16);
+        assert_eq!(map.height(), 16);
+        assert_eq!(map.cells()[0].to_bits(), 1.5f32.to_bits());
+        let err = load_raw32_section(&bytes, 0, 1, -1, 1, 16, 16).unwrap_err();
+        assert!(matches!(err, TerrainError::Raw32));
     }
 }
