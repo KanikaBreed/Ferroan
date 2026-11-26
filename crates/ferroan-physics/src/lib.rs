@@ -13,9 +13,9 @@
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod jolt_config;
 #[allow(unsafe_code)]
 mod native;
-mod jolt_config;
 mod substep;
 
 pub use jolt_config::{
