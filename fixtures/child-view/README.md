@@ -7,18 +7,18 @@ The observer polls its home event queue, opens a second UDP socket with the same
 ## Files and replay
 
 - `trace.json` records the two roots and the observer's child separately. Times are milliseconds since the earliest region UDP record. Each circuit lists the first occurrence of each selected message for that account and session. The proxy records the observer's child POST, position PUTs and DELETE in order. The extractor checks the original circuit code, session, destination and advertised seed against the admission. The JSON retains the child POST and PUT fields, including geometry, appearance, camera axes, throttles and transfer context. Account, session, circuit, inventory item, endpoint and seed values use consistent fixture aliases. The extractor pairs each request with its response, checks admission and update success and the closed agent's identity, and records the HTTP status. The DELETE credential stays in the private capture.
-- `events.xml` holds the two LLSD events that the observer read from its home queue, in receipt order. The extractor normalizes the poll ID, endpoint, account and seed. The handle and region dimensions come from the simulator.
-- `avatar.bin` and `prim.bin` hold the full, zero-decoded ObjectData blocks. Before selecting a block the extractor matches the sequence and entire message body from the observer's child socket against the C# neighbour's outgoing capture. It looks up the resident by account UUID and the box by store UUID. Their aliases are UUIDs 5 and 6 respectively. Nonzero owners get account aliases and nonempty name-value fields are redacted. The local IDs and region handle remain available for replay.
+- `events.xml` comes from the paired home proxy response. The request matches the observer's queue path and acknowledgement, and the response contains both announcements in one batch. Only the endpoint, account and seed are replaced. The original poll ID and XML formatting are retained. The handle and region dimensions come from the simulator.
+- `avatar.bin` and `prim.bin` hold the full, zero-decoded ObjectData blocks. Before selecting a block the extractor matches the sequence and entire message body from the observer's child socket against the C# neighbour's outgoing capture. It looks up the resident by account UUID and the box by store UUID. Their aliases are UUIDs 5 and 6 respectively. Before redaction each selected block must encode back to the exact slice of the C# body. Nonzero owners get account aliases. The resident is named Test Doe in the original FirstName, LastName and empty Title fields. The local IDs and region handle remain available for replay.
 
 ## Reproduce
 
-From the repository root on Linux with the pinned references available:
+From the repository root on Linux, run the capture under the shared live lock with a free port base and `UseSharedCompilation=false`.
 
 ```sh
 mkdir -p .scratch/tmp .scratch/target
 export TMPDIR="$PWD/.scratch/tmp" CARGO_TARGET_DIR="$PWD/.scratch/target"
-export FERROAN_LIVE_PORT_BASE=26016 UseSharedCompilation=false MSBUILDDISABLENODEREUSE=1
-flock -o /home/cinder/.local/share/ferroan-manager/live.lock cargo xtask live run child-view grid --physics basicphysics
+export UseSharedCompilation=false MSBUILDDISABLENODEREUSE=1
+cargo xtask live run child-view grid --physics basicphysics
 cargo test -p xtask pin8_child_view
 ```
 

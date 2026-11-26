@@ -16,8 +16,15 @@ use uuid::Uuid;
 /// Identity of the persisted box in the Q65a store.
 pub const PRIM: Uuid = Uuid::from_u128(0x65000000_0000_4000_8000_000000000001);
 
+/// The successful home poll. Only the extractor sees the private path and body.
+pub struct EventPoll {
+    pub path: String,
+    pub ack: Option<i32>,
+    pub body: Vec<u8>,
+}
+
 pub struct Observation {
-    pub events: Vec<caps::EqMessage>,
+    pub events: EventPoll,
     pub avatar: Option<IncomingPacket>,
     pub prim: Option<IncomingPacket>,
 }
@@ -92,16 +99,20 @@ async fn events(
     agent: Uuid,
     wanted: u64,
     addr: SocketAddr,
-) -> Result<(Vec<caps::EqMessage>, String), String> {
+) -> Result<(EventPoll, String), String> {
     let mut ack = None;
-    let mut evidence = Vec::new();
+    let path = reqwest::Url::parse(url)
+        .map_err(|_| "invalid home event queue URL")?
+        .path()
+        .to_owned();
     loop {
-        let batch = match caps::poll_event_queue(http, url, ack).await {
-            Ok(batch) => batch,
+        let body = match caps::poll_event_queue_body(http, url, ack).await {
+            Ok(body) => body,
             Err(caps::EqPollError::Retry) => continue,
             Err(_) => return Err("home event queue closed before child admission".into()),
         };
-        ack = Some(batch.id);
+        let batch = caps::parse_event_queue(&body)?;
+        let mut enabled = false;
         for event in batch.events {
             let Some(hint) = caps::crossing_hint(&event.message, &event.body) else {
                 continue;
@@ -112,19 +123,22 @@ async fn events(
             if SocketAddr::from((hint.ip, hint.port)) != addr {
                 continue;
             }
-            if hint.handle == Some(wanted) && evidence.is_empty() {
-                evidence.push(event);
+            if event.message == "EnableSimulator" && hint.handle == Some(wanted) {
+                enabled = true;
             } else if let Some(seed) = hint.seed {
-                if evidence.len() != 1
+                if !enabled
                     || event.body.get("agent-id").as_uuid() != agent
                     || !seed.starts_with(&format!("http://{addr}/CAPS/"))
                 {
-                    return Err("unmatched EstablishAgentCommunication on the home queue".into());
+                    return Err("unmatched EstablishAgentCommunication in home poll".into());
                 }
-                evidence.push(event);
-                return Ok((evidence, seed));
+                return Ok((EventPoll { path, ack, body }, seed));
             }
         }
+        if enabled {
+            return Err("neighbour events were split across home polls".into());
+        }
+        ack = Some(batch.id);
     }
 }
 
