@@ -177,6 +177,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask live object-cross-fixtures <capture-dir>
        cargo xtask live run parcel-empty|parcel-multi|parcel-lone|parcel-legacy grid --physics basicphysics
        cargo xtask live run prim-capture grid --physics basicphysics
+       cargo xtask live run prim-arrival grid --physics basicphysics
        cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]
        cargo xtask live run login grid --region ferroan
        cargo xtask live run limits grid --region ferroan
