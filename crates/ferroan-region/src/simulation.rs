@@ -1331,10 +1331,11 @@ impl SimulationState {
         self.generation_of(agent)
     }
 
-    /// Claim one child destination for `generation`.
+    /// Claim one child destination for `generation` at 256 m on each side.
     /// The returned seed is the admission POST's caps path. `Existing` means
     /// the POST is already owned. The caller passes this same generation to
-    /// [`Self::finish_child`] or [`Self::refuse_child`].
+    /// [`Self::finish_child`] or [`Self::refuse_child`]. A caller that knows
+    /// the footprint uses [`Self::claim_child_sized`].
     pub fn claim_child(
         &self,
         agent: Uuid,
