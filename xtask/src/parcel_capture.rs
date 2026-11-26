@@ -13,12 +13,12 @@ pub(super) enum Seed {
 
 impl Seed {
     pub(super) fn scenario(name: &str) -> Option<Self> {
-        match name {
-            "parcel-empty" => Some(Self::Empty),
-            "parcel-multi" | "parcel-timing" | "parcel-properties" => Some(Self::Multi),
-            "parcel-lone" => Some(Self::Lone),
-            "parcel-legacy" => Some(Self::Legacy),
-            _ => None,
+        match ferroan_bot::register::get(name).and_then(|row| row.seed) {
+            Some(ferroan_bot::register::Seed::Empty) => Some(Self::Empty),
+            Some(ferroan_bot::register::Seed::Multi) => Some(Self::Multi),
+            Some(ferroan_bot::register::Seed::Lone) => Some(Self::Lone),
+            Some(ferroan_bot::register::Seed::Legacy) => Some(Self::Legacy),
+            None => None,
         }
     }
     pub(super) fn packets(self) -> usize {
