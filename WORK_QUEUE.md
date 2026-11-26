@@ -281,87 +281,117 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | BLOCKED (needs Q102 and Q103, deferred to a later upgrade) |
+| Q100 | P3.0: Jolt oracle | BLOCKED (the matched-native oracle waits on the deferred upgrade, 26 November 2026; file compiles are Q100a; stock recordings are Q177) |
+| Q100a | P3.0f: Engine-independent file oracle | READY |
+| Q177 | P3.57: Stock Pin8 integrated recordings | READY |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
-| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q103 | P3.0d: Pin move | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q104 | P3.0e: Decision entry | BLOCKED (a later upgrade: the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
+| Q103 | P3.0d: Pin move | BLOCKED (the pin change waits on the deferred C# module move, 26 November 2026) |
+| Q104 | P3.0e: Decision entry | BLOCKED (the upgrade decision waits on the pin change, 26 November 2026) |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
-| Q106 | P3.1b: notices and the vendored-fork fallback | DONE (this PR) |
+| Q106 | P3.1b: Notices and the vendored-fork fallback | DONE (this PR) |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | DONE (this PR) |
 | Q108 | P3.29: Limits and native-boundary fuzz | BLOCKED (split into Q108a and Q108b) |
 | Q108a | P3.29a: the step-cap guard and `physics.steps-per-frame` | DONE (this PR) |
-| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q141, Q157, Q122 and Q123 |
-| Q109 | P3.13a: Capsule, marker and intent | READY after Q107 |
-| Q110 | P3.11a: Mesh-asset decode | READY after Q65c3b |
-| Q111 | P3.2a: Free fall until first contact | READY after Q100, Q101 and Q105 |
-| Q112 | P3.2b: Box at rest on terrain | READY after Q111 |
-| Q113 | P3.2d: Slope and hill | READY after Q112 |
+| Q108b | P3.29b: the remaining physics bounds and native-boundary fuzz | READY after Q118, Q135, Q193, Q157, Q122, Q123, Q115 and Q156 |
+| Q109 | P3.13a: Capsule, marker and intent | READY |
+| Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
+| Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
+| Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
+| Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
+| Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
-| Q115 | P3.3: Physics thread and the request queue | READY after Q111 |
-| Q116 | P3.3b: Time dilation on terse updates | READY after Q111, Q115 and Q65c3b |
-| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q111 |
+| Q115 | P3.3: Physics thread and the request queue | READY |
+| Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
+| Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
+| Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
+| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
-| Q119 | P3.18a: Box contacts terrain and another box | READY after Q118 |
-| Q120 | P3.6: Buoyancy and gravity scale | READY after Q118 |
+| Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
+| Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
+| Q120 | P3.6: Gravity command matrix | READY after Q100a |
+| Q185 | P3.65: Three falling boxes | READY after Q120 and Q118 |
 | Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
-| Q122 | P3.41: Resize and reshape, uncut | READY after Q117, Q118, Q69 and Q70 |
+| Q122 | P3.41: Resize and reshape, uncut | READY after Q117 and Q118 |
 | Q123 | P3.42: Set position and rotation of a physical body | READY after Q118 |
 | Q124 | P3.43: Grab | READY after Q118 |
-| Q125 | P3.44: Angular lock | READY after Q118 |
-| Q126 | P3.45: Impulse and push | READY after Q118 and Q101 |
+| Q125 | P3.44: Angular lock | READY after Q126 |
+| Q126 | P3.45: Impulse and push | READY after Q118 |
 | Q127 | P3.46: Constant force and torque | READY after Q118 |
 | Q128 | P3.47: Prim move-to-target, hover and ground repel | READY after Q118 and Q120 |
 | Q129 | P3.48: Look-at | READY after Q118 |
-| Q130 | P3.49: Keyframed motion | READY after Q118 and Q101 |
-| Q131 | P3.50: Materials | READY after Q120 and Q107 |
-| Q132 | P3.7a: Profile and path for one cut box | READY after Q117 |
-| Q133 | P3.7b: Remaining prim profiles, including a torus | READY after Q132 |
-| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q120 |
-| Q135 | P3.9: Cells for a physical cut prim | READY after Q132 and Q120 |
-| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q135 |
-| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q135 |
-| Q138 | P3.51: Physics shape type | READY after Q134, Q135 and Q69 |
+| Q130 | P3.49: Keyframed motion | READY after Q118 |
+| Q131 | P3.50: Materials | READY after Q120 and Q107 and Q118 |
+| Q132 | P3.7a: Profile and path rings | READY after Q100a |
+| Q187 | P3.67: Ray through the cut | READY after Q132 and Q117 |
+| Q133 | P3.7b: Straight extrusions | READY after Q132 |
+| Q188 | P3.68: Circular extrusions, including a torus | READY after Q132 |
+| Q189 | P3.69: Hollow and cut seams | READY after Q132 |
+| Q190 | P3.70: Profile and path parameter sweep | READY after Q132 |
+| Q134 | P3.8: One hull: convex type, and the cell fallback | READY after Q132 and Q118 |
+| Q192 | P3.72: Single-hull fallback after failed cells | READY after Q134, Q191, Q193 and Q139 |
+| Q135 | P3.9: Cell candidates | READY after Q132 |
+| Q191 | P3.71: Hole stays open | READY after Q135 and Q118 |
+| Q136 | P3.40b: Toggle that re-cooks a cut prim | READY after Q121 and Q191 |
+| Q137 | P3.41b: Resize and reshape a cut prim | READY after Q122 and Q191 |
+| Q138 | P3.51: Physics shape type | READY after Q134, Q191 and Q142 |
 | Q139 | P3.10a: Sculpt vertices | READY after Q132 |
 | Q140 | P3.10b: Sculpt JPEG 2000 | READY after Q139 |
-| Q141 | P3.11b: Mesh-asset cook | READY after Q110 and Q117 |
+| Q141 | P3.11b: Hull-list and triangle selection | READY after Q110 |
+| Q193 | P3.73: Shared mesh cache and asynchronous cook | READY after Q141 and Q117 |
 | Q142 | P3.12: Linkset of uncut boxes | READY after Q118 |
-| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q135 |
-| Q144 | P3.18b: Linkset struck child | READY after Q142 and Q119 |
-| Q145 | P3.13b: Walk and run | READY after Q109, Q115 and Q112 |
+| Q143 | P3.12b: Cells in a compound | READY after Q142 and Q191 |
+| Q144 | P3.18b: Linkset struck child | READY after Q186 |
+| Q145 | P3.13b: Walk and run | READY after Q109 and Q115 and Q112 |
 | Q146 | P3.13c: Fly | READY after Q145 |
 | Q147 | P3.14a: Fall, land, jump | READY after Q145 and Q114 |
-| Q148 | P3.14b: Stairs, slope and a moving platform | READY after Q147, Q130 and Q113 |
+| Q148 | P3.14b: Stairs, slope and a loose object | READY after Q147 and Q113 |
+| Q195 | P3.75: Moving, stopping and dropping support | READY after Q148 and Q130 |
 | Q149 | P3.14c: Avatar push | READY after Q147 and Q126 |
-| Q150 | P3.14d: Avatar position set | READY after Q109, Q103 and Q105 |
-| Q151 | P3.14e: Avatar size | READY after Q109, Q103 and Q105 |
-| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q119 |
-| Q153 | P3.15: Remove the walking stand-in | READY after Q145, Q118 and Q152 |
-| Q154 | P3.16: Arrival landing ray | READY after Q109, Q118 and Q115 |
+| Q150 | P3.14d: Avatar position set | READY after Q109 and Q105 |
+| Q151 | P3.14e: Avatar size | READY after Q109 and Q105 |
+| Q152 | P3.18c: Avatar feet and avatar pairs | READY after Q147 and Q186 |
+| Q153 | P3.15: Jolt live selection before the stand-in is removed | READY after Q145 and Q118 and Q152 |
+| Q196 | P3.76: Remove the walking stand-in | READY after Q153 |
+| Q154 | P3.16: Arrival landing ray | READY after Q109 and Q118 and Q115 |
 | Q155 | P3.16b: Rez ray | READY after Q154 and Q68 |
-| Q156 | P3.17: Camera ray | READY after Q118 and Q115 |
+| Q156 | P3.17: Camera ray | READY after Q115 and Q118 |
 | Q157 | P3.17b: Ray budgets and the sit query | READY after Q154 and Q142 |
-| Q158 | P3.56: Failed crossing and out of bounds | READY after Q118 |
-| Q159 | P3.19: Vehicle parameter store | READY after Q118 and Q107 |
-| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q100 and Q159 |
-| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120 and Q115 |
+| Q158 | P3.56: Ordinary-prim crossing failure and out of bounds | READY after Q100a |
+| Q204 | P3.84: Motor-stop on a vehicle | READY after Q158 and Q161 |
+| Q159 | P3.19: Vehicle parameter store | READY |
+| Q160 | P3.20a: `IVehicleBody` replay and the vehicle clock | READY after Q159 |
+| Q161 | P3.20b: Boat linear motor and buoyancy | READY after Q160, Q120, Q177 and Q118 |
 | Q162 | P3.20c: Angular motor and banking | READY after Q161 |
-| Q163 | P3.21a: Hover | READY after Q161 and Q114 |
+| Q163 | P3.21a: Hover | READY after Q161 |
 | Q164 | P3.21b: Vertical attraction | READY after Q162 |
-| Q165 | P3.22a: Car | READY after Q163 and Q162 |
+| Q165 | P3.22a: Car | READY after Q163, Q162 and Q112 |
+| Q205 | P3.85: Vehicle crash scenarios | READY after Q165 |
 | Q166 | P3.22b: Sled | READY after Q165 and Q113 |
 | Q167 | P3.23a: Airplane | READY after Q164 |
 | Q168 | P3.23b: Mouselook | READY after Q167 |
 | Q169 | P3.23c: Balloon | READY after Q163 |
 | Q170 | P3.23d: Wind law, region wind zero | READY after Q169 |
-| Q171 | P3.24a: Motorcycle and sailboat | READY after Q165 and Q161 |
-| Q172 | P3.24b: Saved `VehicleData` | READY after Q171 and Q142 |
-| Q173 | P3.25: Sit | READY after Q157 and Q147 |
+| Q171 | P3.24a: Motorcycle | READY after Q165 and Q161 |
+| Q197 | P3.77: Sailboat | READY after Q171, Q170 and Q161 |
+| Q172 | P3.24b: Saved `VehicleData` | READY after Q197 |
+| Q173 | P3.25: Untargeted actor ray and callback statuses | READY after Q157 and Q142 |
+| Q198 | P3.78: Explicit sit target | READY after Q173 and Q147 |
+| Q199 | P3.79: Stand, failure and the wide-top sit | READY after Q198 |
 | Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
-| Q175 | P3.27: Read-only `jolt` commands | READY after Q112, Q145 and Q161 |
-| Q176 | P3.28: Gate captures | READY after Q153, Q119, Q165 and Q104 |
+| Q175 | P3.27: `jolt` console commands | READY after Q100a |
+| Q176 | P3.28: Gate captures | BLOCKED (the same-native cross-platform gate waits on the deferred upgrade, the pin change and its decision, 26 November 2026) |
+| Q178 | P3.58: `PhysicsEnabled` off | READY after Q115 |
+| Q179 | P3.59: `PhysicsEnabled` on | READY after Q178 |
+| Q180 | P3.60: Fast body and a sensor between samples | READY after Q118 and Q177 |
+| Q181 | P3.61: Compound hull-count threshold | READY after Q142 and Q191 |
+| Q182 | P3.62: Terrain diagnostic probe | READY after Q112 and Q175 |
+| Q200 | P3.80: Sensor diagnostic query | READY after Q118 and Q175 |
+| Q201 | P3.81: Avatar diagnostic query | READY after Q145 and Q175 |
+| Q202 | P3.82: Sit diagnostic query | READY after Q199 and Q175 |
+| Q203 | P3.83: Vehicle diagnostic query | READY after Q161 and Q175 |
 
-Q100 to Q176 are the Phase 3 rows, added 26 November 2026 from [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md). Q100 and Q102 to Q104 are blocked for a later upgrade. Q101, Q105, Q106, Q107 and Q108a are done. Q108 is split. Q108b waits on the rows named in its status. The other rows wait on the queue items named in their status, in the plan's dependency order.
+Q100 to Q205 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q108 stays blocked because it is split into Q108a and Q108b. Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is taken with Q100a. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 
