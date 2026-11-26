@@ -237,7 +237,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q26c | P1.3c: Presence stores on MySQL and PostgreSQL, and `NullPresenceData` | BLOCKED (split into Q26c1–Q26c3) |
 | Q26c1 | P1.3c1: the shared Presence row and `NullPresenceData` | DONE (this PR) |
 | Q26c2 | P1.3c2: MySQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
-| Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | READY after Q26c1 |
+| Q26c3 | P1.3c3: PostgreSQL Presence v4 with a two-way C# cross-read | DONE (this PR) |
 | Q26d | P1.3d: Presence service and `POST /presence` (HTTP login stays refused) | READY after Q26c2 and Q26c3 |
 | Q26e | P1.3e: agent preferences stores, service and `POST /agentprefs` | READY after Q26d |
 | Q26f | P1.3f: `live compare` and `--rust` for GridUser, Presence and agent preferences | READY after Q26e |

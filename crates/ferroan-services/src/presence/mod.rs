@@ -333,5 +333,8 @@ impl PresenceStore for NullPresenceData {
     }
 }
 
+mod postgres;
+pub use postgres::PgPresenceData;
+
 #[cfg(test)]
 mod tests;

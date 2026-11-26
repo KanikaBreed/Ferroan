@@ -7,7 +7,11 @@ using OpenSim.Data;
 using OpenSim.Data.Null;
 
 if (args.Length != 4 || args[0] is not ("generate" or "verify") || args[2] != "--revision")
+{
+    if (args is ["postgres", var phase, var prefix, var timestamp])
+        return PostgresCross.Run(phase, prefix, timestamp);
     return 2;
+}
 
 // Each step includes its arguments so Rust replays the same calls and field values.
 NullPresenceData[] stores = [new("", "first"), new("", "second")];
