@@ -39,7 +39,7 @@ mod vector_text;
 
 pub use overlay::OverlayPacket;
 pub(crate) use properties::prim_counts;
-pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts};
+pub use properties::{ParcelPropertiesSend, ParcelRegion, PrimCounts, PropertiesRequest};
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -193,6 +193,10 @@ pub struct ParcelMap {
     width: usize,
     cells: Vec<u32>,
     parcels: Vec<Parcel>,
+    /// `EstateSettings` owner. `IsEstateManagerOrOwner` exempts this agent.
+    estate_owner: Uuid,
+    /// `EstateSettings.TaxFree`. Region access control is the only check then.
+    tax_free: bool,
 }
 
 impl ParcelMap {
@@ -237,6 +241,8 @@ impl ParcelMap {
             width,
             cells: vec![0; count],
             parcels: Vec::new(),
+            estate_owner: Uuid::nil(),
+            tax_free: false,
         })
     }
 
@@ -337,6 +343,7 @@ pub async fn open_parcels_at(
     now: i32,
 ) -> Result<ParcelMap, ParcelError> {
     let mut map = ParcelMap::empty(size)?;
+    map.estate_owner = estate;
     if let Some(connection) = connection
         && ferroan_db::sqlite_filename(connection)?
             .try_exists()

@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use ferroan_config::Config;
 use ferroan_diag::{Kind, REGION_SCENE_INBOUND, refuse};
@@ -284,6 +284,12 @@ enum Request {
         region: crate::parcels::ParcelRegion,
         reply: oneshot::Sender<()>,
     },
+    /// `ParcelPropertiesRequest`. The answer follows the queued elements.
+    ParcelProperties {
+        agent: Uuid,
+        query: crate::parcels::PropertiesRequest,
+        reply: oneshot::Sender<()>,
+    },
     Wake,
     Stop,
 }
@@ -341,6 +347,8 @@ struct Scene {
     /// Prim counts for the admitted groups. Filled on the first element.
     /// The set does not change after startup.
     admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
+    /// `LandObject.m_lastSeqId` for each local id, shared by every client.
+    parcel_seq: HashMap<i32, i32>,
 }
 
 /// Owns the heightmap and the login presences on `ferroan-scene`.
@@ -444,6 +452,7 @@ impl TerrainFrame {
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
+            parcel_seq: HashMap::new(),
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
         clock_ms(Instant::now());
@@ -486,6 +495,21 @@ impl TerrainFrame {
     ) -> Result<Pending<()>, TerrainError> {
         let (reply, answer) = pending();
         self.request(Request::ParcelRegion { region, reply })?;
+        Ok(answer)
+    }
+
+    /// `ParcelPropertiesRequest`. The elements are queued before the answer.
+    pub fn parcel_request(
+        &self,
+        agent: Uuid,
+        query: crate::parcels::PropertiesRequest,
+    ) -> Result<Pending<()>, TerrainError> {
+        let (reply, answer) = pending();
+        self.request(Request::ParcelProperties {
+            agent,
+            query,
+            reply,
+        })?;
         Ok(answer)
     }
 
@@ -965,6 +989,14 @@ fn answer(
             scene.parcel_region = region;
             let _ = reply.send(());
         }
+        Request::ParcelProperties {
+            agent,
+            query,
+            reply,
+        } => {
+            scene.answer_parcel(agent, query);
+            let _ = reply.send(());
+        }
         Request::Wake => {}
         Request::Stop => return false,
     }
@@ -1345,6 +1377,22 @@ impl Scene {
     fn emit_parcel(&self, agent: Uuid, element: &[u8]) {
         if let Some(send) = &self.parcel_out {
             send(agent, element);
+        }
+    }
+
+    /// `ClientOnParcelPropertiesRequest`. A child is not special: the packet
+    /// handler does not check one. The sequence clock is the land object's.
+    fn answer_parcel(&mut self, agent: Uuid, query: crate::parcels::PropertiesRequest) {
+        let Some(parcels) = self.parcels.clone() else {
+            return;
+        };
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i32;
+        let elements = parcels.properties_request(agent, query, now, &mut self.parcel_seq);
+        for element in &elements {
+            self.emit_parcel(agent, element);
         }
     }
 
@@ -2276,6 +2324,7 @@ mod tests {
             parcel_region: crate::parcels::ParcelRegion::default(),
             groups: Arc::default(),
             admitted_counts: None,
+            parcel_seq: HashMap::new(),
         }
     }
 
@@ -2672,6 +2721,95 @@ mod tests {
             }
         }
         assert!(differed);
+    }
+
+    /// One cell, the two-parcel span and a snap reuse the land sequence.
+    /// An out-of-range bound sends nothing.
+    #[tokio::test]
+    async fn a_parcel_request_sends_the_captured_cell_and_span() {
+        let parcels = loaded_region_parcels().await;
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/parcel-properties");
+        let cell = std::fs::read(root.join("request-cell.bin")).unwrap();
+        let west = std::fs::read(root.join("request-span-west.bin")).unwrap();
+        let east = std::fs::read(root.join("request-span-east.bin")).unwrap();
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
+        let ask = |scene: &mut Scene, query: crate::parcels::PropertiesRequest| {
+            let (reply, _answer) = oneshot::channel();
+            assert!(answer(
+                Request::ParcelProperties {
+                    agent,
+                    query,
+                    reply
+                },
+                scene,
+                None,
+                &[],
+                0,
+            ));
+        };
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 5.0,
+                south: 1.0,
+                east: 6.0,
+                north: 2.0,
+                sequence_id: 7,
+                snap_selection: false,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().as_slice(), &[cell]);
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 4.0,
+                south: 0.0,
+                east: 12.0,
+                north: 4.0,
+                sequence_id: 8,
+                snap_selection: false,
+            },
+        );
+        assert_eq!(sent.lock().unwrap().as_slice(), &[west, east]);
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: 5.0,
+                south: 1.0,
+                east: 6.0,
+                north: 2.0,
+                sequence_id: 0,
+                snap_selection: true,
+            },
+        );
+        let snap = sent.lock().unwrap()[0].clone();
+        let xml = String::from_utf8(snap).unwrap();
+        assert!(
+            xml.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{xml}"
+        );
+        assert!(
+            xml.contains("<key>SnapSelection</key><boolean>1</boolean>"),
+            "{xml}"
+        );
+        sent.lock().unwrap().clear();
+        ask(
+            &mut scene,
+            crate::parcels::PropertiesRequest {
+                west: -1.0,
+                south: 0.0,
+                east: 4.0,
+                north: 4.0,
+                sequence_id: 9,
+                snap_selection: false,
+            },
+        );
+        assert!(sent.lock().unwrap().is_empty());
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {

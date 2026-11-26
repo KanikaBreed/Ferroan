@@ -76,28 +76,6 @@ const PUBLISHED: [&str; 5] = [
     "walk.bin",
 ];
 
-/// Ferroan sends no parcel requests. Arrival, the West landing and the walk.
-const FERROAN_MOMENTS: [Moment; 3] = [
-    Moment {
-        name: "Your Parcel",
-        sequence: 0,
-        result: 0,
-        file: Some("arrival.bin"),
-    },
-    Moment {
-        name: "West",
-        sequence: 0,
-        result: 0,
-        file: None,
-    },
-    Moment {
-        name: "East",
-        sequence: 0,
-        result: 0,
-        file: Some("walk.bin"),
-    },
-];
-
 struct Split<'a> {
     elements: Vec<&'a [u8]>,
     #[cfg(test)]
@@ -108,7 +86,7 @@ pub(super) fn extract(root: &Path, ferroan: bool) -> Result<String, String> {
     let udp = read_capture(&bounded(&root.join("capture-udp.cap"), LIMIT)?)
         .map_err(|error| error.to_string())?;
     let http = records(&root.join("proxy-home.cap"))?;
-    let elements = select(&udp, &http, ferroan)?;
+    let elements = select(&udp, &http)?;
     if ferroan {
         return compare_captured(&elements);
     }
@@ -124,7 +102,7 @@ pub(super) fn extract(root: &Path, ferroan: bool) -> Result<String, String> {
     Ok(format!("{report}; fixtures in {}", out.display()))
 }
 
-fn select(udp: &[Record], http: &[Record], ferroan: bool) -> Result<Vec<Vec<u8>>, String> {
+fn select(udp: &[Record], http: &[Record]) -> Result<Vec<Vec<u8>>, String> {
     let window = owner_window(udp)?;
     let mut requests = Vec::new();
     let mut teleport = None;
@@ -176,16 +154,14 @@ fn select(udp: &[Record], http: &[Record], ferroan: bool) -> Result<Vec<Vec<u8>>
             arrival.x, arrival.y
         ));
     }
-    if !ferroan {
-        let [cell, span] = requests.as_slice() else {
-            return Err(format!(
-                "expected one cell request and one span request, found {}",
-                requests.len()
-            ));
-        };
-        expect_request(cell, 7, [5.0, 1.0, 6.0, 2.0])?;
-        expect_request(span, 8, [4.0, 0.0, 12.0, 4.0])?;
-    }
+    let [cell, span] = requests.as_slice() else {
+        return Err(format!(
+            "expected one cell request and one span request, found {}",
+            requests.len()
+        ));
+    };
+    expect_request(cell, 7, [5.0, 1.0, 6.0, 2.0])?;
+    expect_request(span, 8, [4.0, 0.0, 12.0, 4.0])?;
     let teleport = teleport.ok_or("missing TeleportLocationRequest")?;
     let position = teleport.info.position;
     let look = teleport.info.look_at;
@@ -203,7 +179,7 @@ fn select(udp: &[Record], http: &[Record], ferroan: bool) -> Result<Vec<Vec<u8>>
         return Err("no forward AgentUpdate after the teleport".into());
     }
     let elements = event_elements(http)?;
-    let moments: &[Moment] = if ferroan { &FERROAN_MOMENTS } else { &MOMENTS };
+    let moments: &[Moment] = &MOMENTS;
     if elements.len() != moments.len() {
         return Err(format!(
             "expected {} ParcelProperties elements, found {} ({})",
@@ -224,16 +200,30 @@ fn select(udp: &[Record], http: &[Record], ferroan: bool) -> Result<Vec<Vec<u8>>
 
 fn compare_captured(elements: &[Vec<u8>]) -> Result<String, String> {
     let fixture = crate::repo_root().join("fixtures/parcel-properties");
-    let arrival = fs::read(fixture.join("arrival.bin")).map_err(|error| error.to_string())?;
-    let walk = fs::read(fixture.join("walk.bin")).map_err(|error| error.to_string())?;
-    let live = elements
-        .first()
-        .ok_or("arrival element does not match fixtures/parcel-properties/arrival.bin")?;
-    arrival_matches(live, &arrival)?;
-    if elements.get(2) != Some(&walk) {
-        return Err("walk element does not match fixtures/parcel-properties/walk.bin".into());
+    let checks = [
+        (0usize, "arrival.bin", true),
+        (1, "request-cell.bin", false),
+        (2, "request-span-west.bin", false),
+        (3, "request-span-east.bin", false),
+        (5, "walk.bin", false),
+    ];
+    for (index, name, claim) in checks {
+        let expected = fs::read(fixture.join(name)).map_err(|error| error.to_string())?;
+        let live = elements
+            .get(index)
+            .ok_or_else(|| format!("{name} is missing"))?;
+        if claim {
+            arrival_matches(live, &expected)?;
+        } else if live != &expected {
+            return Err(format!(
+                "{name} does not match fixtures/parcel-properties/{name}"
+            ));
+        }
     }
-    Ok("parcel properties: arrival.bin and walk.bin match the capture".into())
+    Ok(
+        "parcel properties: arrival.bin, request-cell.bin, request-span-west.bin, request-span-east.bin and walk.bin match the capture"
+            .into(),
+    )
 }
 
 const CLAIM_OPEN: &[u8] = b"<key>ClaimDate</key><date>";
@@ -850,9 +840,20 @@ mod tests {
     fn arrival_matches_when_only_the_load_time_claim_date_differs() {
         let dir = crate::repo_root().join("fixtures/parcel-properties");
         let arrival = fs::read(dir.join("arrival.bin")).unwrap();
+        let cell = fs::read(dir.join("request-cell.bin")).unwrap();
+        let west = fs::read(dir.join("request-span-west.bin")).unwrap();
+        let east = fs::read(dir.join("request-span-east.bin")).unwrap();
         let walk = fs::read(dir.join("walk.bin")).unwrap();
         let stamped = with_claim_date(&arrival, &format_claim(unix_now()));
-        compare_captured(&[stamped.clone(), Vec::new(), walk.clone()]).unwrap();
+        let ok = [
+            stamped.clone(),
+            cell.clone(),
+            west.clone(),
+            east.clone(),
+            Vec::new(),
+            walk.clone(),
+        ];
+        compare_captured(&ok).unwrap();
         let mut other = stamped.clone();
         let name = b"<string>Your Parcel</string>";
         let at = other
@@ -860,14 +861,25 @@ mod tests {
             .position(|window| window == name)
             .unwrap();
         other[at + 8] = b'X';
-        let error = compare_captured(&[other, Vec::new(), walk.clone()]).unwrap_err();
+        let mut changed = ok.clone();
+        changed[0] = other;
+        let error = compare_captured(&changed).unwrap_err();
         assert!(error.contains("does not match"), "{error}");
-        let error = compare_captured(&[arrival, Vec::new(), walk.clone()]).unwrap_err();
+        changed[0] = arrival;
+        let error = compare_captured(&changed).unwrap_err();
         assert!(error.contains("load-time clock"), "{error}");
         let mut walk_changed = walk;
         walk_changed[20] ^= 1;
-        let error = compare_captured(&[stamped, Vec::new(), walk_changed]).unwrap_err();
+        changed[0] = stamped;
+        changed[5] = walk_changed;
+        let error = compare_captured(&changed).unwrap_err();
         assert!(error.contains("walk.bin"), "{error}");
+        let mut cell_changed = cell;
+        cell_changed[20] ^= 1;
+        changed[5] = ok[5].clone();
+        changed[1] = cell_changed;
+        let error = compare_captured(&changed).unwrap_err();
+        assert!(error.contains("request-cell.bin"), "{error}");
     }
 
     #[test]

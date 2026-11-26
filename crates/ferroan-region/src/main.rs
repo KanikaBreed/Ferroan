@@ -783,6 +783,20 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
         SceneCall::AgentUpdate(update) => queued(frame.agent_update(agent, motion_of(update))),
         SceneCall::AlwaysRun(always_run) => queued(frame.set_always_run(agent, always_run)),
         SceneCall::HandshakeReply => queued(frame.handshake_reply(agent)),
+        SceneCall::ParcelRequest(query) => answered(
+            frame.parcel_request(
+                agent,
+                ferroan_scene::parcels::PropertiesRequest {
+                    west: query.west,
+                    south: query.south,
+                    east: query.east,
+                    north: query.north,
+                    sequence_id: query.sequence_id,
+                    snap_selection: query.snap_selection,
+                },
+            ),
+            |()| Ok(SceneReply::Applied),
+        ),
     }
 }
 
