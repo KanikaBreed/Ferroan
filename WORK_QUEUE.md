@@ -231,7 +231,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | READY |
 | Q216 | P2.0e4.3: OAR terrain merge | READY after Q215 |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216 |
-| Q218 | P2.0e4.5a: OAR owner and group resolution | READY |
+| Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
 | Q220 | P2.0e4.6a: OAR parcels in memory | READY |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |

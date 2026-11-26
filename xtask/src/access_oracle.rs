@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Run the admission and object-permissions oracles against the pinned permissions module.
+//! Run the admission, object-permissions and OAR-owner oracles against the pinned modules.
 
 use std::fs;
 use std::path::Path;
