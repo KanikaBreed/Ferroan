@@ -330,11 +330,25 @@ pub struct QueryOutcome {
     pub carried_riders: bool,
 }
 
+/// How a `CreateAgent` POST stopped. A timeout and a transport failure keep
+/// the connection-failed reason (TB90). The child book uses this to close
+/// after logout. An answer, including `success` false, is not a timeout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CreateStop {
+    /// The neighbour answered, or the destination was missing locally.
+    Answered,
+    /// The request timed out. The uncompressed retry also failed to finish.
+    TimedOut,
+    /// The connection failed for a reason other than a timeout.
+    Transport,
+}
+
 /// Whether the neighbour accepted the child, and the reason it gave.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreateOutcome {
     pub success: bool,
     pub reason: String,
+    pub stop: CreateStop,
 }
 
 /// The neighbour call could not be finished inside Ferroan's own limits.
@@ -364,6 +378,7 @@ enum Osd {
 enum Attempt {
     Responded(String),
     Failed(String),
+    TimedOut,
 }
 
 struct ParsedCreate {
@@ -447,6 +462,7 @@ impl SimulationClient {
             return Ok(CreateOutcome {
                 success: false,
                 reason: "Destination not found".to_string(),
+                stop: CreateStop::Answered,
             });
         };
         let body = pack_create(source, destination, circuit, flags, Some(context));
@@ -475,10 +491,11 @@ impl SimulationClient {
                 timeout: CREATE_TIMEOUT,
             })
             .await?;
+        let first_stop = attempt_stop(&first);
         let parsed = parse_create(first);
         if parsed.done {
             apply_session(circuit, &parsed);
-            return Ok(finish_create(parsed));
+            return Ok(finish_create(parsed, CreateStop::Answered));
         }
         let second = self
             .execute(Outbound {
@@ -490,11 +507,15 @@ impl SimulationClient {
                 timeout: CREATE_TIMEOUT,
             })
             .await?;
+        let second_stop = attempt_stop(&second);
         let parsed = parse_create(second);
-        if parsed.done {
+        let stop = if parsed.done {
             apply_session(circuit, &parsed);
-        }
-        Ok(finish_create(parsed))
+            CreateStop::Answered
+        } else {
+            unsettled_stop(first_stop, second_stop)
+        };
+        Ok(finish_create(parsed, stop))
     }
 
     /// `UpdateAgent` for `AgentData`. At outbound 0.3 and above this is one
@@ -565,7 +586,7 @@ impl SimulationClient {
             .await?;
         match attempt {
             Attempt::Responded(_) => Ok(()),
-            Attempt::Failed(_) => Err(ClientError::CloseFailed),
+            Attempt::Failed(_) | Attempt::TimedOut => Err(ClientError::CloseFailed),
         }
     }
 
@@ -594,7 +615,10 @@ impl SimulationClient {
         };
         let response = match request.send().await {
             Ok(response) => response,
-            Err(_) => {
+            Err(error) => {
+                if error.is_timeout() {
+                    return Ok(Attempt::TimedOut);
+                }
                 return Ok(Attempt::Failed(
                     "Service request failed: connection failed".to_string(),
                 ));
@@ -718,10 +742,31 @@ fn gzip_bytes(plain: &[u8]) -> Result<Vec<u8>, ClientError> {
     encoder.finish().map_err(|_| ClientError::Unavailable)
 }
 
-fn finish_create(parsed: ParsedCreate) -> CreateOutcome {
+fn attempt_stop(attempt: &Attempt) -> CreateStop {
+    match attempt {
+        Attempt::TimedOut => CreateStop::TimedOut,
+        Attempt::Failed(_) => CreateStop::Transport,
+        Attempt::Responded(_) => CreateStop::Answered,
+    }
+}
+
+/// Neither POST finished. A timeout wins over a transport failure. Two bodies
+/// of `false` stay an answer, which the child book treats as a refusal.
+fn unsettled_stop(first: CreateStop, second: CreateStop) -> CreateStop {
+    if first == CreateStop::TimedOut || second == CreateStop::TimedOut {
+        CreateStop::TimedOut
+    } else if second == CreateStop::Answered {
+        CreateStop::Answered
+    } else {
+        CreateStop::Transport
+    }
+}
+
+fn finish_create(parsed: ParsedCreate, stop: CreateStop) -> CreateOutcome {
     CreateOutcome {
         success: parsed.success,
         reason: parsed.reason,
+        stop,
     }
 }
 
@@ -735,10 +780,14 @@ fn apply_session(circuit: &mut Circuit, parsed: &ParsedCreate) {
 
 fn http_success(attempt: &Attempt) -> bool {
     match attempt {
-        Attempt::Failed(_) => false,
+        Attempt::Failed(_) | Attempt::TimedOut => false,
         Attempt::Responded(body) if body.eq_ignore_ascii_case("false") => false,
         Attempt::Responded(_) => true,
     }
+}
+
+fn connection_failed() -> String {
+    "Service request failed: connection failed".to_string()
 }
 
 fn parse_create(attempt: Attempt) -> ParsedCreate {
@@ -748,6 +797,14 @@ fn parse_create(attempt: Attempt) -> ParsedCreate {
                 done: false,
                 success: false,
                 reason: message,
+                service_session_id: None,
+            };
+        }
+        Attempt::TimedOut => {
+            return ParsedCreate {
+                done: false,
+                success: false,
+                reason: connection_failed(),
                 service_session_id: None,
             };
         }
@@ -804,6 +861,10 @@ fn parse_query(attempt: Attempt, context: &TransferContext) -> QueryOutcome {
     let body = match attempt {
         Attempt::Failed(message) => {
             outcome.reason = message;
+            return outcome;
+        }
+        Attempt::TimedOut => {
+            outcome.reason = connection_failed();
             return outcome;
         }
         Attempt::Responded(body) => body,
@@ -1618,12 +1679,38 @@ mod tests {
         let timeout = client.execute(request()).await.unwrap();
         drop(listener);
         let refused = client.execute(request()).await.unwrap();
+        assert!(matches!(timeout, Attempt::TimedOut));
+        assert!(matches!(refused, Attempt::Failed(_)));
         for result in [timeout, refused] {
             assert_eq!(
                 parse_query(result, &TransferContext::negotiated()).reason,
                 "Service request failed: connection failed"
             );
         }
+    }
+
+    #[test]
+    fn an_unsettled_create_keeps_a_timeout_ahead_of_transport() {
+        assert_eq!(
+            unsettled_stop(CreateStop::TimedOut, CreateStop::Transport),
+            CreateStop::TimedOut
+        );
+        assert_eq!(
+            unsettled_stop(CreateStop::Transport, CreateStop::TimedOut),
+            CreateStop::TimedOut
+        );
+        assert_eq!(
+            unsettled_stop(CreateStop::Answered, CreateStop::Answered),
+            CreateStop::Answered
+        );
+        assert_eq!(
+            unsettled_stop(CreateStop::Transport, CreateStop::Transport),
+            CreateStop::Transport
+        );
+        assert_eq!(
+            unsettled_stop(CreateStop::Answered, CreateStop::Transport),
+            CreateStop::Transport
+        );
     }
 
     #[test]

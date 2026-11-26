@@ -43,8 +43,10 @@
 //! caps seed already stored for that destination, and the circuit stays. The
 //! hop does not release or close the agent. A destination
 //! outside that view, or one whose grid Y is 0, waits for the destination's
-//! release DELETE and then closes the circuit without a kick. The grid is asked
-//! when the local directory has no handle.
+//! release DELETE, stages one close for each open child that is not the
+//! remote root, and then closes the circuit without a kick. Those child
+//! closes run on a separate task. The grid is asked when the local directory
+//! has no handle.
 
 use std::net::{Ipv4Addr, SocketAddr};
 #[cfg(test)]
@@ -281,7 +283,9 @@ impl HopPresence {
             Self::Idle => Vec::new(),
             Self::Live(state) => state.take_staged_closes(agent),
             #[cfg(test)]
-            Self::Seeded(_) | Self::Watch(_) => Vec::new(),
+            Self::Seeded(book) => book.take_staged_closes(agent),
+            #[cfg(test)]
+            Self::Watch(_) => Vec::new(),
         }
     }
 
@@ -339,7 +343,7 @@ impl HopPresence {
         match self {
             Self::Idle => {}
             #[cfg(test)]
-            Self::Seeded(_) => {}
+            Self::Seeded(book) => book.end_current(agent),
             Self::Live(state) => state.close_departed(agent),
             #[cfg(test)]
             Self::Watch(watch) => watch.closed.store(true, Ordering::Release),
@@ -424,16 +428,7 @@ impl HopEnv {
         let Some(client) = self.client.clone() else {
             return;
         };
-        if staged.is_empty() {
-            return;
-        }
-        let _detached = tokio::spawn(async move {
-            for (session, end) in staged {
-                if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
-                    tracing::debug!("replaced root child close: {error}");
-                }
-            }
-        });
+        spawn_staged_closes(client, agent, staged);
     }
 
     /// Close the in-view neighbour children this root opened. One attempt each.
@@ -679,8 +674,23 @@ async fn perform(work: HopWork<'_>) {
     if outside {
         presence.wait_release(session.agent_id).await;
         presence.close_local(session.agent_id);
+        let staged = presence.take_staged(session.agent_id);
+        spawn_staged_closes(client.clone(), session.agent_id, staged);
         out.leave().await;
     }
+}
+
+fn spawn_staged_closes(client: SimulationClient, agent: Uuid, staged: Vec<(Uuid, RegionEnd)>) {
+    if staged.is_empty() {
+        return;
+    }
+    let _detached = tokio::spawn(async move {
+        for (session, end) in staged {
+            if let Err(error) = client.close_agent(&end, agent, &session.to_string()).await {
+                tracing::debug!("replaced root child close: {error}");
+            }
+        }
+    });
 }
 
 async fn locate(
@@ -975,7 +985,7 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        EmptyDirectory, HopDestination, HopGrid, HopPresence, HopSession, PresenceWatch,
+        EmptyDirectory, HopDestination, HopEnv, HopGrid, HopPresence, HopSession, PresenceWatch,
         RegionDirectory, drive, outside_view, viewer_endpoint,
     };
     use crate::simulation_client::{RegionEnd, SimulationClient};
@@ -1705,6 +1715,64 @@ mod tests {
                 .as_str(),
             ferroan_client::caps_seed(&format!("http://{addr}/"), &seed)
         );
+    }
+
+    #[test]
+    fn close_staged_returns_while_the_neighbour_holds_the_close() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let agent = Uuid::from_u128(1);
+            let older = Uuid::from_u128(8);
+            let book = Arc::new(crate::children::ChildBook::new());
+            book.attach(agent, older, Uuid::from_u128(2));
+            let end = RegionEnd {
+                server_uri: format!("http://{addr}/"),
+                region_id: Uuid::from_u128(7),
+                name: "Neighbour".to_string(),
+                loc_x: 256,
+                loc_y: 256,
+            };
+            let crate::children::Claim::New { .. } = book.claim(agent, older, end.clone()) else {
+                panic!("claim");
+            };
+            assert!(matches!(
+                book.accepted(agent, older, end.region_id),
+                crate::children::Admission::Announce { .. }
+            ));
+            book.attach(agent, Uuid::from_u128(9), Uuid::from_u128(70));
+            let hop = HopEnv {
+                source: RegionEnd {
+                    server_uri: "http://127.0.0.1:9/".to_string(),
+                    region_id: Uuid::from_u128(9),
+                    name: "Home".to_string(),
+                    loc_x: 0,
+                    loc_y: 0,
+                },
+                size_x: 256,
+                size_y: 256,
+                client: client(),
+                caps: ferroan_client::CapsRegistry::new("http://127.0.0.1:9").unwrap(),
+                grid: HopGrid {
+                    client: crate::grid::GridClient::from_base("http://127.0.0.1:9"),
+                    scope: Uuid::nil(),
+                },
+                presence: HopPresence::Seeded(book),
+            };
+            let started = Instant::now();
+            hop.close_staged(agent).await;
+            let elapsed = started.elapsed();
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "close_staged waited {elapsed:?}"
+            );
+            let accepted = tokio::time::timeout(Duration::from_secs(2), listener.accept()).await;
+            assert!(accepted.is_ok(), "the neighbour did not accept the close");
+        });
     }
 
     #[test]

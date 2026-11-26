@@ -40,7 +40,11 @@
 //! drops the claim and produces no viewer events. A failed POST before logout
 //! drops the claim the same way, so the next pass can POST again. Logout
 //! during the POST closes an accepted child once and does not announce it
-//! (D106). A timeout or a transport failure after logout closes once too. A
+//! (D106). A timeout or a transport failure after logout closes once too.
+//! Every new claim is finished by acceptance, failure or refusal. Dropping
+//! the claim's guard refuses it, so a cancelled admission cannot leave the
+//! entry behind. After the neighbour accepts, the caller waits
+//! [`ANNOUNCE_DELAY`] before the viewer events. A
 //! completion after the hop promoted the destination still announces once,
 //! including when the same session has carried that neighbour forward. The
 //! carry keeps the promoted flag until this generation is root again, so a
@@ -50,7 +54,8 @@
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use ferroan_llsd::Llsd;
 use uuid::Uuid;
@@ -80,8 +85,8 @@ pub enum Claim {
 pub enum Admission {
     /// `EnableSimulator`, then `EstablishAgentCommunication`, using `seed`.
     Announce { seed: String, end: RegionEnd },
-    /// One `CloseAgent`. Do not announce.
-    Close { end: RegionEnd },
+    /// One `CloseAgent`, authenticated with `session`. Do not announce.
+    Close { end: RegionEnd, session: Uuid },
     /// Refusal, a stale generation, a destination another generation owns,
     /// or a completion that must not be sent again.
     Quiet,
@@ -115,7 +120,79 @@ struct StagedClose {
 #[derive(Debug, Default)]
 struct Generation {
     logged_out: bool,
+    /// The session that attached this generation. Closes use this id.
+    session: Uuid,
     by_region: HashMap<Uuid, Destination>,
+}
+
+/// How the neighbour POST finished. A timeout and a transport failure both
+/// settle through [`ChildBook::failed`], so logout still closes (D106). A
+/// refusal does not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PostReport {
+    Accepted,
+    Refused,
+    TimedOut,
+    Transport,
+}
+
+impl PostReport {
+    /// Classify a finished `CreateAgent`. An HTTP answer with `success` false
+    /// is a refusal. A timeout stays a timeout even when the retry also fails.
+    pub fn from_create(outcome: &crate::simulation_client::CreateOutcome) -> Self {
+        use crate::simulation_client::CreateStop;
+        match outcome.stop {
+            CreateStop::TimedOut => Self::TimedOut,
+            CreateStop::Transport => Self::Transport,
+            CreateStop::Answered if outcome.success => Self::Accepted,
+            CreateStop::Answered => Self::Refused,
+        }
+    }
+}
+
+/// `InformClientOfNeighbourAsync` sleeps this long after `CreateAgent` returns
+/// and before `EnableSimulator` (`EntityTransferModule.cs` 2780 at Pin8
+/// `c401bceecd`).
+pub const ANNOUNCE_DELAY: Duration = Duration::from_millis(500);
+
+/// Wait before telling the viewer about a neighbour that accepted the child.
+pub async fn pause_before_announce() {
+    tokio::time::sleep(ANNOUNCE_DELAY).await;
+}
+
+/// Holds one [`Claim::New`] until the caller settles it. Dropping the guard,
+/// including when the admission task is cancelled, refuses the claim.
+pub struct ClaimWork {
+    book: Arc<ChildBook>,
+    agent: Uuid,
+    generation: Uuid,
+    region: Uuid,
+    open: bool,
+}
+
+impl ClaimWork {
+    pub fn watch(book: Arc<ChildBook>, agent: Uuid, generation: Uuid, region: Uuid) -> Self {
+        Self {
+            book,
+            agent,
+            generation,
+            region,
+            open: true,
+        }
+    }
+
+    /// The claim was accepted, refused or failed. Drop will not refuse it again.
+    pub fn settle(mut self) {
+        self.open = false;
+    }
+}
+
+impl Drop for ClaimWork {
+    fn drop(&mut self) {
+        if self.open {
+            self.book.refuse(self.agent, self.generation, self.region);
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -209,19 +286,28 @@ impl ChildBook {
         }
         book.current = generation;
         book.session = session;
-        book.generations.entry(generation).or_default();
+        book.generations.entry(generation).or_default().session = session;
     }
 
     /// Closes owed to a session a later login replaced. One take sends them.
     pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
         let mut books = self.lock();
-        let Some(book) = books.agents.get_mut(&agent) else {
-            return Vec::new();
+        let (staged, finished) = {
+            let Some(book) = books.agents.get_mut(&agent) else {
+                return Vec::new();
+            };
+            let staged = book
+                .staged
+                .drain(..)
+                .map(|close| (close.session, close.end))
+                .collect();
+            let finished = book.generations.is_empty() && book.staged.is_empty();
+            (staged, finished)
         };
-        book.staged
-            .drain(..)
-            .map(|close| (close.session, close.end))
-            .collect()
+        if finished {
+            books.agents.remove(&agent);
+        }
+        staged
     }
 
     /// Claim `end` for one admission. The seed is stored before the POST.
@@ -330,8 +416,9 @@ impl ChildBook {
         // that already won closes and does not announce (D106).
         if promoted {
             if logged_out || phase == Phase::CloseWhenAccepted {
+                let close = close_for(&books, agent, generation, end);
                 remove_destination(&mut books, agent, generation, region);
-                return Admission::Close { end };
+                return close;
             }
             if !announced {
                 if let Some(destination) = generation_mut(&mut books, agent, generation)
@@ -347,12 +434,14 @@ impl ChildBook {
         let stale = generation != current || logged_out;
         match phase {
             Phase::Pending if stale => {
+                let close = close_for(&books, agent, generation, end);
                 remove_destination(&mut books, agent, generation, region);
-                Admission::Close { end }
+                close
             }
             Phase::CloseWhenAccepted => {
+                let close = close_for(&books, agent, generation, end);
                 remove_destination(&mut books, agent, generation, region);
-                Admission::Close { end }
+                close
             }
             Phase::Pending => {
                 if let Some(destination) = generation_mut(&mut books, agent, generation)
@@ -401,8 +490,9 @@ impl ChildBook {
             return Admission::Quiet;
         }
         if stale {
+            let close = close_for(&books, agent, generation, end);
             remove_destination(&mut books, agent, generation, region);
-            return Admission::Close { end };
+            return close;
         }
         // Drop a claim that never opened. An open child, and the remote
         // root, stay. `promoted && !stale` already returned above.
@@ -410,6 +500,26 @@ impl ChildBook {
             remove_destination(&mut books, agent, generation, region);
         }
         Admission::Quiet
+    }
+
+    /// Finish one admission POST. Acceptance follows [`Self::accepted`]. A
+    /// refusal drops the claim. A timeout and a transport failure follow
+    /// [`Self::failed`], so logout still closes once (D106).
+    pub fn report(
+        &self,
+        agent: Uuid,
+        generation: Uuid,
+        region: Uuid,
+        report: PostReport,
+    ) -> Admission {
+        match report {
+            PostReport::Accepted => self.accepted(agent, generation, region),
+            PostReport::Refused => {
+                self.refuse(agent, generation, region);
+                Admission::Quiet
+            }
+            PostReport::TimedOut | PostReport::Transport => self.failed(agent, generation, region),
+        }
     }
 
     /// Logout of the current generation. Open children are returned for one
@@ -445,11 +555,27 @@ impl ChildBook {
         close
     }
 
-    /// The circuit generation is gone. Pending admissions still complete.
-    /// Open records are dropped here; logout already closed the ones it owned.
-    /// A promoted destination is not closed.
+    /// The circuit generation is gone. A far hop has not logged out, so each
+    /// open child is staged for one close with this generation's session. A
+    /// promoted destination is the remote root and is not closed. A pending
+    /// admission still completes.
     pub fn end_generation(&self, agent: Uuid, generation: Uuid) {
         let mut books = self.lock();
+        let session = {
+            let Some(book) = books.agents.get(&agent) else {
+                return;
+            };
+            let Some(generation_book) = book.generations.get(&generation) else {
+                return;
+            };
+            let stored = generation_book.session;
+            if stored.is_nil() {
+                book.session
+            } else {
+                stored
+            }
+        };
+        let mut stage = Vec::new();
         let empty = {
             let Some(generation_book) = generation_mut(&mut books, agent, generation) else {
                 return;
@@ -465,13 +591,36 @@ impl ChildBook {
                         true
                     }
                     Phase::CloseWhenAccepted => true,
-                    Phase::Open => false,
+                    Phase::Open => {
+                        stage.push(destination.end.clone());
+                        false
+                    }
                 }
             });
             generation_book.by_region.is_empty()
         };
+        if let Some(book) = books.agents.get_mut(&agent) {
+            for end in stage {
+                book.staged.push(StagedClose { session, end });
+            }
+        }
         if empty {
             drop_generation(&mut books, agent, generation);
+        }
+    }
+
+    /// Stage closes for the generation that currently owns `agent`.
+    pub fn end_current(&self, agent: Uuid) {
+        let generation = {
+            let books = self.lock();
+            books
+                .agents
+                .get(&agent)
+                .map(|book| book.current)
+                .unwrap_or_default()
+        };
+        if !generation.is_nil() {
+            self.end_generation(agent, generation);
         }
     }
 
@@ -640,8 +789,31 @@ fn drop_generation(books: &mut Books, agent: Uuid, generation: Uuid) {
         return;
     };
     book.generations.remove(&generation);
-    if book.generations.is_empty() {
+    if book.generations.is_empty() && book.staged.is_empty() {
         books.agents.remove(&agent);
+    }
+}
+
+fn generation_session(books: &Books, agent: Uuid, generation: Uuid) -> Uuid {
+    let Some(book) = books.agents.get(&agent) else {
+        return Uuid::nil();
+    };
+    let stored = book
+        .generations
+        .get(&generation)
+        .map(|generation_book| generation_book.session)
+        .unwrap_or_default();
+    if stored.is_nil() {
+        book.session
+    } else {
+        stored
+    }
+}
+
+fn close_for(books: &Books, agent: Uuid, generation: Uuid, end: RegionEnd) -> Admission {
+    Admission::Close {
+        end,
+        session: generation_session(books, agent, generation),
     }
 }
 
@@ -727,6 +899,8 @@ pub fn admission_events(admission: &Admission, view: &NeighbourView) -> Vec<Llsd
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use super::*;
 
     fn end(region: u128) -> RegionEnd {
@@ -832,7 +1006,13 @@ mod tests {
         };
         assert!(book.begin_logout(agent).is_empty());
         let admission = book.accepted(agent, generation, Uuid::from_u128(5));
-        assert!(matches!(admission, Admission::Close { .. }));
+        assert_eq!(
+            admission,
+            Admission::Close {
+                end: end(5),
+                session: session(),
+            }
+        );
         assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
         assert_eq!(
             book.accepted(agent, generation, Uuid::from_u128(5)),
@@ -885,7 +1065,13 @@ mod tests {
         };
         book.attach(agent, replacement, session());
         let admission = book.accepted(agent, older, Uuid::from_u128(6));
-        assert!(matches!(admission, Admission::Close { .. }));
+        assert_eq!(
+            admission,
+            Admission::Close {
+                end: end(6),
+                session: session(),
+            }
+        );
         assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
         assert_eq!(
             book.accepted(agent, older, Uuid::from_u128(6)),
@@ -1074,7 +1260,13 @@ mod tests {
         };
         book.begin_logout(agent);
         let admission = book.failed(agent, generation, Uuid::from_u128(5));
-        assert!(matches!(admission, Admission::Close { .. }));
+        assert_eq!(
+            admission,
+            Admission::Close {
+                end: end(5),
+                session: session(),
+            }
+        );
         assert!(admission_events(&admission, &dummy_view(agent)).is_empty());
         assert_eq!(
             book.failed(agent, generation, Uuid::from_u128(5)),
@@ -1161,10 +1353,13 @@ mod tests {
             close.iter().map(|end| end.region_id).collect::<Vec<_>>(),
             vec![Uuid::from_u128(1)]
         );
-        assert!(matches!(
+        assert_eq!(
             book.accepted(agent, older, Uuid::from_u128(2)),
-            Admission::Close { .. }
-        ));
+            Admission::Close {
+                end: end(2),
+                session: session(),
+            }
+        );
     }
 
     #[test]
@@ -1217,6 +1412,175 @@ mod tests {
             body.get("seed-capability").as_str(),
             ferroan_client::caps_seed(&format!("http://{host}"), caps_path)
         );
+    }
+
+    #[test]
+    fn a_dropped_claim_can_be_claimed_again() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let region = Uuid::from_u128(5);
+        let book = Arc::new(book_for(agent, generation));
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        {
+            let _guard = ClaimWork::watch(Arc::clone(&book), agent, generation, region);
+        }
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("a dropped claim should be free");
+        };
+    }
+
+    #[test]
+    fn a_settled_claim_keeps_the_open_child() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let region = Uuid::from_u128(5);
+        let book = Arc::new(book_for(agent, generation));
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        let guard = ClaimWork::watch(Arc::clone(&book), agent, generation, region);
+        assert!(matches!(
+            book.accepted(agent, generation, region),
+            Admission::Announce { .. }
+        ));
+        guard.settle();
+        assert!(book.seed(agent, region).is_some());
+    }
+
+    #[test]
+    fn a_timeout_after_logout_closes_with_the_claim_session() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let region = Uuid::from_u128(5);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        book.begin_logout(agent);
+        assert_eq!(
+            book.report(agent, generation, region, PostReport::TimedOut),
+            Admission::Close {
+                end: end(5),
+                session: session(),
+            }
+        );
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        book.begin_logout(agent);
+        assert_eq!(
+            book.report(agent, generation, region, PostReport::Transport),
+            Admission::Close {
+                end: end(5),
+                session: session(),
+            }
+        );
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(5)) else {
+            panic!("claim");
+        };
+        book.begin_logout(agent);
+        assert_eq!(
+            book.report(agent, generation, region, PostReport::Refused),
+            Admission::Quiet
+        );
+    }
+
+    #[test]
+    fn a_stale_close_uses_the_session_that_claimed_it() {
+        let agent = Uuid::from_u128(4);
+        let older = Uuid::from_u128(8);
+        let replacement = Uuid::from_u128(9);
+        let claimed = Uuid::from_u128(41);
+        let book = ChildBook::new();
+        book.attach(agent, older, claimed);
+        let Claim::New { .. } = book.claim(agent, older, end(6)) else {
+            panic!("claim");
+        };
+        book.attach(agent, replacement, Uuid::from_u128(70));
+        assert_eq!(
+            book.accepted(agent, older, Uuid::from_u128(6)),
+            Admission::Close {
+                end: end(6),
+                session: claimed,
+            }
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pause_before_announce_waits_half_a_second() {
+        let started = tokio::time::Instant::now();
+        let waiting = tokio::spawn(pause_before_announce());
+        tokio::time::sleep(Duration::from_millis(499)).await;
+        assert!(!waiting.is_finished());
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        waiting.await.unwrap();
+        assert_eq!(started.elapsed(), ANNOUNCE_DELAY);
+    }
+
+    #[test]
+    fn a_finished_generation_stages_open_children_for_close() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(1)) else {
+            panic!("open claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, Uuid::from_u128(1)),
+            Admission::Announce { .. }
+        ));
+        let Claim::New { .. } = book.claim(agent, generation, end(2)) else {
+            panic!("pending claim");
+        };
+        book.promote(agent, &end(3), "seed");
+        book.end_current(agent);
+        let staged = book.take_staged_closes(agent);
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].0, session());
+        assert_eq!(staged[0].1.region_id, Uuid::from_u128(1));
+        assert!(book.take_staged_closes(agent).is_empty());
+        assert_eq!(
+            book.accepted(agent, generation, Uuid::from_u128(2)),
+            Admission::Close {
+                end: end(2),
+                session: session(),
+            }
+        );
+        assert!(book.seed(agent, Uuid::from_u128(3)).is_none());
+    }
+
+    #[test]
+    fn a_create_timeout_is_not_a_refusal() {
+        use crate::simulation_client::{CreateOutcome, CreateStop};
+
+        let timeout = CreateOutcome {
+            success: false,
+            reason: "Service request failed: connection failed".to_string(),
+            stop: CreateStop::TimedOut,
+        };
+        assert_eq!(PostReport::from_create(&timeout), PostReport::TimedOut);
+        let transport = CreateOutcome {
+            success: false,
+            reason: timeout.reason.clone(),
+            stop: CreateStop::Transport,
+        };
+        assert_eq!(PostReport::from_create(&transport), PostReport::Transport);
+        let refused = CreateOutcome {
+            success: false,
+            reason: String::new(),
+            stop: CreateStop::Answered,
+        };
+        assert_eq!(PostReport::from_create(&refused), PostReport::Refused);
+        let accepted = CreateOutcome {
+            success: true,
+            reason: String::new(),
+            stop: CreateStop::Answered,
+        };
+        assert_eq!(PostReport::from_create(&accepted), PostReport::Accepted);
     }
 
     fn dummy_view(agent: Uuid) -> NeighbourView {

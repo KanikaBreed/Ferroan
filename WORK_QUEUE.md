@@ -225,7 +225,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
 | Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | DONE (this PR) |
 | Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
-| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | READY after Q79c1 |
+| Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | DONE (this PR) |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | READY after Q79c2a |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | READY after Q79c2b |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80 and QR26 |
