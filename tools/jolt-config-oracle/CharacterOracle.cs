@@ -96,6 +96,13 @@ static class CharacterOracle
             Capsule(Om(-1f, 0.8f, 1f), false);
             Capsule(Om(0f, 0f, 0f), false);
             Capsule(Om(0.45f, 0.45f, 3f), false);
+            // Constructor path. The Size setter rejects these before CapsuleFromSize.
+            Capsule(Om(float.NaN, 1f, 1f), false);
+            Capsule(Om(1f, float.NaN, 1f), false);
+            Capsule(Om(1f, 1f, float.NaN), false);
+            Capsule(Om(float.PositiveInfinity, float.PositiveInfinity, 1f), false);
+            // r + 0.1f rounds back to r, so the 0.05 m half-height floor is visible.
+            Capsule(Om(5_000_000f, 5_000_000f, 1f), false);
         }
 
         internal void CreateCharacter()

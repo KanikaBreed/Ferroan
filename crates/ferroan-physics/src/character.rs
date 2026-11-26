@@ -54,6 +54,8 @@ pub struct Capsule {
 }
 
 /// `CapsuleFromSize`. A finite footprint keeps a radius of at least 0.2 m.
+/// A NaN from `MathF.Min` or `MathF.Max` stays NaN, which is what the
+/// constructor stores. The `Size` setter rejects that size before this runs.
 #[must_use]
 pub fn capsule_from_size(size: [f32; 3]) -> Capsule {
     let radius = at_least(MIN_RADIUS, lesser(size[0], size[1]) * 0.5);
@@ -87,14 +89,34 @@ fn capsule_volume(size: [f32; 3]) -> f32 {
     std::f32::consts::PI * radius * radius * (2.0 * half + 4.0f32 / 3.0f32 * radius)
 }
 
-/// `MathF.Max` when both arguments are finite. Equal values keep `floor`.
+/// `MathF.Max`. A NaN on either side is returned. `Max(-0, +0)` is `+0`.
 fn at_least(floor: f32, value: f32) -> f32 {
-    if value > floor { value } else { floor }
+    if floor != value {
+        if !floor.is_nan() {
+            if value < floor { floor } else { value }
+        } else {
+            floor
+        }
+    } else if value.is_sign_negative() {
+        floor
+    } else {
+        value
+    }
 }
 
-/// `MathF.Min` when both arguments are finite. Equal values keep `right`.
+/// `MathF.Min`. A NaN on either side is returned. `Min(-0, +0)` is `-0`.
 fn lesser(left: f32, right: f32) -> f32 {
-    if left < right { left } else { right }
+    if left != right {
+        if !left.is_nan() {
+            if left < right { left } else { right }
+        } else {
+            left
+        }
+    } else if left.is_sign_negative() {
+        left
+    } else {
+        right
+    }
 }
 
 /// `[Jolt]` speed factors `DesiredVelocity` reads. Jump speed is not one of them.
@@ -285,8 +307,9 @@ pub struct ShapeState {
 }
 
 impl ShapeState {
-    /// The constructor's size path: every finite component is accepted, including
-    /// a negative or zero axis.
+    /// The constructor's size path. The size is stored as given, including a
+    /// negative, zero or non-finite axis. `MathF.Max` and `MathF.Min` pass a
+    /// NaN through, so one NaN axis makes the capsule and the mass NaN.
     #[must_use]
     pub fn new(size: [f32; 3]) -> Self {
         let capsule = capsule_from_size(size);
