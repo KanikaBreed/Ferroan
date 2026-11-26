@@ -7,8 +7,11 @@
 
 use ferroan_bot::scenario::PRIM_CAPTURE_COUNT;
 use ferroan_capture::{Kind, Record, read_capture, write_capture};
-use ferroan_protocol::msgs::{AgentThrottle, ImprovedTerseObjectUpdate, ObjectUpdate};
+use ferroan_protocol::msgs::{
+    AgentThrottle, ImprovedTerseObjectUpdate, LogoutRequest, ObjectUpdate, UseCircuitCode,
+};
 use ferroan_protocol::{IncomingPacket, Msg, PacketFlags, Writer, packet::build_raw, parse_packet};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::Write;
@@ -29,7 +32,7 @@ fn agent_alias(id: Uuid) -> Result<Uuid> {
     }
 }
 
-fn encoded<M: Msg>(packet: &IncomingPacket, msg: M) -> Vec<u8> {
+fn encoded<M: Msg>(packet: &IncomingPacket, msg: &M) -> Vec<u8> {
     let mut payload = Writer::new();
     M::ID.encode(&mut payload.buf);
     msg.encode_body(&mut payload);
@@ -46,9 +49,26 @@ fn encoded<M: Msg>(packet: &IncomingPacket, msg: M) -> Vec<u8> {
     out
 }
 
-fn redact_update(packet: &IncomingPacket, aliases: &BTreeMap<Uuid, Uuid>) -> Result<Vec<u8>> {
+fn checked_message<M: Msg>(packet: &IncomingPacket, original: &[u8]) -> Result<M> {
+    let msg = packet.decode::<M>()?;
+    if encoded(packet, &msg) != original {
+        return Err(format!(
+            "unredacted {} seq {} differs from the captured datagram",
+            M::NAME,
+            packet.sequence
+        )
+        .into());
+    }
+    Ok(msg)
+}
+
+fn redact_update(
+    packet: &IncomingPacket,
+    original: &[u8],
+    aliases: &BTreeMap<Uuid, Uuid>,
+) -> Result<Vec<u8>> {
     if packet.id == ObjectUpdate::ID {
-        let mut msg = packet.decode::<ObjectUpdate>()?;
+        let mut msg: ObjectUpdate = checked_message(packet, original)?;
         for part in &mut msg.object_data {
             if part.p_code == 47 {
                 // Exclude the avatar's name, appearance and other personal fields.
@@ -66,14 +86,87 @@ fn redact_update(packet: &IncomingPacket, aliases: &BTreeMap<Uuid, Uuid>) -> Res
                 }
             }
         }
-        Ok(encoded(packet, msg))
+        Ok(encoded(packet, &msg))
     } else {
-        let mut msg = packet.decode::<ImprovedTerseObjectUpdate>()?;
+        let mut msg: ImprovedTerseObjectUpdate = checked_message(packet, original)?;
         for block in &mut msg.object_data {
             block.texture_entry.clear();
         }
-        Ok(encoded(packet, msg))
+        Ok(encoded(packet, &msg))
     }
+}
+
+/// Use the region's control messages for the endpoints, independently of whether
+/// the viewers received the first or last update. The region capture has no addresses.
+fn arrival_window(server: &[Record]) -> Result<std::ops::Range<usize>> {
+    let control: Uuid = crate::live::ESTATE_OWNER.parse()?;
+    let limited: Uuid = crate::live::CHAT_USER.parse()?;
+    let mut start = None;
+    for (i, record) in server
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.kind == Kind::UdpIn)
+    {
+        let p = parse_packet(&record.bytes)?;
+        if start.is_none()
+            && p.id == UseCircuitCode::ID
+            && p.decode::<UseCircuitCode>()?.circuit_code.id == control
+        {
+            start = Some(i);
+        }
+        if let Some(start) = start
+            && p.id == LogoutRequest::ID
+            && p.decode::<LogoutRequest>()?.agent_data.agent_id == limited
+        {
+            return Ok(start..i);
+        }
+    }
+    Err(
+        "capture lacks the control viewer's circuit open or the limited viewer's logout request"
+            .into(),
+    )
+}
+
+fn arrival_record(kind: Kind, packet: &IncomingPacket) -> bool {
+    (kind == Kind::UdpIn && packet.id == AgentThrottle::ID)
+        || (kind == Kind::UdpOut
+            && matches!(packet.id, ObjectUpdate::ID | ImprovedTerseObjectUpdate::ID))
+}
+
+/// Require a receipt for every occurrence, including identical sends on two
+/// circuits and reliable resends. Ignore teardown traffic outside the window.
+fn match_window(server: &[Record], viewers: [Vec<Record>; 2]) -> Result<[Vec<Record>; 2]> {
+    let window = arrival_window(server)?;
+    let mut counts = HashMap::new();
+    for (i, record) in server.iter().enumerate() {
+        if arrival_record(record.kind, &parse_packet(&record.bytes)?) {
+            let counts = counts.entry(record.bytes.as_slice()).or_insert([0usize; 2]);
+            counts[usize::from(!window.contains(&i))] += 1;
+        }
+    }
+    let mut matched = [Vec::new(), Vec::new()];
+    for (stream, records) in matched.iter_mut().zip(viewers) {
+        for record in records {
+            if !arrival_record(record.kind, &parse_packet(&record.bytes)?) {
+                return Err("unexpected viewer datagram".into());
+            }
+            match counts.get_mut(record.bytes.as_slice()) {
+                Some([inside, 0]) if *inside > 0 => {
+                    *inside -= 1;
+                    stream.push(record);
+                }
+                Some([0, outside]) if *outside > 0 => *outside -= 1,
+                Some([inside, outside]) if *inside > 0 && *outside > 0 => {
+                    return Err("identical datagram on both sides of the capture boundary".into());
+                }
+                _ => return Err("viewer datagram has no matching Pin8 occurrence".into()),
+            }
+        }
+    }
+    if counts.values().any(|c| c[0] != 0) {
+        return Err("missing viewer receipt for a Pin8 datagram inside the arrival window".into());
+    }
+    Ok(matched)
 }
 
 pub(super) fn extract(run: &Path, home_log: &Path) -> Result<String> {
@@ -87,40 +180,26 @@ pub(super) fn extract(run: &Path, home_log: &Path) -> Result<String> {
         aliases.insert(uuid("store_uuid")?, uuid("capture_uuid")?);
     }
     let bytes = super::login_capture::bounded(&run.join("capture-udp.cap"), 64 * 1024 * 1024)?;
-    // Two circuits can receive exactly the same sequence, flags and body.
-    // Check multiplicity against the server. Each socket supplies its own order and clock.
     let server = read_capture(&bytes)?;
-    let mut sends = [HashMap::new(), HashMap::new()];
-    for record in &server {
-        *sends[usize::from(record.kind == Kind::UdpOut)]
-            .entry(record.bytes.as_slice())
-            .or_insert(0usize) += 1;
-    }
-    let mut circuits = [Vec::new(), Vec::new()];
-    for (i, alias) in VIEWERS.iter().enumerate() {
+    let mut viewers = [Vec::new(), Vec::new()];
+    for (stream, alias) in viewers.iter_mut().zip(VIEWERS) {
         let path = home_log.with_file_name(format!("prim-arrival-{alias}.cap"));
-        let captured = super::login_capture::bounded(&path, 2 * 1024 * 1024)?;
-        for mut record in read_capture(&captured)? {
-            let count = sends[usize::from(record.kind == Kind::UdpOut)]
-                .get_mut(record.bytes.as_slice())
-                .ok_or("viewer datagram missing from Pin8 capture")?;
-            *count = count
-                .checked_sub(1)
-                .ok_or("too few matching datagrams in Pin8 capture")?;
-            let packet = parse_packet(&record.bytes)?;
-            record.bytes = if record.kind == Kind::UdpIn && packet.id == AgentThrottle::ID {
-                let mut msg = packet.decode::<AgentThrottle>()?;
-                msg.agent_data.agent_id = agent_alias(msg.agent_data.agent_id)?;
-                msg.agent_data.session_id = Uuid::nil();
-                msg.agent_data.circuit_code = 0;
-                encoded(&packet, msg)
-            } else if record.kind == Kind::UdpOut {
-                redact_update(&packet, &aliases)?
-            } else {
-                return Err("unexpected viewer datagram".into());
-            };
-            circuits[i].push(record);
-        }
+        *stream = read_capture(&super::login_capture::bounded(&path, 2 * 1024 * 1024)?)?;
+    }
+    let mut circuits = match_window(&server, viewers)?;
+    for record in circuits.iter_mut().flatten() {
+        let packet = parse_packet(&record.bytes)?;
+        record.bytes = if record.kind == Kind::UdpIn && packet.id == AgentThrottle::ID {
+            let mut msg: AgentThrottle = checked_message(&packet, &record.bytes)?;
+            msg.agent_data.agent_id = agent_alias(msg.agent_data.agent_id)?;
+            msg.agent_data.session_id = Uuid::nil();
+            msg.agent_data.circuit_code = 0;
+            encoded(&packet, &msg)
+        } else if record.kind == Kind::UdpOut {
+            redact_update(&packet, &record.bytes, &aliases)?
+        } else {
+            return Err("unexpected viewer datagram".into());
+        };
     }
     let report = replay(&circuits)?;
     let dir = run.join("prim-arrival");
@@ -153,8 +232,12 @@ fn replay(circuits: &[Vec<Record>; 2]) -> Result<String> {
             let packet = parse_packet(&record.bytes)?;
             write!(
                 text,
-                "{}ms seq={} flags={:02x}",
-                record.time_ms, packet.sequence, packet.flags
+                "{}ms seq={} flags={:02x} len={} sha256={:x}",
+                record.time_ms,
+                packet.sequence,
+                packet.flags,
+                record.bytes.len(),
+                Sha256::digest(&record.bytes)
             )?;
             if packet.id == AgentThrottle::ID && record.kind == Kind::UdpIn {
                 let msg = packet.decode::<AgentThrottle>()?;
@@ -280,6 +363,89 @@ mod tests {
     }
 
     #[test]
+    fn changing_one_crc_byte_changes_the_replay() {
+        let mut circuits = circuits();
+        let record = circuits[0]
+            .iter_mut()
+            .find(|record| {
+                let p = parse_packet(&record.bytes).unwrap();
+                p.id == ObjectUpdate::ID && p.sequence == 32
+            })
+            .unwrap();
+        let packet = parse_packet(&record.bytes).unwrap();
+        let mut update = packet.decode::<ObjectUpdate>().unwrap();
+        update.object_data[0].crc ^= 1;
+        let changed = encoded(&packet, &update);
+        assert_eq!(record.bytes.len(), changed.len());
+        assert_eq!(
+            record
+                .bytes
+                .iter()
+                .zip(&changed)
+                .filter(|(a, b)| a != b)
+                .count(),
+            1
+        );
+        record.bytes = changed;
+        assert_ne!(replay(&circuits).unwrap(), EXPECTED);
+    }
+
+    #[test]
+    fn a_decodable_packet_must_reproduce_its_original_bytes() {
+        let mut raw = circuits()[0][0].bytes.clone();
+        // The decoder accepts an extra header byte. The fixture encoder omits it.
+        raw[5] = 1;
+        raw.insert(6, 0x42);
+        let packet = parse_packet(&raw).unwrap();
+        assert!(packet.decode::<AgentThrottle>().is_ok());
+        assert!(checked_message::<AgentThrottle>(&packet, &raw).is_err());
+    }
+
+    #[test]
+    fn every_server_update_up_to_logout_needs_its_own_receipt() {
+        fn input<M: Msg>(msg: &M) -> Record {
+            let mut bytes = Vec::new();
+            ferroan_protocol::build_packet(msg, 1, true, false, &[], &mut bytes);
+            Record {
+                kind: Kind::UdpIn,
+                time_ms: 0,
+                bytes,
+            }
+        }
+        let mut open = UseCircuitCode::default();
+        open.circuit_code.id = crate::live::ESTATE_OWNER.parse().unwrap();
+        let mut close = LogoutRequest::default();
+        close.agent_data.agent_id = crate::live::CHAT_USER.parse().unwrap();
+        let packets = circuits();
+        let update = packets[0]
+            .iter()
+            .find(|r| r.kind == Kind::UdpOut)
+            .unwrap()
+            .clone();
+        let mut resend = update.clone();
+        resend.bytes[0] |= PacketFlags::RESENT;
+        let mut teardown = update.clone();
+        teardown.bytes[1..5].copy_from_slice(&900u32.to_be_bytes());
+        let server = [
+            input(&open),
+            update.clone(),
+            resend.clone(),
+            resend.clone(),
+            input(&close),
+            teardown.clone(),
+        ];
+        assert!(match_window(&server, [vec![update.clone(), resend.clone()], vec![]]).is_err());
+        assert!(match_window(&server, [vec![resend.clone(), resend.clone()], vec![]]).is_err());
+        let received = vec![update.clone(), resend.clone(), resend];
+        let mut including_teardown = received.clone();
+        including_teardown.push(teardown);
+        assert_eq!(
+            match_window(&server, [including_teardown, vec![]]).unwrap()[0],
+            received
+        );
+    }
+
+    #[test]
     fn moving_one_prim_over_the_datagram_boundary_changes_the_replay() {
         let mut circuits = circuits();
         let mut batches = circuits[0].iter_mut().filter_map(|record| {
@@ -300,8 +466,8 @@ mod tests {
         r_update
             .object_data
             .insert(0, l_update.object_data.pop().unwrap());
-        left.bytes = encoded(&l_packet, l_update);
-        right.bytes = encoded(&r_packet, r_update);
+        left.bytes = encoded(&l_packet, &l_update);
+        right.bytes = encoded(&r_packet, &r_update);
         assert_ne!(replay(&circuits).unwrap(), EXPECTED);
     }
 }

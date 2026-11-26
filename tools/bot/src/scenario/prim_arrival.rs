@@ -106,6 +106,28 @@ async fn collect(
     ))
 }
 
+fn save_captures(
+    harness: &Harness,
+    control: &mut ObserverSession,
+    limited: &mut ObserverSession,
+) -> Result<(), String> {
+    for (alias, viewer) in [("control", control), ("limited", limited)] {
+        let records = viewer
+            .session
+            .take_arrival_records()
+            .ok_or("missing circuit capture")?;
+        let bytes = ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
+        std::fs::write(
+            harness
+                .region_log
+                .with_file_name(format!("prim-arrival-{alias}.cap")),
+            bytes,
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<String, String> {
     let (session, _) =
         enter_with_task(http, harness, &harness.owner, "last", Some(NORMAL_TASK_BPS)).await?;
@@ -124,29 +146,19 @@ pub(super) async fn run(http: &reqwest::Client, harness: &Harness) -> Result<Str
         Ok((session, _)) => {
             let mut limited = ObserverSession::new(session, harness.owner.principal_id);
             limited.seen.prim_arrival = Some(ObservedPrims::default());
-            let capture = async {
+            let observation = async {
                 observations?;
-                collect(&mut control, &mut limited).await?;
-                for (alias, viewer) in [("control", &mut control), ("limited", &mut limited)] {
-                    let records = viewer
-                        .session
-                        .take_arrival_records()
-                        .ok_or("missing circuit capture")?;
-                    let bytes =
-                        ferroan_capture::write_capture(&records).map_err(|e| e.to_string())?;
-                    std::fs::write(
-                        harness
-                            .region_log
-                            .with_file_name(format!("prim-arrival-{alias}.cap")),
-                        bytes,
-                    )
-                    .map_err(|e| e.to_string())?;
-                }
-                Ok(())
+                collect(&mut control, &mut limited).await
             }
             .await;
-            let logout = leave(harness, &mut limited.session, &harness.chat).await;
-            capture.and(logout)
+            // Keep draining both sockets through the limited viewer's LogoutRequest.
+            let (logout, watching) = control
+                .during(leave(harness, &mut limited.session, &harness.chat))
+                .await;
+            observation
+                .and(logout)
+                .and(watching)
+                .and_then(|()| save_captures(harness, &mut control, &mut limited))
         }
         Err(e) => Err(e),
     };

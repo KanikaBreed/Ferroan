@@ -401,17 +401,17 @@ impl Session {
         let Ok(packet) = parse_packet(bytes) else {
             return Ok(());
         };
+        if let Some(capture) = &mut self.arrival_capture
+            && (packet.id == ObjectUpdate::ID || packet.id == ImprovedTerseObjectUpdate::ID)
+        {
+            capture.record(Kind::UdpOut, bytes)?;
+        }
         if !self
             .circuit
             .on_receive(packet.flags, packet.sequence, &packet.acks)
         {
             self.circuit.flush_acks().await;
             return Ok(());
-        }
-        if let Some(capture) = &mut self.arrival_capture
-            && (packet.id == ObjectUpdate::ID || packet.id == ImprovedTerseObjectUpdate::ID)
-        {
-            capture.record(Kind::UdpOut, bytes)?;
         }
         self.dispatch(packet).await;
         self.circuit.flush_acks().await;
@@ -692,6 +692,25 @@ mod tests {
             sock.write_all(body).await.unwrap();
         });
         format!("http://127.0.0.1:{port}/seed")
+    }
+
+    #[tokio::test]
+    async fn prim_arrival_records_a_resend_even_when_the_inbox_drops_it() {
+        let sim = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let peer = sim.local_addr().unwrap();
+        let mut session = Session::connect(peer, agent()).await.unwrap();
+        session.capture_prim_arrival(8000.0);
+        let mut first = Vec::new();
+        build_packet(&ObjectUpdate::default(), 41, true, false, &[], &mut first);
+        let mut resend = first.clone();
+        resend[0] |= ferroan_protocol::PacketFlags::RESENT;
+        session.receive_datagram(&first, peer).await.unwrap();
+        session.receive_datagram(&resend, peer).await.unwrap();
+        assert_eq!(session.inbox.len(), 1);
+        let records = session.take_arrival_records().unwrap();
+        assert_eq!(records.len(), 2);
+        assert_eq!(records[0].bytes, first);
+        assert_eq!(records[1].bytes, resend);
     }
 
     async fn handshaken_session() -> (Session, UdpSocket, u32) {
