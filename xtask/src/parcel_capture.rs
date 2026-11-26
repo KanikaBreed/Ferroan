@@ -15,7 +15,7 @@ impl Seed {
     pub(super) fn scenario(name: &str) -> Option<Self> {
         match name {
             "parcel-empty" => Some(Self::Empty),
-            "parcel-multi" | "parcel-timing" => Some(Self::Multi),
+            "parcel-multi" | "parcel-timing" | "parcel-properties" => Some(Self::Multi),
             "parcel-lone" => Some(Self::Lone),
             "parcel-legacy" => Some(Self::Legacy),
             _ => None,

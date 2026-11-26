@@ -53,6 +53,8 @@ The region configuration supplies a read-only Groups V2 remote connector for par
 
 The parcel arrival harness correlates the region's Land datagrams with its initial-data log and seed exchange on each circuit. The [Pin8 recording](fixtures/parcel-timing/README.md) supplies the timing reference for Q60c3.
 
+The parcel-properties harness records Pin8's original event-queue elements on arrival, on a one-cell request, on a two-parcel span and on a border walk. `cargo xtask live run parcel-properties grid --physics basicphysics` captures them. `cargo xtask live parcel-properties-fixtures <grid-run-directory>` re-extracts a grid run, and `cargo test -p xtask parcel_properties` replays the five published elements. The [Pin8 recording](fixtures/parcel-properties/README.md) names the moments, sequence ids and land results.
+
 ## Planned
 
 ### Programs

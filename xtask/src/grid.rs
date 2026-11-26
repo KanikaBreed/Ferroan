@@ -85,6 +85,8 @@ mod material_override;
 #[cfg(target_os = "linux")]
 #[path = "parcel_capture.rs"]
 mod parcel_capture;
+#[path = "parcel_properties.rs"]
+mod parcel_properties;
 #[path = "parcel_timing.rs"]
 mod parcel_timing;
 #[path = "prim_arrival.rs"]
@@ -127,6 +129,10 @@ pub fn run_with(spec: &crate::live_args::RunSpec) -> std::process::ExitCode {
 
 pub fn parcel_timing_fixtures(directory: &Path) -> std::process::ExitCode {
     live::finish(parcel_timing::extract(directory))
+}
+
+pub fn parcel_properties_fixtures(directory: &Path) -> std::process::ExitCode {
+    live::finish(parcel_properties::extract(directory))
 }
 
 pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -785,7 +791,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         && ferroan_bot::scenario::selection(scenario).is_none()
     {
         return Err(format!(
-            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
+            "unknown scenario {scenario}; expected all, neighbour, object-cross, child-view, prim-load, store-handoff, parcel-{{empty,multi,lone,legacy,timing,properties}}, prim-arrival, material-override, prim-capture (live run prim-capture grid --physics basicphysics) or {}",
             ferroan_bot::scenario::NAMES.join(", ")
         ));
     }
@@ -1326,6 +1332,9 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
     if scenario == "parcel-timing" {
         let timing = parcel_timing::extract(&root)?;
         Ok(format!("{}\n{timing}", report.lines))
+    } else if scenario == "parcel-properties" {
+        let properties = parcel_properties::extract(&root)?;
+        Ok(format!("{}\n{properties}", report.lines))
     } else if scenario == "object-cross" {
         let capture = login_capture::object_cross::extract(&root)?;
         Ok(format!("{}\n{capture}", report.lines))
@@ -1710,6 +1719,11 @@ fn run_bot(
                 harness_ref
                     .http_trace
                     .scope(ferroan_bot::scenario::parcel_timing(harness_ref))
+                    .await
+            } else if selected == "parcel-properties" {
+                harness_ref
+                    .http_trace
+                    .scope(ferroan_bot::scenario::parcel_properties(harness_ref))
                     .await
             } else if let Some(seed) = ParcelSeed::scenario(selected) {
                 let captures = harness_ref
