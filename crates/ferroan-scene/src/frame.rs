@@ -1352,9 +1352,16 @@ impl Scene {
         if let Some(avatar) = self.presences.get_mut(&agent) {
             avatar.parcel = Some(id);
         }
-        let Some(element) = self.parcel_element(local_id, id) else {
+        self.deliver_notify(agent, local_id, id);
+    }
+
+    /// `SendLandUpdateToClient` calls `SendLandProperties(0, false, 0)`, which
+    /// stores sequence 0 on that parcel (`LandObject.cs` 509–519).
+    fn deliver_notify(&mut self, agent: Uuid, local_id: i32, parcel_id: Uuid) {
+        let Some(element) = self.parcel_element(local_id, parcel_id) else {
             return;
         };
+        self.parcel_seq.insert(local_id, 0);
         self.emit_parcel(agent, &element);
     }
 
@@ -1603,9 +1610,7 @@ fn note_parcel_crossings(scene: &mut Scene) {
         crossed.push((agent, id, local_id));
     }
     for (agent, id, local_id) in crossed {
-        if let Some(element) = scene.parcel_element(local_id, id) {
-            scene.emit_parcel(agent, &element);
-        }
+        scene.deliver_notify(agent, local_id, id);
     }
 }
 
@@ -2810,6 +2815,55 @@ mod tests {
             },
         );
         assert!(sent.lock().unwrap().is_empty());
+    }
+
+    /// A request stores sequence 8. Arrival stores 0, so the next snap reads 0.
+    #[tokio::test]
+    async fn an_arrival_resets_the_parcel_sequence_before_a_snap() {
+        let parcels = loaded_region_parcels().await;
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = uuid::uuid!("4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55");
+        let ask = |scene: &mut Scene, sequence_id: i32, snap_selection: bool| {
+            let (reply, _answer) = oneshot::channel();
+            assert!(answer(
+                Request::ParcelProperties {
+                    agent,
+                    query: crate::parcels::PropertiesRequest {
+                        west: 128.0,
+                        south: 128.0,
+                        east: 132.0,
+                        north: 132.0,
+                        sequence_id,
+                        snap_selection,
+                    },
+                    reply,
+                },
+                scene,
+                None,
+                &[],
+                0,
+            ));
+        };
+        ask(&mut scene, 8, false);
+        let requested = String::from_utf8(sent.lock().unwrap()[0].clone()).unwrap();
+        assert!(
+            requested.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{requested}"
+        );
+        sent.lock().unwrap().clear();
+        arrive_in(&mut scene, agent, [128.0, 128.0, 25.0]);
+        assert!(sent.lock().unwrap().is_empty());
+        scene.send_parcel_at(agent);
+        assert_eq!(sent.lock().unwrap().len(), 1);
+        sent.lock().unwrap().clear();
+        ask(&mut scene, 0, true);
+        let snap = String::from_utf8(sent.lock().unwrap()[0].clone()).unwrap();
+        assert!(snap.contains("<key>SequenceID</key><integer />"), "{snap}");
+        assert!(
+            !snap.contains("<key>SequenceID</key><integer>8</integer>"),
+            "{snap}"
+        );
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
