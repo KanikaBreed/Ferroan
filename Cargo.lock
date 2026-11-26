@@ -491,6 +491,7 @@ dependencies = [
 name = "ferroan-physics"
 version = "0.1.0"
 dependencies = [
+ "ferroan-diag",
  "oxijolt-sys",
  "serde_json",
 ]
@@ -552,6 +553,7 @@ dependencies = [
 name = "ferroan-scene"
 version = "0.1.0"
 dependencies = [
+ "base64 0.23.1",
  "ferroan-capture",
  "ferroan-db",
  "ferroan-diag",

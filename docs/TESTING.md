@@ -124,7 +124,7 @@ Release `open_objects` on stores that also have a shape and an item for every ex
 
 `cargo test -p xtask parcel_timing` checks the [Pin8 Land timing recording](../fixtures/parcel-timing/README.md) against the parcel bodies for both viewers. Reproduce it with `cargo xtask live run parcel-timing grid --physics basicphysics`.
 
-`cargo test -p xtask parcel_properties` checks the [Pin8 ParcelProperties elements](../fixtures/parcel-properties/README.md) for arrival, one cell, a two-parcel span and a border walk. The landing element is checked and stays out of the published files. Reproduce it with `cargo xtask live run parcel-properties grid --physics basicphysics`. Re-extract a run with `cargo xtask live parcel-properties-fixtures <grid-run-directory>`.
+`cargo test -p xtask parcel_properties` checks the [Pin8 ParcelProperties elements](../fixtures/parcel-properties/README.md) for arrival, one cell, a two-parcel span and a border walk. `cargo test -p ferroan-scene parcels::properties` encodes those five elements from the parcel map. `send_land_properties_matches_each_captured_element` matches the files byte for byte. `cargo test -p ferroan-region land_properties` queues the encoded elements. The landing element is checked and stays out of the published files. Reproduce it with `cargo xtask live run parcel-properties grid --physics basicphysics`. Re-extract a run with `cargo xtask live parcel-properties-fixtures <grid-run-directory>`.
 
 `cargo test -p ferroan-scene parcels::overlay` compares two viewers' parcel sequences and payloads with [Pin8 captures](../fixtures/parcel-overlay/README.md) on four SQLite scenes, including the 512-byte legacy bitmap in a wider region. A separate test checks zero padding on the last partial packet.
 
@@ -220,7 +220,7 @@ maintainer check.
 | Region behavior | A `ferroan-bot` scenario or Ferrobot check in the live harness. `cargo xtask live run login grid --region ferroan` logs in through C# Robust onto the Rust region, requires arrival and `LogoutReply`, and compares its registration and simulation HTTP with C# captures. The CAPS probe and Ferrobot login/session/logout subset also run against Rust; other scenario behavior uses C# regions. Firestorm by hand at the phase gate |
 | Configuration | Resolved key/value sets from the Nini oracle, including the shipped region and grid examples when the reference checkout is present |
 | Database access | Tests on SQLite databases created by Tranquillity's migration code. MySQL and PostgreSQL use the same check when `FERROAN_MYSQL_URL` or `FERROAN_POSTGRES_URL` is set |
-| Native code | `ferroan-physics` denies unsafe at the crate root and allows it on the `native` module. Every block has a `SAFETY` comment covering ownership, lifetime, threading and bounds. Fuzzing of the boundary is P3.29. `ferroan-scripting` is still later |
+| Native code | `ferroan-physics` denies unsafe at the crate root and allows it on the `native` module. Every block has a `SAFETY` comment covering ownership, lifetime, threading and bounds. A property test rejects a non-finite step rate or heartbeat and a step request past 16 before any native call, and that cap is `physics.steps-per-frame`. Body, position, ray, hull and cook checks wait for the rows that create those calls. `ferroan-scripting` is still later |
 
 ## Containers and monitoring
 
