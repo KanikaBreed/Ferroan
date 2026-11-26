@@ -36,6 +36,7 @@
 //   Source/OpenSim.Framework/ServiceAuth/ServiceAuth.cs (Create)
 //   Source/OpenSim.Framework/GridInfo.cs (OSHHTPHost host/port URI validation)
 //   KanikaBreed/OpenSim-Tranquillity @ 40432e0f83d3802434f898a4e28687bd977d5cf5
+// Stored scale limits follow Scene.cs and RegionInfo.cs at c401bceecd1684832ae8ba86a31b5ee01a4ded7b.
 // Permission settings follow Source/OpenSim.Region.CoreModules/World/Permissions/PermissionsModule.cs
 // and the startup checks in Source/OpenSim.Server.RegionServer/OpenSimBase.cs and
 // Source/OpenSim.ApplicationPlugins.RegionModulesController/RegionModulesControllerPlugin.cs
@@ -148,6 +149,8 @@ pub struct RegionConfig {
     /// `SimulationDataService` keeps prims, settings and terrain in one store.
     /// A SQLite file that is not on disk runs it without storing it.
     pub initial_terrain: ferroan_scene::InitialTerrain,
+    /// SceneGraph's optional clamp on the scale of restored world prims.
+    pub prim_scale_limits: Option<ferroan_scene::PrimScaleLimits>,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
     /// PostgreSQL providers are kept. A null provider leaves this empty.
@@ -412,6 +415,7 @@ impl RegionConfig {
                     .get("Terrain", "InitialTerrain")
                     .unwrap_or(ferroan_scene::DEFAULT_INITIAL_TERRAIN),
             ),
+            prim_scale_limits: prim_scale_limits(server, regions, name)?,
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -989,6 +993,56 @@ fn estate_connection(config: &Config) -> Option<String> {
     current
 }
 
+/// Scene.cs and RegionInfo.cs at Pin8 c401bceecd: positive region sizes
+/// override Startup; the region setting can enable the startup clamp.
+fn prim_scale_limits(
+    server: &Config,
+    regions: &Config,
+    name: &str,
+) -> Result<Option<ferroan_scene::PrimScaleLimits>, RegionConfigError> {
+    fn size(
+        config: &Config,
+        section: &str,
+        key: &'static str,
+        default: f32,
+    ) -> Result<f32, RegionConfigError> {
+        config.get(section, key).map_or(Ok(default), |s| {
+            s.trim()
+                .parse::<f32>()
+                .ok()
+                .filter(|n| n.is_finite())
+                .ok_or_else(|| value(section, key, "expected a finite number"))
+        })
+    }
+    let startup_min = size(server, "Startup", "NonPhysicalPrimMin", 0.001)?;
+    let startup_max = size(server, "Startup", "NonPhysicalPrimMax", 256.0)?;
+    let region_min = size(regions, name, "NonPhysicalPrimMin", 0.0)?;
+    let region_max = regions
+        .get(name, "NonPhysicalPrimMax")
+        .unwrap_or("0")
+        .trim()
+        .parse::<i32>()
+        .map_err(|_| value(name, "NonPhysicalPrimMax", "expected an integer"))?;
+    let startup_clamp = boolean(server, "Startup", "ClampPrimSize")?;
+    let region_clamp = boolean(regions, name, "ClampPrimSize")?;
+    let min = if region_min > 0.0 {
+        region_min
+    } else {
+        startup_min
+    };
+    let max = if region_max > 0 {
+        region_max as f32
+    } else {
+        startup_max
+    };
+    Ok(
+        (startup_clamp || region_clamp).then_some(ferroan_scene::PrimScaleLimits {
+            min: min.max(0.001),
+            max: max.min(65536.0),
+        }),
+    )
+}
+
 fn boolean(config: &Config, section: &str, key: &'static str) -> Result<bool, RegionConfigError> {
     match config
         .get(section, key)
@@ -1162,6 +1216,51 @@ mod tests {
         assert!(prioritization_scheme_differs(
             angular.prioritization_scheme.as_deref()
         ));
+    }
+
+    #[test]
+    fn stored_prim_scale_settings_follow_startup_and_region_overrides() {
+        use ferroan_scene::PrimScaleLimits;
+        let mut server = server();
+        let mut regions = regions();
+        let read = |server: &Config, regions: &Config| {
+            RegionConfig::from_configs(server, regions)
+                .unwrap()
+                .prim_scale_limits
+        };
+        assert_eq!(read(&server, &regions), None);
+        server.set("Startup", "ClampPrimSize", "true");
+        assert_eq!(
+            read(&server, &regions),
+            Some(PrimScaleLimits {
+                min: 0.001,
+                max: 256.0
+            })
+        );
+        server.set("Startup", "NonPhysicalPrimMin", "0.25");
+        server.set("Startup", "NonPhysicalPrimMax", "64.5");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "-1");
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "0");
+        assert_eq!(
+            read(&server, &regions),
+            Some(PrimScaleLimits {
+                min: 0.25,
+                max: 64.5
+            })
+        );
+        server.set("Startup", "ClampPrimSize", "false");
+        regions.set("Ferroan Test", "ClampPrimSize", "true");
+        regions.set("Ferroan Test", "NonPhysicalPrimMin", "0.00001");
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "70000");
+        assert_eq!(
+            read(&server, &regions),
+            Some(PrimScaleLimits {
+                min: 0.001,
+                max: 65536.0
+            })
+        );
+        regions.set("Ferroan Test", "NonPhysicalPrimMax", "3.5");
+        assert!(RegionConfig::from_configs(&server, &regions).is_err());
     }
 
     #[test]

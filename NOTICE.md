@@ -127,3 +127,5 @@ The parcel vector text parser in `crates/ferroan-scene/src/parcels/vector_text.r
 
 
 The Presence row and in-memory store in `crates/ferroan-services/src/presence` follow `Source/OpenSim.Data/IPresenceData.cs` and `Source/OpenSim.Data.Null/NullPresenceData.cs` at KanikaBreed/OpenSim-Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (BSD-3-Clause, copyright OpenSimulator contributors).
+
+Q65c2's stored-prim admission and initial feed follow `Source/OpenSim.Region.Framework/Scenes/{Scene,SceneGraph,SceneObjectGroup,ScenePresence}.cs` and `Source/OpenSim.Framework/RegionInfo.cs` at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. Scale admission uses `OpenMetaverse.Types/Utils.cs` at libopenmetaverse `a3596616c1c8cf23d2cfb9c71e0b0b4dd36d7d6b`. The port in `crates/ferroan-scene/src/stored_scene.rs` retains both BSD notices.
