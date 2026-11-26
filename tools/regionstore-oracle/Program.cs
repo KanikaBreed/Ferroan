@@ -48,7 +48,7 @@ const string RewriteChild = "88888888-8888-8888-8888-888888888882";
 
 if (args.Length == 0)
 {
-    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | scales <pin>");
+    Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | environment-text <pin> | environment-load <db> <region-uuid> <pin> | environment-store <db> <region-uuid> <pin> | environment-remove <db> <region-uuid> <pin> | mysql-environment-load <ado> <region-uuid> <pin> | mysql-environment-store <ado> <region-uuid> <pin> | mysql-environment-remove <ado> <region-uuid> <pin> | postgres-environment-load <ado> <region-uuid> <pin> | postgres-environment-store <ado> <region-uuid> <pin> | postgres-environment-remove <ado> <region-uuid> <pin> | scales <pin>");
     return 2;
 }
 
@@ -118,11 +118,41 @@ try
         case "postgres-terrain-seed" when args.Length == 3:
             SeedTerrain(new PGSQLSimulationData(), args[1], args[2]);
             return 0;
+        case "environment-text" when args.Length == 2:
+            WriteEnvironment(args[1], null, SampleEnvironment());
+            return 0;
+        case "environment-load" when args.Length == 4:
+            EnvironmentLoad(new SQLiteSimulationData(), "Data Source=" + Path.GetFullPath(args[1]) + ";Version=3;", args[2], args[3]);
+            return 0;
+        case "environment-store" when args.Length == 4:
+            EnvironmentStore(new SQLiteSimulationData(), "Data Source=" + Path.GetFullPath(args[1]) + ";Version=3;", args[2], args[3]);
+            return 0;
+        case "environment-remove" when args.Length == 4:
+            EnvironmentRemove(new SQLiteSimulationData(), "Data Source=" + Path.GetFullPath(args[1]) + ";Version=3;", args[2], args[3]);
+            return 0;
+        case "mysql-environment-load" when args.Length == 4:
+            EnvironmentLoad(new MySQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
+        case "mysql-environment-store" when args.Length == 4:
+            EnvironmentStore(new MySQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
+        case "mysql-environment-remove" when args.Length == 4:
+            EnvironmentRemove(new MySQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
+        case "postgres-environment-load" when args.Length == 4:
+            EnvironmentLoad(new PGSQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
+        case "postgres-environment-store" when args.Length == 4:
+            EnvironmentStore(new PGSQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
+        case "postgres-environment-remove" when args.Length == 4:
+            EnvironmentRemove(new PGSQLSimulationData(), args[1], args[2], args[3]);
+            return 0;
         case "scales" when args.Length == 2:
             ScaleProbe.Run(args[1]);
             return 0;
         default:
-            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | scales <pin>");
+            Console.Error.WriteLine("usage: regionstore-oracle seed <db> | prim-seed <db> <region-uuid> <owner-uuid> | prim-load-seed <db> <region-uuid> <owner-uuid> | load <db> <region-uuid> <pin> | bulk <db> <region-uuid> <count> | mysql-seed <ado> | mysql-load <ado> <region-uuid> <pin> | postgres-seed <ado> | postgres-load <ado> <region-uuid> <pin> | settings-seed <db> | settings-load <db> <region-uuid> <pin> | serialize <db> <region-uuid> <pin> | read <xml-json> <pin> | coalesced <xml-dump> <pin> | probe <probe-json> <pin> | parcels <scratch-db> <seed-sql> <region-uuid> <pin> | terrain-load <db> <region-uuid> <pin> | mysql-terrain-load <ado> <region-uuid> <pin> | postgres-terrain-load <ado> <region-uuid> <pin> | mysql-terrain-seed <ado> <region-uuid> | postgres-terrain-seed <ado> <region-uuid> | environment-text <pin> | environment-load <db> <region-uuid> <pin> | environment-store <db> <region-uuid> <pin> | environment-remove <db> <region-uuid> <pin> | mysql-environment-load <ado> <region-uuid> <pin> | mysql-environment-store <ado> <region-uuid> <pin> | mysql-environment-remove <ado> <region-uuid> <pin> | postgres-environment-load <ado> <region-uuid> <pin> | postgres-environment-store <ado> <region-uuid> <pin> | postgres-environment-remove <ado> <region-uuid> <pin> | scales <pin>");
             return 2;
     }
 }
@@ -2011,6 +2041,109 @@ static uint RegionHandshakeFlags(RegionSettings region, EstateSettings estate)
     if (estate.AllowEnvironmentOverride)
         flags |= OpenMetaverse.RegionFlags.AllowEnvironmentOverride;
     return (uint)flags;
+}
+
+// The notation StoreOnRegion writes: ViewerEnvironment.ToOSD then
+// SerializeLLSDNotationFull. The sample is loaded back through FromOSDString
+// and written again, and that second write must be the same text.
+static string SampleEnvironment()
+{
+    ViewerEnvironment env = new ViewerEnvironment();
+    env.FromOSD(new OSDMap
+    {
+        ["day_cycle"] = new OSDMap
+        {
+            ["frames"] = new OSDMap(),
+            ["name"] = "probe-day",
+            ["tracks"] = new OSDArray
+            {
+                new OSDArray(),
+                new OSDArray(),
+                new OSDArray(),
+                new OSDArray(),
+                new OSDArray(),
+            },
+            ["type"] = "daycycle",
+        },
+        ["day_length"] = 14400,
+        ["day_offset"] = 57600,
+        ["flags"] = 1,
+        ["env_version"] = 7,
+        ["track_altitudes"] = new OSDArray { 1100f, 2200f, 3300f },
+    });
+    if (env.version != 7 || env.DayLength != 14400 || env.DayOffset != 57600 || env.Flags != 1)
+        throw new InvalidOperationException("sample environment did not load");
+    string text = ViewerEnvironment.ToOSDString(env);
+    if (string.IsNullOrEmpty(text))
+        throw new InvalidOperationException("sample environment did not serialize");
+    ViewerEnvironment again = ViewerEnvironment.FromOSDString(text);
+    if (again == null || again.version != 7 || again.DayLength != 14400 || again.Flags != 1)
+        throw new InvalidOperationException("sample environment did not parse");
+    if (ViewerEnvironment.ToOSDString(again) != text)
+        throw new InvalidOperationException("sample environment is not stable");
+    return text;
+}
+
+static void WriteEnvironment(string pin, string region, string settings)
+{
+    JsonObject dump = new JsonObject
+    {
+        ["pin"] = pin,
+        ["settings"] = settings,
+    };
+    if (region != null)
+        dump["region"] = region;
+    Console.Out.Write(dump.ToJsonString(new JsonSerializerOptions { WriteIndented = false }));
+    Console.Out.WriteLine();
+}
+
+static void EnvironmentLoad(ISimulationDataStore store, string connection, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    string settings;
+    try
+    {
+        store.Initialise(connection);
+        settings = store.LoadRegionEnvironmentSettings(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteEnvironment(pin, region.ToString(), settings ?? "");
+}
+
+static void EnvironmentStore(ISimulationDataStore store, string connection, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    string settings = SampleEnvironment();
+    try
+    {
+        store.Initialise(connection);
+        store.StoreRegionEnvironmentSettings(region, settings);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteEnvironment(pin, region.ToString(), settings);
+}
+
+static void EnvironmentRemove(ISimulationDataStore store, string connection, string regionText, string pin)
+{
+    UUID region = new UUID(regionText);
+    string settings;
+    try
+    {
+        store.Initialise(connection);
+        store.RemoveRegionEnvironmentSettings(region);
+        settings = store.LoadRegionEnvironmentSettings(region);
+    }
+    finally
+    {
+        store.Dispose();
+    }
+    WriteEnvironment(pin, region.ToString(), settings ?? "");
 }
 
 sealed class RawPrim

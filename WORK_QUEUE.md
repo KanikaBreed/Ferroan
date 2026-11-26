@@ -243,7 +243,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q223 | P2.0e4.8: OAR assets | READY after Q218 |
 | Q224 | P2.0e4.w1: parcel removal and non-default parcels on all three databases | READY after Q74 and Q75 |
 | Q225 | P2.0e4.w2: region settings writer on all three databases | READY after Q74 |
-| Q226 | P2.0e4.w3: environment settings writer on all three databases | READY |
+| Q226 | P2.0e4.w3: environment settings writer on all three databases | DONE (this PR) |
 | Q227 | P2.0e4.w4: estate settings writer on all three databases | READY |
 | Q228 | P2.0g2: Ferrobot local chat against a Ferroan region | READY |
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
