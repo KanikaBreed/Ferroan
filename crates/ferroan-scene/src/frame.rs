@@ -296,6 +296,8 @@ struct Avatar {
     body: Body,
     /// `ScenePresence.currentParcelUUID`. Absent until a parcel is sent.
     parcel: Option<Uuid>,
+    /// `ScenePresence.posLastMove`. Starts at the pose this avatar was built with.
+    last_move: [f32; 3],
 }
 
 /// An attached viewer, the terse state of its avatar, and its minimap state.
@@ -919,6 +921,7 @@ impl Avatar {
             body: Body::new(&pose),
             pose,
             parcel: None,
+            last_move: pose.position,
         }
     }
 }
@@ -1397,30 +1400,65 @@ pub fn landed_z(start_z: f32, ground: f32) -> f32 {
     movement_z(start_z, ground)
 }
 
+/// `ScenePresence.MOVEMENT`: more than half a metre, as a squared length.
+const MOVEMENT_SQ: f32 = 0.25;
+
+/// `CheckForSignificantMovement` (`ScenePresence.cs` 4726–4734). A NaN
+/// difference does not pass.
+fn significant_move(from: [f32; 3], to: [f32; 3]) -> bool {
+    let dx = to[0] - from[0];
+    let dy = to[1] - from[1];
+    let dz = to[2] - from[2];
+    dx * dx + dy * dy + dz * dz > MOVEMENT_SQ
+}
+
 /// `EventManagerOnClientMovement` for a root whose parcel `GlobalID` changed.
-/// The same id, a child, or no parcel sends nothing. Ban lines stay out.
+///
+/// `Update` returns before that check while `NeedInitialData` is still
+/// positive (`ScenePresence.cs` 4067–4074) and while the avatar is a child.
+/// A crossing freeze is not stored, so that part of the return is not applied.
+/// The position is recorded only after a move of more than half a metre. The
+/// same id, or no parcel, sends nothing. Ban lines stay out.
 fn note_parcel_crossings(scene: &mut Scene) {
     let Some(parcels) = scene.parcels.clone() else {
         return;
     };
-    let mut crossed = Vec::new();
+    let mut moved = Vec::new();
     for (agent, avatar) in &scene.presences {
         if avatar.body.is_child() {
             continue;
         }
-        let Some(parcel) = parcels.at_metres(avatar.pose.position[0], avatar.pose.position[1])
-        else {
+        if scene
+            .viewers
+            .get(agent)
+            .is_some_and(|viewer| viewer.initial.waiting())
+        {
+            continue;
+        }
+        if !significant_move(avatar.last_move, avatar.pose.position) {
+            continue;
+        }
+        let parcel = parcels
+            .at_metres(avatar.pose.position[0], avatar.pose.position[1])
+            .map(|parcel| (parcel.id, parcel.local_id));
+        moved.push((*agent, avatar.pose.position, parcel));
+    }
+    let mut crossed = Vec::new();
+    for (agent, position, parcel) in moved {
+        let Some(avatar) = scene.presences.get_mut(&agent) else {
             continue;
         };
-        if avatar.parcel == Some(parcel.id) {
+        avatar.last_move = position;
+        let Some((id, local_id)) = parcel else {
+            continue;
+        };
+        if avatar.parcel == Some(id) {
             continue;
         }
-        crossed.push((*agent, parcel.id, parcel.local_id));
+        avatar.parcel = Some(id);
+        crossed.push((agent, id, local_id));
     }
     for (agent, id, local_id) in crossed {
-        if let Some(avatar) = scene.presences.get_mut(&agent) {
-            avatar.parcel = Some(id);
-        }
         if let Some(element) = scene.parcel_element(local_id, id) {
             scene.emit_parcel(agent, &element);
         }
@@ -2162,6 +2200,10 @@ mod tests {
             sent.lock().unwrap().as_slice(),
             std::slice::from_ref(&arrival)
         );
+        // The walk runs after initial data. Flags are not zero, so this
+        // queues no second element.
+        arm_initial(&mut scene, agent);
+        assert_eq!(sent.lock().unwrap().len(), 1);
 
         scene.presences.get_mut(&agent).unwrap().pose.position = [120.0, 128.0, 25.0];
         note_parcel_crossings(&mut scene);
@@ -2315,6 +2357,52 @@ mod tests {
             "{xml}"
         );
         assert!(xml.contains("<key>SelectedPrims</key><integer />"), "{xml}");
+    }
+
+    /// West at 7.8 m, East at 8.2 m. The step is 0.4 m, so no element is
+    /// queued and the last significant position stays put. 8.4 m is 0.6 m
+    /// from that position and does queue East. A longer step while initial
+    /// data is still owed also queues nothing.
+    #[tokio::test]
+    async fn a_crossing_under_half_a_metre_sends_nothing() {
+        let parcels = loaded_region_parcels().await;
+        let mut scene = scene_with(&parcels);
+        let sent = record_parcels(&mut scene);
+        let agent = Uuid::from_u128(11);
+        let _ = open_viewer_flags(&mut scene, agent, true, 1 << 7);
+        arrive_in(&mut scene, agent, [7.8, 2.0, 30.0]);
+        let arrived = sent.lock().unwrap().len();
+        assert_eq!(arrived, 1);
+        scene.presences.get_mut(&agent).unwrap().pose.position = [8.4, 2.0, 30.0];
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().len(), arrived);
+        assert_eq!(
+            scene.presences.get(&agent).unwrap().last_move,
+            [7.8, 2.0, 30.0]
+        );
+        scene.presences.get_mut(&agent).unwrap().pose.position = [7.8, 2.0, 30.0];
+        arm_initial(&mut scene, agent);
+        assert_eq!(sent.lock().unwrap().len(), arrived);
+
+        scene.presences.get_mut(&agent).unwrap().pose.position = [8.2, 2.0, 30.0];
+        note_parcel_crossings(&mut scene);
+        assert_eq!(sent.lock().unwrap().len(), arrived);
+        assert_eq!(
+            scene.presences.get(&agent).unwrap().last_move,
+            [7.8, 2.0, 30.0]
+        );
+
+        scene.presences.get_mut(&agent).unwrap().pose.position = [8.4, 2.0, 30.0];
+        note_parcel_crossings(&mut scene);
+        let queued = sent.lock().unwrap();
+        assert_eq!(queued.len(), arrived + 1);
+        assert!(
+            queued
+                .last()
+                .unwrap()
+                .windows(b"<key>Name</key><string>East</string>".len())
+                .any(|window| window == b"<key>Name</key><string>East</string>")
+        );
     }
 
     fn scene_with(parcels: &Arc<crate::parcels::ParcelMap>) -> Scene {
