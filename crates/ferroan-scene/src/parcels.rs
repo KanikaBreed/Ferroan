@@ -198,6 +198,24 @@ impl ParcelMap {
         self.parcels.get(id.checked_sub(1)? as usize)
     }
 
+    /// `GetLandObject(float, float)`: truncate to an integer metre, return
+    /// nothing outside the region, then index the 4 m cell. An empty land
+    /// list is nothing, including inside the region.
+    pub fn at_metres(&self, x: f32, y: f32) -> Option<&Parcel> {
+        if self.width == 0 || !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        let x = x as i32;
+        let y = y as i32;
+        let height = self.cells.len() / self.width;
+        let size_x = (self.width * 4) as i32;
+        let size_y = (height * 4) as i32;
+        if x < 0 || y < 0 || x >= size_x || y >= size_y {
+            return None;
+        }
+        self.at_cell((x / 4) as usize, (y / 4) as usize)
+    }
+
     fn empty(size: [u32; 2]) -> Result<Self, ParcelError> {
         for side in size {
             crate::height::check_edge(i32::try_from(side).unwrap_or(i32::MAX))?;
