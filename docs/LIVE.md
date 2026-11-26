@@ -19,7 +19,7 @@ account offline and Presence has no session for it. A missing griduser row
 (`Failure` from `getgriduserinfo`) counts as offline, so the first login is
 not held. That includes texture and
 then inventory on a standalone region, and the wait between grid scenarios.
-Chat also waits for the second account. The probe reads Robust in grid mode
+Walk, avatars and chat also wait for the second account. The probe reads Robust in grid mode
 and, in standalone, the region's own Presence and GridUser handlers
 (`ServiceProbe` in the capture patch; see [tools/live/README.md](../tools/live/README.md)).
 When the bound runs out, the login is not attempted. LogoutReply remains
@@ -29,7 +29,7 @@ asynchronous service cleanup, so it alone cannot authorize the next login.
 | Name | Pass line |
 | --- | --- |
 | login | `login: pass` |
-| walk | `walk: pass` with the start and end position |
+| walk | `walk: pass (forward movement, observer kills=1, leaving viewer kills=0)` |
 | chat | `chat: pass`. A second account, `Chat Bot`, hears `ferroan harness chat` as a channel-0 say and `ferroan harness debug` as type 6 on DEBUG_CHANNEL |
 | build | `build: pass`. A prim is rezzed, changed and deleted |
 | teleport | `teleport: pass` with the landing position |
