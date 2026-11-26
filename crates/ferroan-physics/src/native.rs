@@ -61,8 +61,8 @@ const MAX_BODIES: u32 = 1024;
 const MAX_BODY_PAIRS: u32 = 1024;
 const MAX_CONTACT_CONSTRAINTS: u32 = 1024;
 
-/// `JPH_PhysicsSystem_Create` or `JPH_Init` failed, a layer table did, or the
-/// caller is not the physics thread.
+/// `JPH_PhysicsSystem_Create` or `JPH_Init` failed, a layer table did, the
+/// caller is not the physics thread, or the request was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeError {
     /// `JPH_Init` returned false.
@@ -73,16 +73,19 @@ pub enum NativeError {
     System,
     /// The caller is not the physics thread. Only that thread calls Jolt.
     OffThread,
+    /// The physics thread did not run the create. The refusal says why.
+    Refused(crate::thread::Refusal),
 }
 
 impl fmt::Display for NativeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::Init => "JPH_Init failed",
-            Self::Layers => "Jolt layer table creation failed",
-            Self::System => "Jolt physics system creation failed",
-            Self::OffThread => "Jolt was called off the physics thread",
-        })
+        match self {
+            Self::Init => f.write_str("JPH_Init failed"),
+            Self::Layers => f.write_str("Jolt layer table creation failed"),
+            Self::System => f.write_str("Jolt physics system creation failed"),
+            Self::OffThread => f.write_str("Jolt was called off the physics thread"),
+            Self::Refused(refusal) => write!(f, "physics system create was refused: {refusal}"),
+        }
     }
 }
 

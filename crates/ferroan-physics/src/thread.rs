@@ -391,10 +391,13 @@ impl Share {
 
     fn create_and_drop_system(&self) -> Result<(), NativeError> {
         let (tx, rx) = mpsc::channel();
-        if self.try_post(Job::Native { reply: tx }).is_err() {
-            return Err(NativeError::OffThread);
+        if let Err(refusal) = self.try_post(Job::Native { reply: tx }) {
+            return Err(NativeError::Refused(refusal));
         }
-        rx.recv().unwrap_or(Err(NativeError::OffThread))
+        match rx.recv() {
+            Ok(result) => result,
+            Err(_) => Err(NativeError::Refused(Refusal::Stopped)),
+        }
     }
 
     #[cfg(test)]
@@ -693,6 +696,44 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn a_refused_system_create_carries_the_refusal() {
+        let physics = Physics::for_frame(0.0909).expect("thread");
+        let share = physics.share.clone();
+        let (hold, gates) = hold_pair();
+        let worker = thread::spawn(move || share.heartbeat(f64::from(0.0909f32), Some(hold)));
+        gates
+            .entered
+            .recv_timeout(Duration::from_secs(2))
+            .expect("entered");
+        let mut waiting = Vec::with_capacity(REQUEST_QUEUE);
+        for _ in 0..REQUEST_QUEUE {
+            waiting.push(physics.share.enqueue_ray().expect("queued"));
+        }
+        let refused = physics.create_and_drop_system().expect_err("full");
+        assert_eq!(refused, NativeError::Refused(Refusal::Full));
+        assert_ne!(refused, NativeError::OffThread);
+        gates.release.send(()).expect("release");
+        worker.join().expect("worker").expect("step");
+        for rx in waiting {
+            rx.recv_timeout(Duration::from_secs(2)).expect("ray").expect("ok");
+        }
+        let late = physics.share.clone();
+        drop(physics);
+        let started = Instant::now();
+        loop {
+            match late.create_and_drop_system() {
+                Err(NativeError::Refused(Refusal::Stopped)) => break,
+                Ok(()) | Err(NativeError::Refused(Refusal::Full)) => {}
+                Err(error) => panic!("system create returned {error}"),
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(2),
+                "create still waiting"
+            );
+        }
     }
 
     #[test]
