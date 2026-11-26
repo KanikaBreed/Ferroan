@@ -332,6 +332,13 @@ impl Session {
         movement.agent_data.circuit_code = self.agent.circuit_code;
         self.circuit.send(&movement, true).await?;
 
+        self.send_viewer_settings().await?;
+        self.movement_sent = true;
+        Ok(())
+    }
+
+    /// Initialize the child viewer's throttle and window without requesting root.
+    pub(crate) async fn send_viewer_settings(&mut self) -> Result<(), SessionError> {
         self.send_throttles(self.arrival_capture.as_ref().map(|c| c.task_bps))
             .await?;
 
@@ -342,7 +349,6 @@ impl Session {
         window.height_width_block.height = WINDOW_HEIGHT;
         window.height_width_block.width = WINDOW_WIDTH;
         self.circuit.send(&window, true).await?;
-        self.movement_sent = true;
         Ok(())
     }
 

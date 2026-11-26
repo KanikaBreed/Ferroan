@@ -468,7 +468,7 @@ fn neighbour_events(body: &[u8]) -> Result<bool, String> {
         && events[1].get("message").as_str() == "EstablishAgentCommunication")
 }
 
-fn scrub_events(body: &[u8]) -> Result<Vec<u8>, String> {
+pub(crate) fn scrub_events(body: &[u8]) -> Result<Vec<u8>, String> {
     let value = ferroan_llsd::from_xml(body).map_err(|error| error.to_string())?;
     let events = value.get("events").as_array();
     if !neighbour_events(body)? {

@@ -147,6 +147,13 @@
       "body": "\uFEFF\u003C?xml version=\u00221.0\u0022 encoding=\u0022utf-8\u0022?\u003E\n\u003CAuthorizationResponse xmlns:xsi=\u0022http://www.w3.org/2001/XMLSchema-instance\u0022 xmlns:xsd=\u0022http://www.w3.org/2001/XMLSchema\u0022\u003E\n  \u003CIsAuthorized\u003Etrue\u003C/IsAuthorized\u003E\n  \u003CMessage\u003Echild has been authorized\u003C/Message\u003E\n\u003C/AuthorizationResponse\u003E"
     }
   ],
+  "reset_fields": {
+    "stored": true,
+    "writes_previous_key": true,
+    "account_type": "initial",
+    "salt_length": 32,
+    "hash_length": 32
+  },
   "list": {
     "request": "METHOD=setauthinfo\u0026PRINCIPAL=11111111-1111-4111-8111-111111111111\u0026AccountType[]=",
     "body": "\u003C?xml version=\u00221.0\u0022?\u003E\n\u003CServerResponse\u003E\n  \u003CResult\u003ESuccess\u003C/Result\u003E\n\u003C/ServerResponse\u003E",
