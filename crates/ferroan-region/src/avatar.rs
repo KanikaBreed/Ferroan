@@ -80,7 +80,9 @@ async fn fetch(uri: &str, agent_id: Uuid) -> Result<StoredAppearance, AvatarErro
 fn avatar_error(error: GridError) -> AvatarError {
     match error {
         GridError::Http(http) => AvatarError::Http(http),
-        GridError::Rejected { .. } | GridError::InvalidReply => AvatarError::InvalidReply,
+        GridError::Rejected { .. } | GridError::InvalidReply | GridError::Store(_) => {
+            AvatarError::InvalidReply
+        }
     }
 }
 

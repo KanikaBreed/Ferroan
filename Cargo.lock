@@ -516,6 +516,7 @@ dependencies = [
  "ferroan-capture",
  "ferroan-client",
  "ferroan-config",
+ "ferroan-db",
  "ferroan-diag",
  "ferroan-http",
  "ferroan-llsd",
