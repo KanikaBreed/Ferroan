@@ -190,6 +190,9 @@ pub struct RegionConfig {
     pub physics_scale_limits: ferroan_scene::PhysicsScaleLimits,
     /// Whether stored prims can acquire physics actors on admission.
     pub collidable_prims: bool,
+    /// `RegionInfo.ObjectCapacity`. Regions.ini `MaxPrims`, default 15,000.
+    /// A value that is not a signed 32-bit integer stops startup.
+    pub object_capacity: i32,
     /// Region store for prims. `[SimulationDataStore]` replaces
     /// `[DatabaseService]` when its key is present. SQLite, MySQL and
     /// PostgreSQL providers are kept. A null provider leaves this empty.
@@ -200,6 +203,10 @@ pub struct RegionConfig {
     /// Absent leaves the shipped default. Startup warns when the value is not
     /// `BestAvatarResponsiveness`. This process does not compute another scheme.
     pub prioritization_scheme: Option<String>,
+    /// The region server ini. The frame passes it to `Physics::start`, so
+    /// `[Jolt]` keys apply (`PhysicsStepRate = 0` is one step) and a
+    /// `[Startup] physics` value other than `Jolt` logs the D110 warning.
+    pub server: Config,
 }
 
 /// Status and metrics settings. Not `Debug`: the managed-stats password is private.
@@ -460,6 +467,7 @@ impl RegionConfig {
             prim_scale_limits: scales.clamp,
             physics_scale_limits: scales.physics,
             collidable_prims: boolean_or(server, "Startup", "collidable_prim", true)?,
+            object_capacity: object_capacity(regions, name)?,
             object_store: object_store(server),
             udp_capture: server
                 .get("ClientStack.LindenUDP", "CaptureFile")
@@ -469,6 +477,7 @@ impl RegionConfig {
             prioritization_scheme: server
                 .get("InterestManagement", "UpdatePrioritizationScheme")
                 .map(str::to_owned),
+            server: server.clone(),
         })
     }
 
@@ -758,6 +767,16 @@ fn circuit_throttle(config: &Config) -> Result<CircuitThrottle, RegionConfigErro
         client_max_bps,
         scene_max_bps,
     })
+}
+
+/// `RegionInfo` reads `MaxPrims` from the region section. Absent keeps 15,000.
+/// `GetInt` throws when the text is not a signed 32-bit integer.
+fn object_capacity(regions: &Config, name: &str) -> Result<i32, RegionConfigError> {
+    match regions.get(name, "MaxPrims") {
+        None => Ok(15_000),
+        Some(text) => csharp_int(text)
+            .ok_or_else(|| value(name, "MaxPrims", "expected a signed 32-bit integer")),
+    }
 }
 
 /// Nini `GetInt`: `Convert.ToInt32` of the text, surrounding white space and
@@ -1263,6 +1282,29 @@ mod tests {
             server.set("Startup", "LoginConnectWaitSeconds", invalid);
             assert!(RegionConfig::from_configs(&server, &regions()).is_err());
         }
+    }
+
+    #[test]
+    fn max_prims_is_the_region_object_capacity() {
+        let loaded = RegionConfig::from_configs(&server(), &regions()).unwrap();
+        assert_eq!(loaded.object_capacity, 15_000);
+        let mut regions = regions();
+        regions.set("Ferroan Test", "MaxPrims", "2");
+        assert_eq!(
+            RegionConfig::from_configs(&server(), &regions)
+                .unwrap()
+                .object_capacity,
+            2
+        );
+        regions.set("Ferroan Test", "MaxPrims", "-3");
+        assert_eq!(
+            RegionConfig::from_configs(&server(), &regions)
+                .unwrap()
+                .object_capacity,
+            -3
+        );
+        regions.set("Ferroan Test", "MaxPrims", "not prims");
+        assert!(RegionConfig::from_configs(&server(), &regions).is_err());
     }
 
     #[test]

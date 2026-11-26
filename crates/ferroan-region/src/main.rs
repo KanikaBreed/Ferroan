@@ -159,6 +159,25 @@ fn arguments() -> Result<Option<RegionLoad>, RunError> {
     }))
 }
 
+/// `SendLandProperties` region values. The handshake word is the one stored
+/// settings already applied, including `RestrictPushing`. A missing settings
+/// row sends bonus 1. A missing estate leaves tax-free and the environment
+/// override clear.
+fn parcel_region(
+    config: &RegionConfig,
+    settings: Option<&ferroan_scene::RegionSettings>,
+    estate: Option<&ferroan_scene::EstateAccess>,
+) -> ferroan_scene::parcels::ParcelRegion {
+    let object_bonus = settings.map(|row| row.object_bonus).unwrap_or(1.0);
+    ferroan_scene::parcels::ParcelRegion::from_handshake(
+        config.handshake.region_flags,
+        object_bonus,
+        config.object_capacity,
+        estate.is_some_and(|access| access.tax_free),
+        estate.is_some_and(|access| access.allow_environment_override),
+    )
+}
+
 async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     let log_guard = ferroan_log::install(&config.logs)?;
     if ferroan_region::config::prioritization_scheme_differs(
@@ -170,7 +189,7 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
         );
     }
     let terrain = load_terrain(&config).await?;
-    let _region_settings = load_stored_settings(&mut config).await?;
+    let region_settings = load_stored_settings(&mut config).await?;
     config.resolve_control_plane().await?;
     // Install handlers before registration. A termination received while the
     // bounded grid request is in flight is handled as soon as it completes,
@@ -229,13 +248,50 @@ async fn serve(mut config: RegionConfig) -> Result<(), RunError> {
     if let Some(frame) = &terrain {
         simulation.keep_objects(frame.stored_groups());
         simulation.keep_scene(Arc::clone(frame));
+        let caps_out = caps.clone();
+        let installed = frame.set_parcel_sender(Arc::new(move |agent, element| {
+            if let Err(error) = caps_out.enqueue_raw_for(agent, element, "parcel-properties") {
+                tracing::warn!(
+                    "ferroan-region: parcel properties were not queued for {agent}: {error}"
+                );
+            }
+        }));
+        match installed {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel sender was not installed: {error}");
+            }
+        }
     }
+    let mut stored_estate = None;
     if let Some(connection) = config.estate_store.as_deref() {
         match ferroan_scene::open_estate(connection, config.id).await {
-            Ok(Some(access)) => simulation.apply_estate(access),
+            Ok(Some(access)) => {
+                stored_estate = Some(access.clone());
+                simulation.apply_estate(access);
+            }
             Ok(None) => {}
             Err(error) => {
                 tracing::warn!("ferroan-region: estate tables were not read: {error}");
+            }
+        }
+    }
+    if let Some(frame) = &terrain {
+        let installed = parcel_region(&config, region_settings.as_deref(), stored_estate.as_ref());
+        match frame.set_parcel_region(installed) {
+            Ok(pending) => {
+                if let Err(error) = pending.wait().await {
+                    tracing::warn!(
+                        "ferroan-region: parcel region values were not installed: {error}"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::warn!("ferroan-region: parcel region values were not installed: {error}");
             }
         }
     }
@@ -456,6 +512,7 @@ async fn load_terrain(config: &RegionConfig) -> Result<Option<Arc<TerrainFrame>>
         config.prim_scale_limits,
         config.physics_scale_limits,
         config.collidable_prims,
+        config.server.clone(),
     )
     .map_err(|error| RunError::Terrain(error.to_string()))?;
     Ok(Some(Arc::new(frame)))
@@ -698,6 +755,7 @@ fn scene_call(frame: &TerrainFrame, agent: Uuid, call: SceneCall) -> SceneAnswer
             ),
             |stored| Ok(pose_reply(stored)),
         ),
+        SceneCall::InitialLand => answered(frame.initial_land(agent), |()| Ok(SceneReply::Applied)),
         SceneCall::Read => answered(frame.presence(agent), |stored| {
             Ok(stored.map_or(SceneReply::Missing, pose_reply))
         }),
@@ -3764,5 +3822,115 @@ mod tests {
         let (parts, notes) = delivered(group, false).await;
         assert!(parts.iter().any(|part| part.0 == root));
         assert!(notes.is_empty());
+    }
+
+    /// A stored row with restrict pushing and object bonus 2 reaches the
+    /// parcel region. `InitialLand` is posted for that agent.
+    #[tokio::test]
+    async fn a_stored_row_sets_push_override_and_bonus_and_initial_land_uses_the_agent() {
+        let dir = std::env::temp_dir().join(format!(
+            "ferroan-region-parcel-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("settings.db");
+        std::fs::copy(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../fixtures/regionstore/settings.db"),
+            &path,
+        )
+        .unwrap();
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .unwrap();
+        let updated = sqlx::query(
+            "UPDATE regionsettings SET object_bonus = 2.0, restrict_pushing = 1 \
+             WHERE lower(regionUUID) = '11111111-1111-1111-1111-111111111111'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap()
+        .rows_affected();
+        pool.close().await;
+        assert_eq!(updated, 1);
+
+        let server = ferroan_config::Config::parse(
+            "[Network]\nhttp_listener_port=9100\nbind_ip_address=127.0.0.2\n\
+             [GridService]\nGridServerURI=http://127.0.0.1:8003\n\
+             [PresenceService]\nPresenceServerURI=http://127.0.0.1:8003\n\
+             [GridUserService]\nGridUserServerURI=http://127.0.0.1:8003\n\
+             [Map]\nGenerateMaptiles=false\n",
+        )
+        .unwrap();
+        let regions = ferroan_config::Config::parse(
+            "[Ferroan Test]\nRegionUUID=11111111-1111-1111-1111-111111111111\n\
+             Location=1000,1001\nInternalAddress=127.0.0.1\nInternalPort=9100\n\
+             ExternalHostName=127.0.0.1\nMaxPrims=22000\n",
+        )
+        .unwrap();
+        let mut config = RegionConfig::from_configs(&server, &regions).unwrap();
+        assert_eq!(config.object_capacity, 22_000);
+        config.object_store = Some(ferroan_region::config::ObjectStore {
+            connection: format!("Data Source={};Version=3", path.display()),
+            kind: ferroan_scene::ObjectStoreKind::Sqlite,
+        });
+        let settings = load_stored_settings(&mut config).await.unwrap().unwrap();
+        assert!(settings.restrict_pushing);
+        assert_eq!(settings.object_bonus, 2.0);
+        let estate = ferroan_scene::EstateAccess {
+            owner: None,
+            managers: Vec::new(),
+            tax_free: false,
+            allow_environment_override: true,
+        };
+        let region = parcel_region(&config, Some(settings.as_ref()), Some(&estate));
+        assert_eq!(region.object_bonus, 2.0);
+        assert_eq!(region.object_capacity, 22_000);
+        assert_eq!(region.region_flags & (1 << 22), 1 << 22);
+        assert_eq!(region.region_flags & (1 << 9), 1 << 9);
+        assert!(!region.tax_free);
+
+        let parcels =
+            ferroan_scene::parcels::open_parcels(None, config.id, [256, 256], Uuid::nil())
+                .await
+                .unwrap();
+        let frame = TerrainFrame::start_region(None, Some(parcels)).unwrap();
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let record = Arc::clone(&seen);
+        frame
+            .set_parcel_sender(Arc::new(move |agent, _element| {
+                record.lock().unwrap().push(agent);
+            }))
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let agent = Uuid::from_u128(0x61c1);
+        frame
+            .arrive(
+                agent,
+                ferroan_scene::Presence {
+                    position: [128.0, 128.0, 25.0],
+                    rotation: [0.0, 0.0, 0.0, 1.0],
+                    velocity: [0.0, 0.0, 0.0],
+                    control_flags: 0,
+                    draw_distance: 64.0,
+                },
+                [1.0, 0.0, 0.0],
+            )
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        scene_call(&frame, agent, SceneCall::InitialLand)
+            .reply()
+            .await
+            .unwrap();
+        assert_eq!(seen.lock().unwrap().as_slice(), &[agent]);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

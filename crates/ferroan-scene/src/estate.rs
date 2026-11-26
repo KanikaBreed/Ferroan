@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Estate owner and managers for one region.
+//! Estate owner, managers, `TaxFree` and `AllowEnviromentOverride` for one region.
 //!
 //! `EstateDataService` (`Source/OpenSim.Services.EstateService/EstateDataService.cs`)
 //! reads `[DatabaseService] ConnectionString`, then `EstateConnectionString`,
@@ -17,12 +17,18 @@ use uuid::Uuid;
 /// `Constants.MaxEstateManagers` at the pin.
 pub const MAX_ESTATE_MANAGERS: usize = 20;
 
-/// Owner and managers loaded for one region. `owner` is `None` when the row
-/// has no usable id; the caller keeps its INI owner.
+/// Owner, managers and the two estate columns `SendLandProperties` reads.
+/// `owner` is `None` when the row has no usable id; the caller keeps its INI
+/// owner. A missing settings row leaves both booleans false.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EstateAccess {
     pub owner: Option<Uuid>,
     pub managers: Vec<Uuid>,
+    /// `estate_settings.TaxFree`. Nonzero is true.
+    pub tax_free: bool,
+    /// `estate_settings.AllowEnviromentOverride`, the column's spelling.
+    /// Nonzero is true.
+    pub allow_environment_override: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -61,13 +67,17 @@ async fn read_estate(pool: &Pool, region: Uuid) -> Result<Option<EstateAccess>, 
     let Some((estate,)) = estate else {
         return Ok(None);
     };
-    let owner: Option<(String,)> =
-        sqlx::query_as("SELECT EstateOwner FROM estate_settings WHERE EstateID = ?1 LIMIT 1")
-            .bind(estate)
-            .fetch_optional(sqlite)
-            .await
-            .map_err(|error| EstateError(error.to_string()))?;
-    let owner = owner.and_then(|(text,)| parse_agent(&text));
+    let settings: Option<(String, i64, i64)> = sqlx::query_as(
+        "SELECT EstateOwner, TaxFree, AllowEnviromentOverride FROM estate_settings WHERE EstateID = ?1 LIMIT 1",
+    )
+    .bind(estate)
+    .fetch_optional(sqlite)
+    .await
+    .map_err(|error| EstateError(error.to_string()))?;
+    let (owner, tax_free, allow_environment_override) = match settings {
+        Some((text, tax, environment)) => (parse_agent(&text), tax != 0, environment != 0),
+        None => (None, false, false),
+    };
     let rows: Vec<(String,)> = sqlx::query_as(
         "SELECT uuid FROM estate_managers WHERE EstateID = ?1 ORDER BY uuid LIMIT ?2",
     )
@@ -85,7 +95,12 @@ async fn read_estate(pool: &Pool, region: Uuid) -> Result<Option<EstateAccess>, 
             managers.push(id);
         }
     }
-    Ok(Some(EstateAccess { owner, managers }))
+    Ok(Some(EstateAccess {
+        owner,
+        managers,
+        tax_free,
+        allow_environment_override,
+    }))
 }
 
 fn parse_agent(text: &str) -> Option<Uuid> {
@@ -105,7 +120,7 @@ mod tests {
             "INSERT INTO migrations (name, version) VALUES ('migrations', 1)",
             "INSERT INTO migrations (name, version) VALUES ('EstateStore', 13)",
             "CREATE TABLE estate_map (RegionID TEXT, EstateID INTEGER)",
-            "CREATE TABLE estate_settings (EstateID INTEGER PRIMARY KEY, EstateOwner TEXT)",
+            "CREATE TABLE estate_settings (EstateID INTEGER PRIMARY KEY, EstateOwner TEXT, TaxFree INTEGER NOT NULL DEFAULT 0, AllowEnviromentOverride INTEGER NOT NULL DEFAULT 0)",
             "CREATE TABLE estate_managers (EstateID INTEGER, uuid TEXT)",
         ] {
             sqlx::query(statement).execute(&pool).await.unwrap();
@@ -150,11 +165,13 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO estate_settings (EstateID, EstateOwner) VALUES (7, ?1)")
-            .bind(owner.as_hyphenated().to_string())
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO estate_settings (EstateID, EstateOwner, TaxFree, AllowEnviromentOverride) VALUES (7, ?1, 1, 1)",
+        )
+        .bind(owner.as_hyphenated().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
         sqlx::query("INSERT INTO estate_managers (EstateID, uuid) VALUES (7, ?1)")
             .bind(manager.as_hyphenated().to_string())
             .execute(&pool)
@@ -174,6 +191,8 @@ mod tests {
         let access = open_estate(&connection, region).await.unwrap().unwrap();
         assert_eq!(access.owner, Some(owner));
         assert_eq!(access.managers, vec![manager]);
+        assert!(access.tax_free);
+        assert!(access.allow_environment_override);
         assert!(
             open_estate(&connection, Uuid::from_u128(9))
                 .await

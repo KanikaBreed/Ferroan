@@ -390,7 +390,8 @@ impl CapsRegistry {
     }
 
     /// Queue one already-encoded element when exactly one agent is registered.
-    pub fn enqueue_raw(&self, element: &[u8]) -> Result<(), EventQueueError> {
+    /// `caller` is the name a limit readout shows for this enqueue.
+    pub fn enqueue_raw(&self, element: &[u8], caller: &str) -> Result<(), EventQueueError> {
         let active = self
             .active
             .lock()
@@ -398,14 +399,20 @@ impl CapsRegistry {
         if active.len() != 1 {
             return Err(EventQueueError::Closed);
         }
-        active[0].state.queue.enqueue_bytes(element)
+        active[0].state.queue.enqueue_bytes(element, caller)
     }
 
     /// Queue one already-encoded element on one agent's event queue.
     ///
     /// A missing agent is [`EventQueueError::Closed`]. The bytes are stored as
-    /// the element `GetEvents` writes into the events array.
-    pub fn enqueue_raw_for(&self, agent_id: Uuid, element: &[u8]) -> Result<(), EventQueueError> {
+    /// the element `GetEvents` writes into the events array. `caller` is the
+    /// name a limit readout shows for this enqueue.
+    pub fn enqueue_raw_for(
+        &self,
+        agent_id: Uuid,
+        element: &[u8],
+        caller: &str,
+    ) -> Result<(), EventQueueError> {
         let queue = {
             let active = self
                 .active
@@ -419,7 +426,7 @@ impl CapsRegistry {
             };
             registered.state.queue.clone()
         };
-        queue.enqueue_bytes(element)
+        queue.enqueue_bytes(element, caller)
     }
 
     /// Elements waiting on one agent's queue, in enqueue order.
@@ -674,8 +681,9 @@ impl CapsServer {
     }
 
     /// Queue one already-encoded element for the next poll.
-    pub fn enqueue_raw(&self, element: &[u8]) -> Result<(), EventQueueError> {
-        self.queue.enqueue_bytes(element)
+    /// `caller` is the name a limit readout shows for this enqueue.
+    pub fn enqueue_raw(&self, element: &[u8], caller: &str) -> Result<(), EventQueueError> {
+        self.queue.enqueue_bytes(element, caller)
     }
 }
 
@@ -934,7 +942,7 @@ mod tests {
         let element = b"<map><key>Name</key><string>Bob&apos;s Place</string></map>";
         let none = CapsRegistry::new("http://127.0.0.1:9").unwrap();
         assert!(matches!(
-            none.enqueue_raw(element),
+            none.enqueue_raw(element, "event-queue"),
             Err(EventQueueError::Closed)
         ));
 
@@ -942,7 +950,7 @@ mod tests {
         let agent = Uuid::from_u128(1);
         one.register_agent(&format!("/CAPS/{agent}0000/"), agent)
             .unwrap();
-        one.enqueue_raw(element).unwrap();
+        one.enqueue_raw(element, "event-queue").unwrap();
         assert_eq!(one.queued_events(agent).unwrap(), vec![element.to_vec()]);
 
         let two = CapsRegistry::new("http://127.0.0.1:9").unwrap();
@@ -953,9 +961,35 @@ mod tests {
         two.register_agent(&format!("/CAPS/{second}0000/"), second)
             .unwrap();
         assert!(matches!(
-            two.enqueue_raw(element),
+            two.enqueue_raw(element, "event-queue"),
             Err(EventQueueError::Closed)
         ));
+    }
+
+    /// `enqueue_raw_for` forwards its caller into the limit readout. The
+    /// high-water latch is shared, so a climb that loses the slot tries again.
+    #[test]
+    fn parcel_properties_caller_reaches_the_limit_readout() {
+        let element = b"<map />";
+        let mut readout = String::new();
+        for _ in 0..8 {
+            ferroan_diag::observe(ferroan_diag::EVENT_QUEUE, 256, 0, "parcel-properties");
+            let registry = CapsRegistry::new("http://127.0.0.1:9").unwrap();
+            let agent = Uuid::from_u128(1);
+            registry
+                .register_agent(&format!("/CAPS/{agent}0000/"), agent)
+                .unwrap();
+            for _ in 0..205 {
+                registry
+                    .enqueue_raw_for(agent, element, "parcel-properties")
+                    .unwrap();
+            }
+            readout = ferroan_diag::render();
+            if readout.contains("route=parcel-properties") {
+                return;
+            }
+        }
+        panic!("limit readout did not record route=parcel-properties\n{readout}");
     }
 
     #[test]
@@ -1372,6 +1406,23 @@ mod tests {
         let http = ferroan_bot::login::http_client().unwrap();
         let response = http.get(server.seed_url()).send().await.unwrap();
         assert_eq!(response.status().as_u16(), 404);
+    }
+
+    /// `CapsServer::enqueue_raw` keeps the caller and the next poll returns
+    /// the element.
+    #[tokio::test]
+    async fn enqueue_raw_returns_the_element_on_the_next_poll() {
+        let server = CapsServer::bind().await.unwrap();
+        let element = b"<map><key>Name</key><string>West</string></map>";
+        server.enqueue_raw(element, "parcel-properties").unwrap();
+        let (status, body, _) =
+            post(server.event_queue_url(), "application/llsd+xml", Vec::new()).await;
+        assert_eq!(status, 200);
+        assert!(
+            body.windows(element.len()).any(|window| window == element),
+            "{}",
+            String::from_utf8_lossy(&body)
+        );
     }
 
     #[tokio::test]

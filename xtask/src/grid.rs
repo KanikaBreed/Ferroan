@@ -132,7 +132,7 @@ pub fn parcel_timing_fixtures(directory: &Path) -> std::process::ExitCode {
 }
 
 pub fn parcel_properties_fixtures(directory: &Path) -> std::process::ExitCode {
-    live::finish(parcel_properties::extract(directory))
+    live::finish(parcel_properties::extract(directory, false))
 }
 
 pub fn object_cross_fixtures(directory: &Path) -> std::process::ExitCode {
@@ -1274,7 +1274,7 @@ fn run_linux(spec: &crate::live_args::RunSpec, docker: bool) -> Result<String, S
         let timing = parcel_timing::extract(&root)?;
         Ok(format!("{}\n{timing}", report.lines))
     } else if compare == ferroan_bot::register::Compare::ParcelProperties {
-        let properties = parcel_properties::extract(&root)?;
+        let properties = parcel_properties::extract(&root, ferroan)?;
         Ok(format!("{}\n{properties}", report.lines))
     } else if compare == ferroan_bot::register::Compare::ObjectCross {
         let capture = login_capture::object_cross::extract(&root)?;
@@ -1668,7 +1668,10 @@ fn run_bot(
             {
                 harness_ref
                     .http_trace
-                    .scope(ferroan_bot::scenario::parcel_properties(harness_ref))
+                    .scope(ferroan_bot::scenario::parcel_properties(
+                        harness_ref,
+                        !ferroan,
+                    ))
                     .await
             } else if let Some(seed) = ParcelSeed::scenario(selected) {
                 let captures = harness_ref

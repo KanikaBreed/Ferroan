@@ -108,3 +108,4 @@ pub const LIVE_PORT_BASE: &str = "live.port-base";
 pub const CAPTURE_WRITER_QUEUE: &str = "capture.writer-queue";
 pub const BOT_OBSERVER_HISTORY: &str = "bot.observer-history";
 pub const PHYSICS_STEPS_PER_FRAME: &str = "physics.steps-per-frame";
+pub const PHYSICS_REQUEST_QUEUE: &str = "physics.request-queue";

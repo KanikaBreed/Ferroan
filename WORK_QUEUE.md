@@ -192,7 +192,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
 | Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | DONE (this PR) |
 | Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | BLOCKED (split into Q61c1–Q61c2) |
-| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | READY |
+| Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | DONE (this PR) |
 | Q61c2 | P2.6b3b: `ParcelPropertiesRequest`, the multi-parcel reply cap and the text bound | READY after Q61c1 |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
 | Q63 | P2.7b: `GenerateClientFlags` | DONE (this PR) |
@@ -305,13 +305,13 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | BLOCKED (the matched-native oracle waits on the deferred upgrade, 26 November 2026; file compiles are Q100a; stock recordings are Q177) |
+| Q100 | P3.0: Jolt oracle | READY after Q102, Q103 and Q177 |
 | Q100a | P3.0f: Engine-independent file oracle | DONE (this PR) |
 | Q177 | P3.57: Stock Pin8 integrated recordings | DONE (this PR) |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
-| Q102 | P3.0c: Move the C# Jolt module | BLOCKED (the maintainer deferred the C# Jolt module move on 26 November 2026) |
-| Q103 | P3.0d: Pin move | BLOCKED (the pin change waits on the deferred C# module move, 26 November 2026) |
-| Q104 | P3.0e: Decision entry | BLOCKED (the upgrade decision waits on the pin change, 26 November 2026) |
+| Q102 | P3.0c: Move the C# Jolt module | READY |
+| Q103 | P3.0d: Pin move | READY after Q102 |
+| Q104 | P3.0e: Decision entry | READY after Q103 |
 | Q105 | P3.1: Bind `oxijolt-sys` | DONE (this PR) |
 | Q106 | P3.1b: Notices and the vendored-fork fallback | DONE (this PR) |
 | Q107 | P3.2c: `[Jolt]` config, and one warning when `[Startup] physics` is not Jolt | DONE (this PR) |
@@ -325,7 +325,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
 | Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
-| Q115 | P3.3: Physics thread and the request queue | READY |
+| Q115 | P3.3: Physics thread and the request queue | DONE (this PR) |
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
 | Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
@@ -404,7 +404,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q199 | P3.79: Stand, failure and the wide-top sit | READY after Q198 |
 | Q174 | P3.26: Attachment forces on the wearer | READY after Q149 and Q120 |
 | Q175 | P3.27: `jolt` console commands | READY after Q100a |
-| Q176 | P3.28: Gate captures | BLOCKED (the same-native cross-platform gate waits on the deferred upgrade, the pin change and its decision, 26 November 2026) |
+| Q176 | P3.28: Gate captures | READY after Q196, Q186, Q165 and Q104 |
 | Q178 | P3.58: `PhysicsEnabled` off | READY after Q115 |
 | Q179 | P3.59: `PhysicsEnabled` on | READY after Q178 |
 | Q180 | P3.60: Fast body and a sensor between samples | READY after Q118 and Q177 |
@@ -479,37 +479,92 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q292 | P4.28a5: Conformance: memory | READY after Q288 and Q238 |
 | Q293 | P4.28b: `slua`'s own conformance file | READY after Q231 |
 | Q294 | P4.29: Refuse a script only YEngine can compile | READY after Q232 |
-| Q295 | P4.S1: `ll` math, strings and crypto | BLOCKED (stage 2 plan pending) |
-| Q296 | P4.S2: `ll` lists and JSON | BLOCKED (stage 2 plan pending) |
-| Q297 | P4.S3: `ll` communication, beyond the channel-0 say in P4.1d | BLOCKED (stage 2 plan pending) |
-| Q298 | P4.S4: `ll` link messages and linkset data | BLOCKED (stage 2 plan pending) |
-| Q299 | P4.S5: `ll` HTTP, XML-RPC and experience | BLOCKED (stage 2 plan pending) |
-| Q300 | P4.S6: `ll` inventory, rez and notecards | BLOCKED (stage 2 plan pending) |
+| Q295 | P4.S1: replaced by P4.F1.1–P4.F1.10 | BLOCKED (replaced) |
+| Q296 | P4.S2: replaced by P4.F2.1–P4.F2.7 | BLOCKED (replaced) |
+| Q297 | P4.S3: replaced by P4.F3.1–P4.F3.6 | BLOCKED (replaced) |
+| Q298 | P4.S4: 13 `llLinksetData*` methods; `llMessageLinked` is P4.F3.7 | BLOCKED (stage 2 plan pending) |
+| Q299 | P4.S5: XML-RPC and experience; the HTTP eight are P4.F3.8–P4.F3.10 | BLOCKED (stage 2 plan pending) |
+| Q300 | P4.S6: give, rez and transfer; the notecard reads are P4.F3.11 and P4.F3.12 | BLOCKED (stage 2 plan pending) |
 | Q301 | P4.S7: `ll` land, estate, region and environment | BLOCKED (stage 2 plan pending) |
 | Q302 | P4.S8: `ll` physics-backed | BLOCKED (stage 2 plan pending) |
 | Q303 | P4.S9: `ll` avatars, animation, camera, permissions, money | BLOCKED (stage 2 plan pending) |
 | Q304 | P4.S10: `ll` sound and media | BLOCKED (stage 2 plan pending) |
 | Q305 | P4.S11: `ll` sensors and detect | BLOCKED (stage 2 plan pending) |
 | Q306 | P4.S12: `ll` object, prim and script control | BLOCKED (stage 2 plan pending) |
-| Q307 | P4.S13: `os` math, strings, lists, crypto | BLOCKED (stage 2 plan pending) |
+| Q307 | P4.S13: replaced by the pure `os` rows | BLOCKED (replaced) |
 | Q308 | P4.S14: `os` avatars, teleport, attach, groups | BLOCKED (stage 2 plan pending) |
 | Q309 | P4.S15: `os` land, estate, region, sun, terrain | BLOCKED (stage 2 plan pending) |
 | Q310 | P4.S16: `os` drawing | BLOCKED (stage 2 plan pending) |
 | Q311 | P4.S17: `os` NPC | BLOCKED (stage 2 plan pending) |
 | Q312 | P4.S18: `os` physics, wind, health | BLOCKED (stage 2 plan pending) |
-| Q313 | P4.S19: `os` inventory and notecards | BLOCKED (stage 2 plan pending) |
+| Q313 | P4.S19: inventory names that remain; the three notecard reads are P4.F3.12 | BLOCKED (stage 2 plan pending) |
 | Q314 | P4.S20: `os` sound | BLOCKED (stage 2 plan pending) |
 | Q315 | P4.S21: `os` object, prim, sit, particles, script engine | BLOCKED (stage 2 plan pending) |
 | Q316 | P4.S22: `os` grid and simulator queries | BLOCKED (stage 2 plan pending) |
 | Q317 | P4.S23: `os` time and creation stamps | BLOCKED (stage 2 plan pending) |
-| Q318 | P4.S24: `os` HTTP | BLOCKED (stage 2 plan pending) |
-| Q319 | P4.S25: `os` communication | BLOCKED (stage 2 plan pending) |
+| Q318 | P4.S24: replaced by P4.F3.9 and P4.F3.10 | BLOCKED (replaced) |
+| Q319 | P4.S25: replaced by P4.F3.3 and P4.F3.7 | BLOCKED (replaced) |
 | Q320 | P4.S26: `bot` | BLOCKED (stage 2 plan pending) |
-| Q321 | P4.S27: `iw*` | BLOCKED (stage 2 plan pending) |
+| Q321 | P4.S27: the 57 `iw*` names those plans leave | BLOCKED (stage 2 plan pending) |
+| Q322 | P4.34: regex parse errors | READY |
+| Q323 | P4.34b: regex groups | READY after Q322 |
+| Q324 | P4.34c: regex classes, backreferences and lookaround | READY after Q323 |
+| Q325 | P4.34d: regex match and group order | READY after Q324 |
+| Q326 | P4.34e: regex replacement | READY after Q325 |
+| Q327 | P4.34f: regex match timeout | READY after Q325 |
+| Q328 | P4.35: composite format items | READY |
+| Q329 | P4.35b: standard numeric formats | READY after Q328 |
+| Q330 | P4.35c: custom numeric formats | READY after Q329 |
+| Q331 | P4.30: region instant-message sender | READY |
+| Q332 | P4.31: email module | READY |
+| Q333 | P4.32: outbound HTTP module | READY |
+| Q334 | P4.33: inbound URL module | READY |
+| Q335 | P4.F1.1: libm and absolute value | READY after Q232 and Q256 |
+| Q336 | P4.F1.2: integer conversion and modular power | READY after Q232 and Q256 |
+| Q337 | P4.F1.3: vector length, distance and angle | READY after Q232, Q253 and Q256 |
+| Q338 | P4.F1.4: rotations, first half | READY after Q232 and Q256 |
+| Q339 | P4.F1.5: rotations, second half, and slerp | READY after Q232, Q253 and Q256 |
+| Q340 | P4.F1.6: random numbers and keys | READY after Q232 and Q256 |
+| Q341 | P4.F1.7: string length, case, and ranges | READY after Q232 and Q256 |
+| Q342 | P4.F1.8: base64 and URL escape | READY after Q232 and Q256 |
+| Q343 | P4.F1.9: hashes | READY after Q232, Q253 and Q256 |
+| Q344 | P4.F1.10: RSA and colour | READY after Q232, Q253 and Q256 |
+| Q345 | P4.F1.11: numeric helpers | READY after Q232, Q253 and Q256 |
+| Q346 | P4.F1.12: plain string helpers | READY after Q232, Q253 and Q256 |
+| Q347 | P4.F1.13: regex calls | READY after Q232, Q253, Q256, Q326 and Q327 |
+| Q348 | P4.F1.13b: format strings | READY after Q232, Q253, Q256 and Q330 |
+| Q349 | P4.F1.14: alphabets and validate | READY after Q232 and Q256 |
+| Q350 | P4.F1.14b: codec hashes | READY after Q232, Q256 and Q349 |
+| Q351 | P4.F1.14c: gzip and ascii-zip | READY after Q232, Q256 and Q349 |
+| Q352 | P4.F1.14d: AES and the AES key | READY after Q232, Q256 and Q349 |
+| Q353 | P4.F1.15: `osAES` | READY after Q232, Q253 and Q256 |
+| Q354 | P4.F2.1: list accessors | READY after Q232, Q253 and Q256 |
+| Q355 | P4.F2.2: structural list edits | READY after Q232, Q253 and Q256 |
+| Q356 | P4.F2.3: list search | READY after Q232, Q253 and Q256 |
+| Q357 | P4.F2.4: list sort | READY after Q232, Q253 and Q256 |
+| Q358 | P4.F2.4b: list statistics and randomize | READY after Q232 and Q256 |
+| Q359 | P4.F2.5: list text | READY after Q232 and Q256 |
+| Q360 | P4.F2.6: JSON getters | READY after Q232 and Q256 |
+| Q361 | P4.F2.7: JSON setters | READY after Q232 and Q256 |
+| Q362 | P4.F2.8: `iwParseString2List` | READY after Q232 and Q256 |
+| Q363 | P4.F2.9: list match and edit | READY after Q232 and Q256 |
+| Q364 | P4.F3.1: whisper, say and shout | READY after Q232, Q233, Q241 and Q256 |
+| Q365 | P4.F3.2: region say, region say to, and owner say | READY after Q232, Q233, Q241 and Q256 |
+| Q366 | P4.F3.3: listen handles and `osListenRegex` | READY after Q232, Q241, Q253, Q256, Q259 and Q327 |
+| Q367 | P4.F3.4: dialog, text box, load URL, and map | READY after Q232, Q256 and Q273 |
+| Q368 | P4.F3.4a: viewer dialog, load URL, and map beacon | READY after Q233, Q241 and Q367 |
+| Q369 | P4.F3.5: instant message | READY after Q232, Q256, Q270, Q273 and Q331 |
+| Q370 | P4.F3.6: email | READY after Q232, Q256, Q270, Q273 and Q332 |
+| Q371 | P4.F3.7: link message and object message | READY after Q232, Q234, Q239, Q243, Q253, Q256 and Q261 |
+| Q372 | P4.F3.8: `llHTTPRequest` | READY after Q232, Q234, Q256, Q271 and Q333 |
+| Q373 | P4.F3.9: URL request and release | READY after Q232, Q253, Q256 and Q334 |
+| Q374 | P4.F3.10: HTTP response and content type | READY after Q232, Q253, Q256, Q334 and Q373 |
+| Q375 | P4.F3.11: async notecard reads | READY after Q232, Q234, Q256 and Q271 |
+| Q376 | P4.F3.12: synchronous and `os` notecard reads | READY after Q232, Q253, Q256, Q270, Q273 and Q327 |
 
-Q100 to Q205 are the Phase 3 rows. Q100, Q102, Q103, Q104 and Q176 stay blocked on the deferred C# module move (26 November 2026). Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+Q100 to Q205 are the Phase 3 rows. Q102 (the C# module move) is READY again: the maintainer reversed the deferral on 26 November 2026. Q103, Q104 and Q100 follow it in order; Q176 still waits on them. Q108 stays blocked because it is split into Q108a and Q108b. Q100a, Q101, Q105, Q106, Q107 and Q108a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
-Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q321 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). P4.S1 to P4.S27 stay blocked until the stage 2 plan.
+Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q294 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). Q295 to Q321 are the stage 2 placeholders. The pure-function plan and the communication plan replace P4.S1, P4.S2, P4.S3, P4.S13, P4.S24 and P4.S25, and they narrow P4.S4, P4.S5, P4.S6, P4.S19 and P4.S27. A replaced placeholder does not start. Q322 to Q376 are those rows. A row is READY only when every dependency is already DONE. The others are READY after the items named in the status.
 
 Q1: [PR #20](https://github.com/KanikaBreed/Ferroan/pull/20).
 

@@ -29,12 +29,18 @@ const CELL: [f32; 4] = [5.0, 1.0, 6.0, 2.0];
 const SPAN: [f32; 4] = [4.0, 0.0, 12.0, 4.0];
 const LAND_AT: Vec3 = Vec3::new(6.0, 2.0, 30.0);
 const CAPTURE_BUDGET: Duration = Duration::from_secs(90);
+/// Remainder-parcel flags. Your Parcel is the auto-create branch of
+/// `EventManagerOnIncomingLandDataFromStorage` (`LandManagementModule.cs`
+/// 1945–1957), which builds a `LandObject` and leaves these constructor
+/// flags. The arrival element sends this word. `KAAgSw==` is the same four bytes.
+const ARRIVAL_FLAGS: u32 = 1 | 2 | 8 | 64 | (1 << 13) | (1 << 27) | (1 << 29);
 
 struct ParcelNote {
     name: String,
     sequence: i32,
     result: i32,
     snap: bool,
+    flags: u32,
 }
 
 struct Seen {
@@ -63,7 +69,7 @@ enum Step {
     Done,
 }
 
-pub async fn parcel_properties(harness: &Harness) -> Result<String, String> {
+pub async fn parcel_properties(harness: &Harness, requests: bool) -> Result<String, String> {
     let http = crate::login::http_client().map_err(|error| error.to_string())?;
     let (mut session, _) = super::enter(&http, harness, &harness.owner, "last").await?;
     let eq = session
@@ -71,13 +77,25 @@ pub async fn parcel_properties(harness: &Harness) -> Result<String, String> {
         .get("EventQueueGet")
         .cloned()
         .ok_or("login supplied no EventQueueGet")?;
-    let result = capture(&http, &mut session, &eq).await;
+    let result = capture(&http, &mut session, &eq, requests).await;
     let logout = leave(harness, &mut session, &harness.owner).await;
     result.and(logout)?;
-    Ok("parcel-properties: captured arrival, one cell, a two-parcel span and a border walk".into())
+    if requests {
+        Ok(
+            "parcel-properties: captured arrival, one cell, a two-parcel span and a border walk"
+                .into(),
+        )
+    } else {
+        Ok("parcel-properties: arrival, a West landing and a border walk".into())
+    }
 }
 
-async fn capture(http: &reqwest::Client, session: &mut Session, eq: &str) -> Result<(), String> {
+async fn capture(
+    http: &reqwest::Client,
+    session: &mut Session,
+    eq: &str,
+    requests: bool,
+) -> Result<(), String> {
     let me = session.agent().agent_id;
     let mut seen = Seen {
         arrival: None,
@@ -116,7 +134,7 @@ async fn capture(http: &reqwest::Client, session: &mut Session, eq: &str) -> Res
                 describe(&seen.notes)
             ));
         }
-        match next_step(&seen, &sent, max_x)? {
+        match next_step(&seen, &sent, max_x, requests)? {
             Step::Done => {
                 send_move(session, camera(&seen), 0).await?;
                 finish_poll(http, session, eq, &mut polling, &mut seen, me).await?;
@@ -163,8 +181,12 @@ struct Polling {
     ack: Option<i32>,
 }
 
-fn next_step(seen: &Seen, sent: &Sent, max_x: f32) -> Result<Step, String> {
-    check_notes(&seen.notes)?;
+fn next_step(seen: &Seen, sent: &Sent, max_x: f32, requests: bool) -> Result<Step, String> {
+    if requests {
+        check_notes(&seen.notes)?;
+    } else {
+        check_walk_notes(&seen.notes)?;
+    }
     if let Some(position) = seen.arrival
         && !near_default(position)
     {
@@ -172,6 +194,23 @@ fn next_step(seen: &Seen, sent: &Sent, max_x: f32) -> Result<Step, String> {
             "arrival at {:.1},{:.1} is outside the default parcel",
             position.x, position.y
         ));
+    }
+    if !requests {
+        return Ok(match seen.notes.len() {
+            0 => Step::Wait,
+            1 if !sent.teleport => Step::SendTeleport,
+            1 => Step::Hold,
+            2 if seen.landed.is_none() || max_x >= 8.5 => Step::Hold,
+            2 => Step::Walk,
+            3 if max_x < 8.0 => Step::Hold,
+            3 => Step::Done,
+            _ => {
+                return Err(format!(
+                    "unexpected ParcelProperties ({})",
+                    describe(&seen.notes)
+                ));
+            }
+        });
     }
     Ok(match seen.notes.len() {
         0 | 3 => Step::Wait,
@@ -212,6 +251,37 @@ fn check_notes(notes: &[ParcelNote]) -> Result<(), String> {
     if notes.len() > WANT.len() {
         return Err(format!("unexpected ParcelProperties ({})", describe(notes)));
     }
+    if let Some(first) = notes.first()
+        && first.flags != ARRIVAL_FLAGS
+    {
+        return Err(format!(
+            "arrival ParcelFlags {:#x} ({})",
+            first.flags,
+            describe(notes)
+        ));
+    }
+    for (note, want) in notes.iter().zip(WANT) {
+        if note.name != want.0 || note.sequence != want.1 || note.result != want.2 || note.snap {
+            return Err(format!("unexpected ParcelProperties ({})", describe(notes)));
+        }
+    }
+    Ok(())
+}
+
+fn check_walk_notes(notes: &[ParcelNote]) -> Result<(), String> {
+    const WANT: &[(&str, i32, i32)] = &[("Your Parcel", 0, 0), ("West", 0, 0), ("East", 0, 0)];
+    if notes.len() > WANT.len() {
+        return Err(format!("unexpected ParcelProperties ({})", describe(notes)));
+    }
+    if let Some(first) = notes.first()
+        && first.flags != ARRIVAL_FLAGS
+    {
+        return Err(format!(
+            "arrival ParcelFlags {:#x} ({})",
+            first.flags,
+            describe(notes)
+        ));
+    }
     for (note, want) in notes.iter().zip(WANT) {
         if note.name != want.0 || note.sequence != want.1 || note.result != want.2 || note.snap {
             return Err(format!("unexpected ParcelProperties ({})", describe(notes)));
@@ -228,8 +298,8 @@ fn describe(notes: &[ParcelNote]) -> String {
         .iter()
         .map(|note| {
             format!(
-                "{} sequence {} result {} snap {}",
-                note.name, note.sequence, note.result, note.snap
+                "{} sequence {} result {} snap {} flags {:#x}",
+                note.name, note.sequence, note.result, note.snap, note.flags
             )
         })
         .collect::<Vec<_>>()
@@ -414,10 +484,16 @@ fn parcel_note(body: &Llsd) -> Result<ParcelNote, String> {
     if name.is_empty() {
         return Err("ParcelProperties has an empty name".into());
     }
+    let raw = data.get("ParcelFlags").as_binary();
+    if raw.len() != 4 {
+        return Err("ParcelProperties ParcelFlags is not 4 bytes".into());
+    }
+    let flags = u32::from_be_bytes([raw[0], raw[1], raw[2], raw[3]]);
     Ok(ParcelNote {
         name: name.to_string(),
         sequence: data.get("SequenceID").as_i32(),
         result: data.get("RequestResult").as_i32(),
         snap: data.get("SnapSelection").as_bool(),
+        flags,
     })
 }
