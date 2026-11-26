@@ -88,7 +88,7 @@ Q101's `crates/ferroan-physics/src/substep.rs` ports `Source/OpenSim.Region.Phys
 | `oxijolt-sys` 1.6.0 | MIT OR Apache-2.0 | [licenses/oxijolt-sys-MIT.txt](licenses/oxijolt-sys-MIT.txt), [licenses/oxijolt-sys-Apache-2.0.txt](licenses/oxijolt-sys-Apache-2.0.txt) |
 | Jolt Physics 5.6.0 | MIT | [licenses/Jolt-Physics-MIT.txt](licenses/Jolt-Physics-MIT.txt) |
 
-The published `oxijolt-sys` 1.6.0 crate carries those licence texts at the repository root (`LICENSE-MIT`, `LICENSE-APACHE`) and Jolt's `vendor/JoltPhysics/LICENSE`. Checked against tag `v1.6.0` and the crate's vendored Jolt licence. joltc (Amer Koleci, MIT) and the `joltc_ext` sources are compiled into the same archive. Their notices are P3.1b.
+The published `oxijolt-sys` 1.6.0 crate ships Jolt's `vendor/JoltPhysics/LICENSE` and has no `LICENSE-MIT` or `LICENSE-APACHE`. Those `oxijolt-sys` licence texts are at the repository root of tag `v1.6.0` and at the root of each release archive. Checked against that tag and the crate's vendored Jolt licence. joltc (Amer Koleci, MIT) and the `joltc_ext` sources are compiled into the same archive. Their notices are P3.1b.
 
 Linden Lab's [SLua engine](https://github.com/secondlife/slua), MIT (copyright Linden Lab), a fork of Luau (MIT, copyright Roblox), is still planned. Its licence text will be added when that dependency lands.
 

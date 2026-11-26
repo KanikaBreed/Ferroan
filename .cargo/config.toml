@@ -1,8 +1,10 @@
 [alias]
 xtask = "run --quiet --package xtask --"
 
-# oxijolt-sys downloads a SHA-checked archive. `require` refuses a CMake
-# fallback. `force` keeps a shell setting from selecting the source build.
-# The archive hashes are recorded beside D8.
+# oxijolt-sys downloads a SHA-checked archive for x86_64 Linux (glibc 2.35),
+# x86_64 Windows (MSVC 14.44) and aarch64 macOS 11.0. `require` is the
+# repository default, so CI and a default build use that archive. An explicit
+# `JOLTC_PREBUILT=off` builds from source. The archive hashes are recorded
+# beside D8. `ferroan-physics`'s build script refuses `JOLTC_LIB_DIR`.
 [env]
-JOLTC_PREBUILT = { value = "require", force = true }
+JOLTC_PREBUILT = { value = "require" }

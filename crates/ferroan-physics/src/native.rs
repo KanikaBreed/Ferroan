@@ -87,8 +87,9 @@ impl Error for NativeError {}
 /// One Jolt physics system.
 ///
 /// Dropping the value destroys the native system and the three layer tables
-/// joltc stored inside it. The value is not `Send`: joltc's system map is
-/// unsynchronised, and create and destroy take a process-local lock.
+/// joltc stored inside it. The value is not `Send` because it holds a raw
+/// pointer. Create and destroy take a process-local lock, because joltc's
+/// system map is unsynchronised.
 pub struct PhysicsSystem {
     system: *mut JPH_PhysicsSystem,
 }
@@ -171,7 +172,9 @@ fn create_system() -> Result<*mut JPH_PhysicsSystem, NativeError> {
     // Bounds: the tables are created with one object layer and one broad-phase
     // layer. The only map call uses object layer 0 and broad-phase layer 0,
     // both inside those counts. The three capacities are the non-zero constants
-    // above. `numBodyMutexes` 0 leaves joltc's own mutex count.
+    // above. joltc passes `numBodyMutexes` 0 through to Jolt, and
+    // `BodyManager::Init` auto-detects `2 * hardware_concurrency`, rounds that
+    // up to a power of two, and caps it at 64.
     unsafe {
         let pair = JPH_ObjectLayerPairFilterTable_Create(OBJECT_LAYERS);
         if pair.is_null() {
