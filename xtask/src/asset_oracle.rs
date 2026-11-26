@@ -173,15 +173,12 @@ fn avatar_http(writing: bool, modes: &[(&str, &str)]) -> ExitCode {
         Ok(result) => result,
         Err(code) => return code,
     };
-    let plan = match crate::ports::Plan::resolve(None) {
-        Ok(plan) => plan,
+    let port = match crate::ports::alloc(crate::ports::Slot::RobustPrivate) {
+        Ok(port) => port,
         Err(error) => {
             eprintln!("avatar: {error}");
             return ExitCode::FAILURE;
         }
-    };
-    let Some(port) = plan.today_or_base(crate::ports::Slot::RobustPrivate) else {
-        return ExitCode::FAILURE;
     };
     let action = if writing { "generate" } else { "verify" };
     let fixtures = crate::repo_root().join("fixtures/avatar");

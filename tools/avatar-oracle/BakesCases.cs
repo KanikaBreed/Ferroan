@@ -33,6 +33,35 @@ static class BakesCases
         }
     }
 
+    // Keep the byte-for-byte check, but identify the observation and field on failure.
+    static void Verify(string path, string actual)
+    {
+        string expected = File.ReadAllText(path).ReplaceLineEndings("\n");
+        if (expected == actual) return;
+
+        using var fixture = JsonDocument.Parse(expected);
+        using var capture = JsonDocument.Parse(actual);
+        var recorded = fixture.RootElement.GetProperty("observations");
+        var observed = capture.RootElement.GetProperty("observations");
+        if (recorded.GetArrayLength() != observed.GetArrayLength())
+            throw new InvalidDataException($"XBakes observation count: expected {recorded.GetArrayLength()}, got {observed.GetArrayLength()}");
+
+        for (int i = 0; i < observed.GetArrayLength(); i++)
+        {
+            var row = observed[i];
+            string label = row.TryGetProperty("label", out var name) ? name.GetString() : row.GetProperty("command").GetString();
+            foreach (var field in row.EnumerateObject())
+                if (!recorded[i].TryGetProperty(field.Name, out var value) || !JsonElement.DeepEquals(value, field.Value))
+                    throw new InvalidDataException($"XBakes observation {i + 1} ({label}): {field.Name} differs");
+            if (!JsonElement.DeepEquals(recorded[i], row))
+                throw new InvalidDataException($"XBakes observation {i + 1} ({label}): extra fixture fields");
+        }
+        foreach (var key in new[] { "pin", "nonportableRead" })
+            if (!JsonElement.DeepEquals(fixture.RootElement.GetProperty(key), capture.RootElement.GetProperty(key)))
+                throw new InvalidDataException($"XBakes: {key} differs");
+        throw new InvalidDataException("XBakes fixture differs in formatting or unexpected fields");
+    }
+
     public static int Run(string action, string pin, uint port, string path)
     {
         const string id = "abcdef01-2345-4678-9abc-def012345678";
@@ -122,8 +151,8 @@ static class BakesCases
                 string json = JsonSerializer.Serialize(new { pin, observations, nonportableRead },
                     new JsonSerializerOptions { WriteIndented = true }).ReplaceLineEndings("\n") + "\n";
                 if (action == "generate") File.WriteAllText(path, json);
-                else if (action != "verify" || File.ReadAllText(path).ReplaceLineEndings("\n") != json)
-                    throw new InvalidDataException("XBakes HTTP, command or stored file differs");
+                else if (action == "verify") Verify(path, json);
+                else throw new ArgumentException($"Unknown XBakes action: {action}");
                 System.Console.WriteLine($"XBakes: {observations.Count} observations and the nonportable-name read match Pin8");
                 return 0;
             }
