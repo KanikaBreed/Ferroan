@@ -70,6 +70,8 @@
 //! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
 //! Initial data queues them in link order. Q65c3 drains them onto the wire.
 //! An OAR load's creator, owner and group rewrite is [`oar_owners`].
+//! Region environment settings load, store and remove are [`environment`].
+//! Startup does not call that writer.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -80,6 +82,7 @@ pub mod client_flags;
 pub mod coarse;
 mod compress;
 pub mod entity_queue;
+mod environment;
 mod error;
 mod estate;
 mod frame;
@@ -114,6 +117,9 @@ pub use entity_queue::{
     ANIMATIONS, CANCEL_KILL, ClassifiedUpdate, EntityUpdateQueue, FULL_UPDATE,
     FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MATERIAL_OVR, MAX_ENTITY_UPDATES, POSITION,
     QueuedUpdate, ROTATION, SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
+};
+pub use environment::{
+    EnvironmentError, load_region_environment, remove_region_environment, store_region_environment,
 };
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
