@@ -25,6 +25,8 @@
   </Target>
 
   <ItemGroup>
+    <Compile Remove="MatchedProgram.cs" />
+    <Compile Remove="MatchedDocument.cs" />
     <Compile Include="$(FerroanRef)/OpenSim-Tranquillity/Source/OpenSim.Region.PhysicsModules.Jolt/SubstepAccumulator.cs">
       <Link>SubstepAccumulator.cs</Link>
     </Compile>

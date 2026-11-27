@@ -27,6 +27,7 @@
   <ItemGroup>
     <!-- The harness recorder is a second project in this directory. It must not enter the no-native build. -->
     <Compile Remove="RecordOracle.cs" />
+    <Compile Remove="RecordProgram.cs" />
   </ItemGroup>
 
   <ItemGroup>

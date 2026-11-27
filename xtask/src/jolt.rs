@@ -4,7 +4,8 @@
 //! Build and run the Jolt oracles against the pinned checkout.
 //! Build output goes under `.scratch/`, never into the checkout.
 //!
-//! `jolt generate` and `jolt verify` stay with the matched-native harness (P3.0).
+//! `jolt generate` and `jolt verify` run the matched-native `drop` (P3.0).
+//! Ordinary `cargo xtask check` does not run them.
 //! `jolt file` calls one pinned method and does not start native code.
 //! `jolt record` runs the pinned harness in-process and does not start a region.
 
@@ -58,6 +59,20 @@ pub(crate) fn record(writing: bool) -> ExitCode {
         label: "jolt-record",
         project_rel: "tools/jolt-config-oracle/JoltRecordOracle.csproj",
         artifacts_rel: ".scratch/jolt-record-oracle/artifacts",
+        clear_physics_rate: true,
+    })
+}
+
+/// Matched-native `drop` at physics rate 45. Not part of `cargo xtask check`.
+pub(crate) fn generate(writing: bool) -> ExitCode {
+    run(Job {
+        writing,
+        fixture_rel: "fixtures/jolt-matched",
+        write_action: "generate",
+        check_action: "verify",
+        label: "jolt-matched",
+        project_rel: "tools/jolt-oracle/JoltMatchedOracle.csproj",
+        artifacts_rel: ".scratch/jolt-matched-oracle/artifacts",
         clear_physics_rate: true,
     })
 }
