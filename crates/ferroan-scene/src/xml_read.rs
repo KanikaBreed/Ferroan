@@ -959,7 +959,7 @@ fn blank_shape() -> ObjectShape {
     }
 }
 
-fn blank_item(now: u32) -> InventoryItem {
+pub(crate) fn blank_item(now: u32) -> InventoryItem {
     InventoryItem {
         item_id: Uuid::nil(),
         parent_part_id: Uuid::nil(),

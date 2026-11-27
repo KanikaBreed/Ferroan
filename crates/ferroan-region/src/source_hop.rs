@@ -429,6 +429,11 @@ impl HopEnv {
         }
     }
 
+    /// `ObjectPhysicsProperties` onto this agent's event queue. A missing agent is skipped.
+    pub fn enqueue_event(&self, agent: Uuid, element: &[u8]) {
+        let _ = self.caps.enqueue_raw_for(agent, element, "object-physics");
+    }
+
     /// Stop this circuit's admission tasks and wait until each guard drops.
     /// A cancelled admission stages its close when logout already won, and
     /// the following [`Self::close_staged`] takes that close.
