@@ -1568,13 +1568,27 @@ fn pin_context() -> Result<PathBuf, String> {
         crate::repo_root().join(".scratch/docker/OpenSim-Tranquillity")
     };
     require_scratch(&dest)?;
-    if let Some(source) = reference_checkout() {
+    // The shared tree is never the build context. A git checkout is cloned
+    // into scratch. A dirty checkout, a missing pin, or a Source/ tree with
+    // no .git falls through to the repository URL.
+    if let Some(source) = reference_checkout()
+        && source.join(".git").exists()
+    {
         if dest.exists() && !dest.join(".git").exists() {
             fs::remove_dir_all(&dest)
                 .map_err(|error| format!("could not remove {}: {error}", dest.display()))?;
         }
-        crate::oracle_reference::checkout_pin(&source, &dest, "OpenSim-Tranquillity", &pin, true)?;
-        return Ok(dest);
+        match crate::oracle_reference::checkout_pin(
+            &source,
+            &dest,
+            "OpenSim-Tranquillity",
+            &pin,
+            true,
+        ) {
+            Ok(_) => return Ok(dest),
+            Err(error) if shared_checkout_falls_back(&error) => {}
+            Err(error) => return Err(error),
+        }
     }
     if dest.join(".git").exists() && clean_at(&dest, &pin).is_ok() {
         return Ok(dest);
@@ -1602,13 +1616,18 @@ fn pin_context() -> Result<PathBuf, String> {
         .map_err(|error| format!("could not check out the pin: {error}"))?;
     if !status.success() {
         let head = git(&dest, &["rev-parse", "HEAD"]).unwrap_or_else(|_| "unknown".to_string());
-        return Err(crate::oracle_reference::mismatch(
-            "OpenSim-Tranquillity",
-            &head,
-            &pin,
+        return Err(format!(
+            "{}: {}",
+            dest.display(),
+            crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, &pin)
         ));
     }
     Ok(dest)
+}
+
+#[cfg(target_os = "linux")]
+fn shared_checkout_falls_back(error: &str) -> bool {
+    error.contains("not clean") || error.contains("docs/REFERENCES.md pins")
 }
 
 #[cfg(target_os = "linux")]

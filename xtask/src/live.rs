@@ -1628,10 +1628,17 @@ fn require_clean_source(reference: &Path, pin: &str) -> Result<(), String> {
     if status.is_empty() {
         return Ok(());
     }
-    Err(format!(
-        "{}\nThe reference checkout is not clean; the harness only reads it:\n{status}",
-        crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, pin)
-    ))
+    let dirty =
+        format!("The reference checkout is not clean; the harness only reads it:\n{status}");
+    let detail = if head == pin {
+        dirty
+    } else {
+        format!(
+            "{}\n{dirty}",
+            crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, pin)
+        )
+    };
+    Err(format!("{}: {detail}", reference.display()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1688,7 +1695,8 @@ fn reset_source(src: &Path, pin: &str) -> Result<(), String> {
     crate::oracle_reference::fetch_pin(src, &source, "OpenSim-Tranquillity", pin, &head)?;
     if let Err(error) = git(src, &["checkout", "--force", "--detach", pin]) {
         return Err(format!(
-            "{} ({error})",
+            "{}: {} ({error})",
+            source.display(),
             crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, pin)
         ));
     }

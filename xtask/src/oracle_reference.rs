@@ -19,8 +19,14 @@ pub struct Pins {
 
 pub fn prepare(reference: PathBuf) -> Result<PathBuf, String> {
     let destination = crate::repo_root().join(".scratch/oracle-sources");
-    fs::create_dir_all(&destination).map_err(|error| error.to_string())?;
     let pins = read_pins()?;
+    prepare_into(&reference, &destination, &pins)
+}
+
+/// Check the pins out under `destination`. `prepare` is this with the
+/// repository's `.scratch/oracle-sources` and the revisions in REFERENCES.md.
+fn prepare_into(reference: &Path, destination: &Path, pins: &Pins) -> Result<PathBuf, String> {
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
     for (name, pin) in [
         ("OpenSim-Tranquillity", pins.tranquillity.as_str()),
         ("libopenmetaverse", pins.libopenmetaverse.as_str()),
@@ -31,7 +37,7 @@ pub fn prepare(reference: PathBuf) -> Result<PathBuf, String> {
         }
         checkout_pin(&source, &destination.join(name), name, pin, false)?;
     }
-    Ok(destination)
+    Ok(destination.to_path_buf())
 }
 
 pub fn read_pins() -> Result<Pins, String> {
@@ -52,11 +58,15 @@ pub fn mismatch(name: &str, actual: &str, pin: &str) -> String {
     format!("{name} is at {actual}, docs/REFERENCES.md pins {pin}")
 }
 
+fn at_path(path: &Path, detail: &str) -> String {
+    format!("{}: {detail}", path.display())
+}
+
 /// `git rev-parse HEAD` of a clone that must already be `pin`.
 pub fn require_head(checkout: &Path, name: &str, pin: &str) -> Result<String, String> {
     let actual = git(checkout, &["rev-parse", "HEAD"])?;
     if actual != pin {
-        return Err(mismatch(name, &actual, pin));
+        return Err(at_path(checkout, &mismatch(name, &actual, pin)));
     }
     Ok(actual)
 }
@@ -74,15 +84,19 @@ pub fn checkout_pin(
     reset_target: bool,
 ) -> Result<String, String> {
     if same_dir(source, target)? {
-        return Err("refusing to modify the reference checkout".to_string());
+        return Err(at_path(source, "refusing to modify the reference checkout"));
     }
-    let head = git(source, &["rev-parse", "HEAD"])?;
-    let status = git(source, &["status", "--porcelain"])?;
+    let head = git(source, &["rev-parse", "HEAD"]).map_err(|error| at_path(source, &error))?;
+    let status =
+        git(source, &["status", "--porcelain"]).map_err(|error| at_path(source, &error))?;
     if !status.is_empty() {
-        return Err(format!(
-            "{}\nThe reference checkout is not clean:\n{status}",
-            mismatch(name, &head, pin)
-        ));
+        let dirty = format!("The reference checkout is not clean:\n{status}");
+        let detail = if head == pin {
+            dirty
+        } else {
+            format!("{}\n{dirty}", mismatch(name, &head, pin))
+        };
+        return Err(at_path(source, &detail));
     }
     if target.exists() && !target.join(".git").exists() {
         return Err(format!(
@@ -102,15 +116,19 @@ pub fn checkout_pin(
             .map_err(|error| error.to_string())?;
         if !cloned.status.success() {
             let detail = String::from_utf8_lossy(&cloned.stderr);
-            return Err(format!(
-                "{} (could not clone: {})",
-                mismatch(name, &head, pin),
-                detail.trim()
+            return Err(at_path(
+                source,
+                &format!(
+                    "{} (could not clone: {})",
+                    mismatch(name, &head, pin),
+                    detail.trim()
+                ),
             ));
         }
     } else if !git(target, &["status", "--porcelain"])?.is_empty() && !reset_target {
-        return Err(format!(
-            "oracle source {name} contains edits; preserve them before rebuilding"
+        return Err(at_path(
+            target,
+            &format!("oracle source {name} contains edits; preserve them before rebuilding"),
         ));
     }
     fetch_pin(target, source, name, pin, &head)?;
@@ -119,7 +137,10 @@ pub fn checkout_pin(
         checkout.insert(1, "--force");
     }
     if let Err(error) = git(target, &checkout) {
-        return Err(format!("{} ({error})", mismatch(name, &head, pin)));
+        return Err(at_path(
+            source,
+            &format!("{} ({error})", mismatch(name, &head, pin)),
+        ));
     }
     if reset_target {
         git(target, &["clean", "-fdx"])?;
@@ -141,10 +162,13 @@ pub fn fetch_pin(
         .to_str()
         .ok_or("oracle reference path is not UTF-8")?;
     if let Err(error) = git(target, &["fetch", source_arg, pin]) {
-        return Err(format!("{} ({error})", mismatch(name, source_head, pin)));
+        return Err(at_path(
+            source,
+            &format!("{} ({error})", mismatch(name, source_head, pin)),
+        ));
     }
     if git(target, &["cat-file", "-e", &format!("{pin}^{{commit}}")]).is_err() {
-        return Err(mismatch(name, source_head, pin));
+        return Err(at_path(source, &mismatch(name, source_head, pin)));
     }
     Ok(())
 }
@@ -418,6 +442,70 @@ mod tests {
         assert_eq!(git_ok(&source, &["rev-parse", "HEAD"]), head);
         assert!(source.join("extra").is_file());
         assert!(!root.join("clone").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dirty_checkout_at_the_pin_says_not_clean() {
+        let root = work("dirty-pin");
+        let source = root.join("source");
+        let (pin, _head) = init_pair(&source);
+        git_ok(&source, &["reset", "--hard", &pin]);
+        fs::write(source.join("extra"), "dirty\n").unwrap();
+        let error = checkout_pin(
+            &source,
+            &root.join("clone"),
+            "OpenSim-Tranquillity",
+            &pin,
+            false,
+        )
+        .unwrap_err();
+        assert!(error.contains("not clean"), "{error}");
+        assert!(error.contains(&source.display().to_string()), "{error}");
+        assert!(!error.contains("is at"), "{error}");
+        assert_eq!(git_ok(&source, &["rev-parse", "HEAD"]), pin);
+        assert!(source.join("extra").is_file());
+        assert!(!root.join("clone").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn prepare_checks_out_an_off_pin_reference() {
+        let root = work("prepare");
+        let reference = root.join("reference");
+        let (tranq_pin, tranq_head) = init_pair(&reference.join("OpenSim-Tranquillity"));
+        let (omv_pin, omv_head) = init_pair(&reference.join("libopenmetaverse"));
+        let destination = root.join("oracle-sources");
+        let pins = Pins {
+            tranquillity: tranq_pin.clone(),
+            libopenmetaverse: omv_pin.clone(),
+        };
+        prepare_into(&reference, &destination, &pins).unwrap();
+        assert_eq!(
+            git_ok(
+                &destination.join("OpenSim-Tranquillity"),
+                &["rev-parse", "HEAD"]
+            ),
+            tranq_pin
+        );
+        assert_eq!(
+            git_ok(
+                &destination.join("libopenmetaverse"),
+                &["rev-parse", "HEAD"]
+            ),
+            omv_pin
+        );
+        assert_eq!(
+            git_ok(
+                &reference.join("OpenSim-Tranquillity"),
+                &["rev-parse", "HEAD"]
+            ),
+            tranq_head
+        );
+        assert_eq!(
+            git_ok(&reference.join("libopenmetaverse"), &["rev-parse", "HEAD"]),
+            omv_head
+        );
         let _ = fs::remove_dir_all(&root);
     }
 }
