@@ -9,8 +9,9 @@
 // then calls public SetTerrain (JoltScene.cs 3552-3613) through a recording
 // backend and stores the padded field that method keeps, then calls
 // JoltPrim.Buoyancy, VehicleType and HalcyonBasicForces.LegacyBuoyancy and
-// records the gravity factor, before the final native proof. The physics
-// scene is constructed and never initialised, so
+// records the gravity factor, then calls DispatchContacts and records the
+// actor sets, before the final native proof. The physics scene is
+// constructed and never initialised, so
 // JoltNative stays unloaded and Foundation.Init is not called.
 
 using System.Diagnostics;
@@ -74,7 +75,8 @@ static class FileOracle
             || first.Stats != second.Stats
             || first.Analytic != second.Analytic
             || first.Heightfield != second.Heightfield
-            || first.Gravity != second.Gravity)
+            || first.Gravity != second.Gravity
+            || first.Collision != second.Collision)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
@@ -85,6 +87,7 @@ static class FileOracle
         RejectMachinePaths(first.Analytic, reference);
         RejectMachinePaths(first.Heightfield, reference);
         RejectMachinePaths(first.Gravity, reference);
+        RejectMachinePaths(first.Collision, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
@@ -92,6 +95,9 @@ static class FileOracle
         manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n");
         manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n");
         manifest.Append("compile OpenSim.Region.Framework/Scenes/SimStatsReporter.cs\n");
+        manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/CollisionFrameTracker.cs\n");
+        manifest.Append("compile OpenSim.Region.Framework/Scenes/SceneObjectPart.cs\n");
+        manifest.Append("compile OpenSim.Region.Framework/Scenes/CollisionSounds.cs\n");
         manifest.Append('\n');
         manifest.Append(CaseId).Append('\n');
         manifest.Append("character\n");
@@ -99,6 +105,7 @@ static class FileOracle
         manifest.Append("analytic\n");
         manifest.Append("heightfield\n");
         manifest.Append("gravity\n");
+        manifest.Append("collision\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
@@ -121,6 +128,9 @@ static class FileOracle
         string gravityDir = Path.Combine(directory, "gravity");
         Directory.CreateDirectory(gravityDir);
         File.WriteAllText(Path.Combine(gravityDir, "matrix.txt"), first.Gravity);
+        string collisionDir = Path.Combine(directory, "collision");
+        Directory.CreateDirectory(collisionDir);
+        File.WriteAllText(Path.Combine(collisionDir, "replay.txt"), first.Collision);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
@@ -166,10 +176,11 @@ static class FileOracle
         string analytic = AnalyticText(directory);
         string heightfield = HeightfieldText(directory);
         string gravity = GravityText();
+        string collision = CollisionOracle.Capture();
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic, heightfield, gravity);
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic, heightfield, gravity, collision);
     }
 
     const double HealthyFrameMs = 1000.0;
@@ -654,7 +665,7 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic, string Heightfield, string Gravity);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic, string Heightfield, string Gravity, string Collision);
 
     static string AnalyticText(string directory)
     {

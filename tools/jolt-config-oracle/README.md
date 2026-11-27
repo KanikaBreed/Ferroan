@@ -102,6 +102,18 @@ clamp, a rejected non-finite value, a child write on the root and a vehicle
 factor of 0 restored to the script factor are in
 `fixtures/jolt-file/gravity/matrix.txt`. Water is not used. The Rust replay
 compares every write by bits. Ordinary tests do not run this command.
+The same file command calls `DispatchContacts` (`JoltScene.cs` 3253-3416)
+and the collision sound gate, and writes `fixtures/jolt-file/collision`.
+Prim actors are uninitialized. `IsBodyAwake` is the only backend call those
+frames make. A merged substep scores 1 and keeps the first speed. An
+unmerged pair scores 2 and keeps the faster speed on the first point. Held
+terrain is sent again. A sleeping pair stays. Overflow sends a partial set
+and ends nobody. Current nonempty callbacks are recorded before ends.
+The same object pair is held inside 0.13 s and sent at
+`0.13 - 1e-9`. A sound plays for `abs(speed) > 0.2` and `abs(speed) >= 0.2f`.
+Bits `3E4CCCCD` play and `3E4CCCCC` do not. A second touch does not play.
+Script events stay unsubscribed. Ordinary check does not dispatch. The
+capture still does not load joltc.
 
 No native code is started. The fixture records the same proof at
 `before_construct`, after construction and after the calls:

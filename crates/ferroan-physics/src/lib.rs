@@ -16,7 +16,9 @@
 //! are the ones `CookPrimShape` passes. A non-uniform sphere is not analytic.
 //! Mass, a ray and free flight before contact use that shape.
 //! P3.6 replays the buoyancy boundary, the gravity factor, the vehicle
-//! override and the child forward. Unsafe is allowed in `native`, and in
+//! override and the child forward. P3.18a replays one frame of actor sets.
+//! A successful contact is delivered or held, and a sound is the absolute
+//! speed past 0.2 m/s. Unsafe is allowed in `native`, and in
 //! `ferroan-scripting` once that crate exists. The workspace forbids it
 //! everywhere else.
 
@@ -25,6 +27,7 @@
 
 mod analytic;
 mod character;
+mod collision;
 mod dilation;
 mod gravity;
 mod jolt_config;
@@ -45,6 +48,10 @@ pub use character::{
     ground_flags, jump_latch_after_drain, jump_latch_on_press, keep_in_region,
     marker_body_user_data, marker_descriptor, mass_for, movement_sends_latch, stand_half_for,
     store_buoyancy, store_target,
+};
+pub use collision::{
+    Actor, ActorSets, ContactPhase, ContactReport, Delivery, FrameInput, FrameOutput, KeptContact,
+    MIN_REPEAT_EPSILON, MIN_REPEAT_SECONDS, collision_sound,
 };
 pub use dilation::{
     DILATION_WINDOW, DilationWindow, PHYSICS_STEP_MS, StatsInputs, StatsReport, accumulate_frame,

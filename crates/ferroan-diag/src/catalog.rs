@@ -69,6 +69,7 @@ pub const REDACT_SECRETS: &str = "log.redact-secrets";
 pub const CONSOLE_SESSIONS: &str = "console.sessions";
 pub const TERRAIN_EDGE: &str = "terrain.edge";
 pub const TERRAIN_BLOB: &str = "terrain.blob";
+pub const PHYSICS_CONTACTS: &str = "physics.contacts";
 pub const REGION_ENVIRONMENT_BYTES: &str = "region.environment-bytes";
 pub const ROOT_AGENTS: &str = "region.root-agents";
 pub const ROOT_BYPASS: &str = "region.root-bypass";

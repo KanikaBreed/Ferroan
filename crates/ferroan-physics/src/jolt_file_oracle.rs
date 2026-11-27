@@ -9,7 +9,8 @@
 //! `stats` line is the reporter transform. It names the analytic cook;
 //! `analytic` replays that fixture. The `heightfield` line is the padded
 //! field `SetTerrain` stores; `pad_heightfield` replays it. It names the
-//! gravity matrix; `gravity` replays that fixture.
+//! gravity matrix; `gravity` replays that fixture. The manifest also names
+//! the collision compile; `collision` replays that fixture.
 
 use std::path::PathBuf;
 
@@ -47,12 +48,18 @@ fn note_dilation_fixture_keeps_the_pinned_structure() {
     assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n"));
     assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n"));
     assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/SimStatsReporter.cs\n"));
+    assert!(
+        manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/CollisionFrameTracker.cs\n")
+    );
+    assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/SceneObjectPart.cs\n"));
+    assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/CollisionSounds.cs\n"));
     assert!(manifest.lines().any(|line| line == "note-dilation"));
     assert!(manifest.lines().any(|line| line == "character"));
     assert!(manifest.lines().any(|line| line == "stats"));
     assert!(manifest.lines().any(|line| line == "analytic"));
     assert!(manifest.lines().any(|line| line == "heightfield"));
     assert!(manifest.lines().any(|line| line == "gravity"));
+    assert!(manifest.lines().any(|line| line == "collision"));
 
     let calls = std::fs::read_to_string(root.join("note-dilation/calls.txt")).expect("calls");
     assert_eq!(calls, expected_calls());
