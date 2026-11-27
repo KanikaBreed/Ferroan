@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-// In-process Harness.Run for the stock Pin8 `drop` scenario.
+// In-process Harness.Run for the pinned `drop` scenario, on the deterministic linux-x64 joltc
+// the pin records (origin Rebuilt, joltc 886e0886, Jolt e77f1755).
 // Samples keep the harness floats. ToCsv is not the trace.
 // The pinned checkout is not modified.
 
@@ -69,11 +70,13 @@ static class RecordOracle
 {
     const string FormatLine = "format 1";
     const string ScenarioName = "drop";
-    const long AnchorBytes = 2046568;
-    const string AnchorSha = "5FC051708BDD05031A816796612A2F87E17ED32CC198F195A43B2305B3D990FD";
+    const long AnchorBytes = 2701768;
+    const string AnchorSha = "27EFC48C813E75294DA11EAF22618BC1E0A5426A50EDDE7870EF4A60C8E4288B";
     const string AnchorFile = "libjoltc.so";
     const string AnchorRid = "linux-x64";
-    const string Baseline = "pin8-linux-x86_64";
+    const JoltNativeOrigin AnchorOrigin = JoltNativeOrigin.Rebuilt;
+    // The harness baseline folder for the anchor (BaselineCheck.KeyFor of its record).
+    const string Baseline = "det-886e0886-linux-x64";
     const int SubscribeMs = 100;
 
     const BindingFlags Inst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
@@ -98,7 +101,7 @@ static class RecordOracle
                 Directory.Delete(scratch, true);
             throw;
         }
-        Console.WriteLine("generate: " + ScenarioName + " stock recording");
+        Console.WriteLine("generate: " + ScenarioName + " recording on " + Baseline);
     }
 
     internal static void Verify(string directory, string revision, string reference)
@@ -234,7 +237,12 @@ static class RecordOracle
                 file.Name + " is " + file.Length + " bytes sha256 " + info.Sha256
                 + "; the anchor is " + AnchorFile + " " + AnchorBytes + " bytes sha256 " + AnchorSha);
         }
-        return new NativeIdentity(file.Name, file.Length, info.Sha256, info.Rid);
+        if (info.Build == null || info.Build.Origin != AnchorOrigin)
+            throw new NativeSkip("the anchor's record is not the " + AnchorOrigin + " build");
+        string key = BaselineCheck.KeyFor(info.Build);
+        if (!string.Equals(key, Baseline, StringComparison.Ordinal))
+            throw new NativeSkip("the anchor's baseline is " + (key ?? "none") + ", not " + Baseline);
+        return new NativeIdentity(file.Name, file.Length, info.Sha256, info.Rid, info.Build.Origin.ToString());
     }
 
     static void ConfirmLoaded(NativeIdentity native)
@@ -403,6 +411,7 @@ static class RecordOracle
         text.Append("native_size ").Append(captured.Native.Bytes.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("native_sha256 ").Append(captured.Native.Sha256).Append('\n');
         text.Append("native_rid ").Append(captured.Native.Rid).Append('\n');
+        text.Append("native_origin ").Append(captured.Native.Origin).Append('\n');
         text.Append("package ").Append(JoltNative.PackageId).Append('\n');
         text.Append("package_version ").Append(JoltNative.PackageVersion).Append('\n');
         text.Append("harness_commit ").Append(captured.Revision).Append('\n');
@@ -1025,4 +1034,4 @@ sealed class Captured
     internal string CacheHash;
 }
 
-readonly record struct NativeIdentity(string File, long Bytes, string Sha256, string Rid);
+readonly record struct NativeIdentity(string File, long Bytes, string Sha256, string Rid, string Origin);

@@ -1,7 +1,7 @@
 format 1
 scenario drop
-revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
-baseline pin8-linux-x86_64
+revision 41f18f983bb2bfc82e033fed410d361ba57d5aa4
+baseline det-886e0886-linux-x64
 heartbeat 1/11
 rate_hz 11
 physics_rate_hz 0
@@ -10,12 +10,13 @@ step_source one_step
 warmup_steps 1
 subscribe_ms 100
 native_file libjoltc.so
-native_size 2046568
-native_sha256 5FC051708BDD05031A816796612A2F87E17ED32CC198F195A43B2305B3D990FD
+native_size 2701768
+native_sha256 27EFC48C813E75294DA11EAF22618BC1E0A5426A50EDDE7870EF4A60C8E4288B
 native_rid linux-x64
+native_origin Rebuilt
 package JoltPhysics.Native
-package_version 1.0.4
-harness_commit c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+package_version 1.1.0
+harness_commit 41f18f983bb2bfc82e033fed410d361ba57d5aa4
 first_heartbeat 0
 first_t 3FB745D1745D1746
 samples 31
@@ -39,8 +40,8 @@ warm_up true
 simulator_prims true
 region_mesher true
 presets_before_setup empty_scene
-channel samples 64C836EC97A08D2C632533BCC555248D96B97B779A948B584371FA2F0EEA1201
-channel events 17DC6C2D8B14123D60449005509ABD401A23C8F40E8B58B91ECAE160A95EAF12
+channel samples 2ED2BD3EDA697F5D90548C318F11297D0D601246829F390EF0F74B2BB080DEF4
+channel events 6F2E717E651F8D61971D140CBA53F67BB56BC9B99860BA22643D64E58A1A4C5E
 channel providers FC0CFAC36FC17B9D5237DCF44A4962607F784B82A709DA87AA5EEAA564628814
 channel clock 3BC6474735F3F100CD03E34041C1B7519EEDCCD9EC619CECA45B78FB5309E281
 channel config 3473AB2E7D29486048AFC40A5334AAE78238F0D32E151B2BD627888A36C2BE13

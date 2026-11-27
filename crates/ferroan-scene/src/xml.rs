@@ -1500,7 +1500,7 @@ mod tests {
     use uuid::Uuid;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
-    const PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+    const PIN: &str = "41f18f983bb2bfc82e033fed410d361ba57d5aa4";
 
     fn fixture_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/regionstore")
