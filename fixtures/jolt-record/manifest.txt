@@ -1,6 +1,6 @@
 format 1
-revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
-baseline pin8-linux-x86_64
+revision 41f18f983bb2bfc82e033fed410d361ba57d5aa4
+baseline det-886e0886-linux-x64
 scenario drop
 
 drop

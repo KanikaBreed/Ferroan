@@ -3769,7 +3769,7 @@ mod tests {
     #[tokio::test]
     async fn regionstore_load_matches_the_committed_dump() {
         let dump = committed_dump();
-        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["pin"], "41f18f983bb2bfc82e033fed410d361ba57d5aa4");
         assert_eq!(dump["region"], REGION);
         let store = CopiedStore::new("regionstore/objects.db");
         let groups = open_objects(
@@ -4289,7 +4289,7 @@ mod tests {
         };
         let _guard = mysql_test_lock().lock().unwrap();
         let dump = mysql_dump();
-        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["pin"], "41f18f983bb2bfc82e033fed410d361ba57d5aa4");
         assert_eq!(dump["region"], REGION);
         let groups = open_objects(
             &connection,
@@ -4521,7 +4521,7 @@ mod tests {
         };
         let _guard = postgres_test_lock().lock().unwrap();
         let dump = postgres_dump();
-        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["pin"], "41f18f983bb2bfc82e033fed410d361ba57d5aa4");
         assert_eq!(dump["region"], REGION);
         let groups = open_objects(
             &connection,

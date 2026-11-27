@@ -25,7 +25,7 @@ fn asset_documents_match_the_csharp_serializer() {
     assert_eq!(manifest["format"], 1);
     assert_eq!(
         manifest["tranquillity"].as_str(),
-        Some("c401bceecd1684832ae8ba86a31b5ee01a4ded7b")
+        Some("41f18f983bb2bfc82e033fed410d361ba57d5aa4")
     );
     let cases = manifest["cases"].as_array().expect("cases");
     assert!(!cases.is_empty());
