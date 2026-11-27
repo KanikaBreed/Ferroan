@@ -1,0 +1,982 @@
+{
+  "runtime": "10.0.14",
+  "pin": "41f18f983bb2bfc82e033fed410d361ba57d5aa4",
+  "digest": "53020d34e8c50c1f65441d073bfa590125e6fa9bb6e5ffaeb69737756782e1bd",
+  "cases": [
+    {
+      "name": "bare",
+      "source": "default{state_entry(){}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "97B197DCF4D19AF9A9D1EF017E8E4CC1",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 541
+    },
+    {
+      "name": "spaced",
+      "source": "default { state_entry() { } }",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "97B197DCF4D19AF9A9D1EF017E8E4CC1",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 543
+    },
+    {
+      "name": "comment",
+      "source": "// lead\ndefault{state_entry(){}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "97B197DCF4D19AF9A9D1EF017E8E4CC1",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 544
+    },
+    {
+      "name": "block-comment",
+      "source": "default{state_entry(){/* hidden */}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "97B197DCF4D19AF9A9D1EF017E8E4CC1",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 550
+    },
+    {
+      "name": "globals",
+      "source": "integer count;\nfloat scale;\nstring label;\nkey id;\nvector pos;\nquaternion spin;\nlist items;\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "count",
+        ";",
+        "float",
+        "scale",
+        ";",
+        "string",
+        "label",
+        ";",
+        "key",
+        "id",
+        ";",
+        "vector",
+        "pos",
+        ";",
+        "rotation",
+        "spin",
+        ";",
+        "list",
+        "items",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "581AB91A902EBBFF228D22764A4E86B8",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        1,
+        1,
+        1,
+        0,
+        1,
+        2,
+        1,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "count",
+          "type": "iarIntegers",
+          "index": 0
+        },
+        {
+          "name": "scale",
+          "type": "iarFloats",
+          "index": 0
+        },
+        {
+          "name": "label",
+          "type": "iarStrings",
+          "index": 0
+        },
+        {
+          "name": "id",
+          "type": "iarStrings",
+          "index": 1
+        },
+        {
+          "name": "pos",
+          "type": "iarVectors",
+          "index": 0
+        },
+        {
+          "name": "spin",
+          "type": "iarRotations",
+          "index": 0
+        },
+        {
+          "name": "items",
+          "type": "iarLists",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 3032
+    },
+    {
+      "name": "rotation-word",
+      "source": "rotation spin;\ndefault{state_entry(){}}",
+      "tokens": [
+        "rotation",
+        "spin",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "0D4B6F80C10966B504B6FB32BC5679AF",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "spin",
+          "type": "iarRotations",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1228
+    },
+    {
+      "name": "quaternion-word",
+      "source": "quaternion spin;\ndefault{state_entry(){}}",
+      "tokens": [
+        "rotation",
+        "spin",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "0D4B6F80C10966B504B6FB32BC5679AF",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "spin",
+          "type": "iarRotations",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1234
+    },
+    {
+      "name": "local",
+      "source": "default{state_entry(){integer local;}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "integer",
+        "local",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "616D18451CFF2F28F839E4A2708FFBBC",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 585
+    },
+    {
+      "name": "function",
+      "source": "integer g;\ninteger f()\n{\n    return g;\n}\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "integer",
+        "f",
+        "(",
+        ")",
+        "{",
+        "return",
+        "g",
+        ";",
+        "}",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "D507C8411AB65BF0B49FAECD08C0606C",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1666
+    },
+    {
+      "name": "states",
+      "source": "integer g;\ndefault{state_entry(){}}\nstate other{state_entry(){g=1;}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}",
+        "state",
+        "other",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "g",
+        "=",
+        "1",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "9D1FBB5E2E9D1C2EA812E2234AA73949",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default",
+        "other"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1690
+    },
+    {
+      "name": "literals",
+      "source": "string s;\ninteger n;\nfloat f;\ndefault{state_entry(){s=\u0022hi\u0022;n=0x10;f=1.5;}}",
+      "tokens": [
+        "string",
+        "s",
+        ";",
+        "integer",
+        "n",
+        ";",
+        "float",
+        "f",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "s",
+        "=",
+        "\u0022hi\u0022",
+        ";",
+        "n",
+        "=",
+        "16",
+        ";",
+        "f",
+        "=",
+        "1.5",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "F5077A1671723A9C7066136470078DFB",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        1,
+        1,
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "s",
+          "type": "iarStrings",
+          "index": 0
+        },
+        {
+          "name": "n",
+          "type": "iarIntegers",
+          "index": 0
+        },
+        {
+          "name": "f",
+          "type": "iarFloats",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 2393
+    },
+    {
+      "name": "yoption",
+      "source": "yoption arrays;\ninteger g;\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "776FC70C2891A06C2D4E7B1F248AC533",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1083
+    },
+    {
+      "name": "plain-g",
+      "source": "integer g;\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "776FC70C2891A06C2D4E7B1F248AC533",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1083
+    },
+    {
+      "name": "unknown-option",
+      "source": "yoption nope;\ninteger g;\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "776FC70C2891A06C2D4E7B1F248AC533",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [
+        "unknown YOption"
+      ],
+      "bytes": 1104
+    },
+    {
+      "name": "ops",
+      "source": "integer g;\ndefault{state_entry(){g=1\u002B2*3;if(g\u003C=4)jump done;@done;}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "g",
+        "=",
+        "1",
+        "\u002B",
+        "2",
+        "*",
+        "3",
+        ";",
+        "if",
+        "(",
+        "g",
+        "\u003C=",
+        "4",
+        ")",
+        "jump",
+        "done",
+        ";",
+        "@",
+        "done",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "A0E2199C3543CFD922DBBCC4AA4FAE5B",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1661
+    },
+    {
+      "name": "floats",
+      "source": "default{state_entry(){float a=0.00001;float b=1.0e20;float c=1.;float d=0.1;float e=10.25;}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "float",
+        "a",
+        "=",
+        "1E-05",
+        ";",
+        "float",
+        "b",
+        "=",
+        "1E\u002B20",
+        ";",
+        "float",
+        "c",
+        "=",
+        "1",
+        ";",
+        "float",
+        "d",
+        "=",
+        "0.1",
+        ";",
+        "float",
+        "e",
+        "=",
+        "10.25",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "9AEFE22B47F711D4FBA3E0214F319D27",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 793
+    },
+    {
+      "name": "line",
+      "source": "integer g;\n# 10 \u0022other.lsl\u0022\ndefault{state_entry(){}}",
+      "tokens": [
+        "integer",
+        "g",
+        ";",
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "}",
+        "}"
+      ],
+      "hash": "776FC70C2891A06C2D4E7B1F248AC533",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [
+        {
+          "name": "g",
+          "type": "iarIntegers",
+          "index": 0
+        }
+      ],
+      "tokenize_messages": [],
+      "bytes": 1084
+    },
+    {
+      "name": "escapes",
+      "source": "default{state_entry(){string s=\u0022a\\nb\\t\u0022;string q=\u0022say \\\u0022hi\\\u0022\u0022;}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "string",
+        "s",
+        "=",
+        "\u0022a\\nb    ",
+        ";",
+        "string",
+        "q",
+        "=",
+        "\u0022say \\\u0022hi\\\u0022",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "FF87BD0416E4BAB521C795E097323933",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 853
+    },
+    {
+      "name": "hex",
+      "source": "default{state_entry(){integer n=0x10;integer z=0XFF;integer w=00x10;}}",
+      "tokens": [
+        "default",
+        "{",
+        "state_entry",
+        "(",
+        ")",
+        "{",
+        "integer",
+        "n",
+        "=",
+        "16",
+        ";",
+        "integer",
+        "z",
+        "=",
+        "255",
+        ";",
+        "integer",
+        "w",
+        "=",
+        "16",
+        ";",
+        "}",
+        "}"
+      ],
+      "hash": "4D3A7FE8D9D14FC5B1E72B56DC2BFBA7",
+      "version": -11,
+      "sizes": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "states": [
+        "default"
+      ],
+      "globals": [],
+      "tokenize_messages": [],
+      "bytes": 669
+    }
+  ],
+  "errors": [
+    {
+      "name": "backtick",
+      "source": "\u0060",
+      "messages": [
+        "unknown character \u0027\u0060\u0027"
+      ]
+    },
+    {
+      "name": "two-dots",
+      "source": "1.2.3",
+      "messages": [
+        "more than one decimal point"
+      ]
+    },
+    {
+      "name": "long-name",
+      "source": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "messages": [
+        "name too long, max 255"
+      ]
+    },
+    {
+      "name": "float-overflow",
+      "source": "1.2e9999999999",
+      "messages": [
+        "floating exponent overflow"
+      ]
+    },
+    {
+      "name": "bare-exponent",
+      "source": "1e9999999999",
+      "messages": [
+        "floating exponent overflow"
+      ]
+    }
+  ]
+}

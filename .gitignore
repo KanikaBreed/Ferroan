@@ -25,3 +25,5 @@ tools/walk-oracle/bin/
 tools/walk-oracle/obj/
 tools/raw32-oracle/bin/
 tools/raw32-oracle/obj/
+tools/yengine-tokens-oracle/bin/
+tools/yengine-tokens-oracle/obj/

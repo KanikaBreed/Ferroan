@@ -580,6 +580,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-scripting"
+version = "0.1.0"
+dependencies = [
+ "ferroan-diag",
+ "md-5",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ferroan-services"
 version = "0.1.0"
 dependencies = [
