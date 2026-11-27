@@ -33,8 +33,8 @@
 //! `SubstepAccumulator` and compare `fixtures/jolt/substeps.json`. `jolt
 //! config` and `jolt config-verify` run the pinned `JoltConfig.FromConfig`
 //! and compare `fixtures/jolt-config`. `jolt file` and `jolt file-verify`
-//! run the pinned `JoltScene.NoteDilationSample` and compare
-//! `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
+//! run the pinned `JoltScene.NoteDilationSample` and `JoltCharacter`, and
+//! compare `fixtures/jolt-file`. `jolt record` and `jolt record-verify` run the
 //! pinned harness in-process for the stock `drop` and compare
 //! `fixtures/jolt-record`. That command loads the stock native. None of
 //! them starts a region. `jolt generate` and `jolt verify` stay with the
@@ -211,6 +211,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask access generate|verify
        cargo xtask permissions generate|verify
        cargo xtask oar-owners generate|verify
+       cargo xtask oar-parcels generate|verify
        cargo xtask live build
        FERROAN_LIVE_PORT_BASE or --port-base <port> (a multiple of 32 outside the ephemeral range) moves every live port and gives the run its own directory
        cargo xtask live record-twice
@@ -268,6 +269,8 @@ fn main() -> ExitCode {
         ["permissions", "verify"] => access_oracle::run("permissions", "PermissionsOracle", false),
         ["oar-owners", "generate"] => access_oracle::run("oar-owners", "OarOwnersOracle", true),
         ["oar-owners", "verify"] => access_oracle::run("oar-owners", "OarOwnersOracle", false),
+        ["oar-parcels", "generate"] => access_oracle::run("oar-parcels", "OarParcelsOracle", true),
+        ["oar-parcels", "verify"] => access_oracle::run("oar-parcels", "OarParcelsOracle", false),
         ["check", "--docs-only"] => check(true),
         ["oracle", "build"] => oracle::run(oracle::CommandKind::Build, None),
         ["oracle", "generate"] => oracle::run(oracle::CommandKind::Generate, None),
@@ -703,6 +706,7 @@ mod tests {
             "       cargo xtask live run store-handoff grid --physics basicphysics\n",
             "       cargo xtask live run prim-capture grid --physics basicphysics\n",
             "       cargo xtask live run child-view grid --physics basicphysics\n",
+            "       cargo xtask live run child-view grid --region ferroan --physics basicphysics\n",
             "       cargo xtask live run prim-arrival grid --region ferroan\n",
             "       cargo xtask live run prim-arrival grid --physics basicphysics\n",
             "       cargo xtask live run material-override grid --physics basicphysics\n",

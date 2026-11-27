@@ -52,7 +52,7 @@
 //! presence.
 
 mod child;
-pub use child::AgentPosition;
+pub use child::{AgentPosition, ChildIdentity, child_circuit};
 
 use std::io::Write;
 use std::time::Duration;

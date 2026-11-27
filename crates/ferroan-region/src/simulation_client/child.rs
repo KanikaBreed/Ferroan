@@ -35,6 +35,27 @@ use crate::simulation::AcceptedAgent;
 use std::collections::HashMap;
 use tokio::time::Instant;
 
+/// The root identity a child circuit copies. Stored while the root session
+/// lives, and dropped with that generation.
+#[derive(Clone, Debug)]
+pub struct ChildIdentity {
+    pub agent_id: Uuid,
+    pub session_id: Uuid,
+    pub secure_session_id: Uuid,
+    pub service_session_id: String,
+    pub circuit_code: u32,
+    pub first_name: String,
+    pub last_name: String,
+    pub client_ip: String,
+    pub viewer: String,
+    pub channel: String,
+    pub mac: String,
+    pub id0: String,
+    pub service_urls: Vec<(String, String)>,
+    pub generation: Uuid,
+    pub height: f32,
+}
+
 /// A root presence in its own scene coordinates. Viewer throttles are seven
 /// little-endian floats; their calculation belongs to the viewer throttle path.
 #[derive(Clone, Debug)]
@@ -51,6 +72,49 @@ pub struct AgentPosition {
     pub throttles: Option<[u8; 28]>,
 }
 
+/// Build a circuit for a visible neighbour while the viewer remains rooted
+/// here. `caps_path` is the seed the child book stored for this destination.
+/// Only the current height carries into the new appearance. The start is
+/// `CalculateOffset`: home location minus the neighbour, in metres.
+pub fn child_circuit(
+    identity: &ChildIdentity,
+    home: &RegionEnd,
+    destination: &RegionEnd,
+    position: [f32; 3],
+    draw_distance: f32,
+    height: f32,
+    caps_path: &str,
+) -> Circuit {
+    let offset = |source: u32, dest: u32| (i64::from(source) - i64::from(dest)) as f32;
+    Circuit {
+        agent_id: identity.agent_id,
+        base_folder: Uuid::nil(),
+        inventory_folder: Uuid::nil(),
+        caps_path: caps_path.to_owned(),
+        children_seeds: Vec::new(),
+        child: true,
+        circuit_code: identity.circuit_code,
+        first_name: identity.first_name.clone(),
+        last_name: identity.last_name.clone(),
+        session_id: identity.session_id,
+        secure_session_id: identity.secure_session_id,
+        service_session_id: identity.service_session_id.clone(),
+        start_pos: [
+            position[0] + offset(home.loc_x, destination.loc_x),
+            position[1] + offset(home.loc_y, destination.loc_y),
+            position[2],
+        ],
+        client_ip: identity.client_ip.clone(),
+        viewer: identity.viewer.clone(),
+        channel: identity.channel.clone(),
+        mac: identity.mac.clone(),
+        id0: identity.id0.clone(),
+        far: draw_distance,
+        appearance: Some(child_appearance(height)),
+        service_urls: identity.service_urls.clone(),
+    }
+}
+
 impl AcceptedAgent {
     /// Build a circuit for a visible neighbour while the viewer remains rooted
     /// here. `caps_path` is the seed the child book stored for this destination.
@@ -64,34 +128,31 @@ impl AcceptedAgent {
         height: f32,
         caps_path: &str,
     ) -> Circuit {
-        let offset = |source: u32, dest: u32| (i64::from(source) - i64::from(dest)) as f32;
-        Circuit {
-            agent_id: self.expect.agent_id,
-            base_folder: Uuid::nil(),
-            inventory_folder: Uuid::nil(),
-            caps_path: caps_path.to_owned(),
-            children_seeds: Vec::new(),
-            child: true,
-            circuit_code: self.expect.circuit_code,
-            first_name: self.first_name.clone(),
-            last_name: self.last_name.clone(),
-            session_id: self.expect.session_id,
-            secure_session_id: self.secure_session_id,
-            service_session_id: self.service_session_id.clone(),
-            start_pos: [
-                position[0] + offset(home.loc_x, destination.loc_x),
-                position[1] + offset(home.loc_y, destination.loc_y),
-                position[2],
-            ],
-            client_ip: self.client_ip.clone(),
-            viewer: self.viewer.clone(),
-            channel: self.channel.clone(),
-            mac: self.mac.clone(),
-            id0: self.id0.clone(),
-            far: draw_distance,
-            appearance: Some(child_appearance(height)),
-            service_urls: self.service_urls.clone(),
-        }
+        child_circuit(
+            &ChildIdentity {
+                agent_id: self.expect.agent_id,
+                session_id: self.expect.session_id,
+                secure_session_id: self.secure_session_id,
+                service_session_id: self.service_session_id.clone(),
+                circuit_code: self.expect.circuit_code,
+                first_name: self.first_name.clone(),
+                last_name: self.last_name.clone(),
+                client_ip: self.client_ip.clone(),
+                viewer: self.viewer.clone(),
+                channel: self.channel.clone(),
+                mac: self.mac.clone(),
+                id0: self.id0.clone(),
+                service_urls: self.service_urls.clone(),
+                generation: Uuid::nil(),
+                height,
+            },
+            home,
+            destination,
+            position,
+            draw_distance,
+            height,
+            caps_path,
+        )
     }
 }
 

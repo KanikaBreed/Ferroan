@@ -29,6 +29,8 @@ fn neighbour_handle() -> u64 {
 struct Circuit {
     session: Uuid,
     code: u32,
+    /// Capture time of this circuit's UseCircuitCode.
+    opened_ms: u64,
 }
 
 fn circuit(udp: &[Record], agent: Uuid) -> Result<Circuit, String> {
@@ -43,6 +45,7 @@ fn circuit(udp: &[Record], agent: Uuid) -> Result<Circuit, String> {
                 return Ok(Circuit {
                     session: id.session_id,
                     code: id.code,
+                    opened_ms: record.time_ms,
                 });
             }
         }
@@ -189,6 +192,7 @@ const RESIDENT_NAME: &[u8] =
 const ALIAS_NAME: &[u8] =
     b"FirstName STRING RW SV Test\nLastName STRING RW SV Doe\nTitle STRING RW SV \0";
 
+#[allow(clippy::too_many_arguments)]
 fn child_block(
     receipt: Option<&ferroan_protocol::IncomingPacket>,
     udp: &[Record],
@@ -197,11 +201,19 @@ fn child_block(
     code: u8,
     alias: Uuid,
     start: u64,
+    opened_ms: u64,
 ) -> Result<Option<(Vec<u8>, Value)>, String> {
     let Some(receipt) = receipt else {
         return Ok(None);
     };
-    for r in udp.iter().filter(|r| r.kind == Kind::UdpOut) {
+    // The neighbour file stores no socket address, so the resident circuit and
+    // the observer's child circuit share it. A resident full update can repeat
+    // the child copy's sequence and body. The child socket does not exist
+    // before its UseCircuitCode.
+    for r in udp
+        .iter()
+        .filter(|r| r.kind == Kind::UdpOut && r.time_ms >= opened_ms)
+    {
         let p = parse_packet(&r.bytes).map_err(|e| e.to_string())?;
         if p.id != ObjectUpdate::ID || p.sequence != receipt.sequence || p.body != receipt.body {
             continue;
@@ -440,7 +452,7 @@ fn transfers(run: &Path, circuit: &Circuit, seed: &str, start: u64) -> Result<Ve
     Ok(result)
 }
 
-pub(super) fn finish(run: &Path, observed: &Observation) -> Result<String, String> {
+pub(super) fn finish(run: &Path, observed: &Observation, ferroan: bool) -> Result<String, String> {
     let output = run.join("child-view-fixture");
     fs::create_dir_all(&output).map_err(|e| e.to_string())?;
     let home = records(&run.join("capture-udp.cap"))?;
@@ -494,6 +506,7 @@ pub(super) fn finish(run: &Path, observed: &Observation) -> Result<String, Strin
             code,
             Uuid::from_u128(alias),
             start,
+            child.opened_ms,
         )? {
             fs::write(output.join(format!("{name}.bin")), bytes).map_err(|e| e.to_string())?;
             udp.push(event);
@@ -512,9 +525,15 @@ pub(super) fn finish(run: &Path, observed: &Observation) -> Result<String, Strin
         ),
     )
     .map_err(|e| e.to_string())?;
+    let report = replay(&output)?;
+    if ferroan {
+        let reference: Value =
+            serde_json::from_str(include_str!("../../fixtures/child-view/trace.json"))
+                .map_err(|e| e.to_string())?;
+        compare_ferroan_child_view(&trace, &reference)?;
+    }
     Ok(format!(
-        "{}\nchild-view fixture: {}",
-        replay(&output)?,
+        "{report}\nchild-view fixture: {}",
         output.display()
     ))
 }
@@ -693,6 +712,125 @@ fn replay_trace(dir: &Path, trace: &Value) -> Result<String, String> {
     Ok("child view: resident avatar and stored prim on observer child, movement AgentPosition, home root through logout, child closed".into())
 }
 
+/// Stable child-view properties of a Ferroan home against the Q79a capture.
+/// Times differ. PUT throttles differ until Q85. `start_pos` is the landed
+/// height, within a small tolerance. Every PUT is at or after the movement,
+/// and the admission POST is after the home handshake reply.
+fn compare_ferroan_child_view(live: &Value, reference: &Value) -> Result<(), String> {
+    let live_requests = live["requests"]
+        .as_array()
+        .ok_or("missing child requests")?;
+    let reference_requests = reference["requests"]
+        .as_array()
+        .ok_or("missing capture requests")?;
+    let live_methods = methods(live_requests)?;
+    let reference_methods = methods(reference_requests)?;
+    if live_methods != reference_methods {
+        return Err(format!(
+            "child request methods {live_methods:?} differ from the capture {reference_methods:?}"
+        ));
+    }
+    let udp = live["udp"].as_array().ok_or("missing UDP records")?;
+    let handshake = stamp_of(udp, "observer-home", "RegionHandshakeReply")?;
+    let movement = stamp_of(udp, "observer-home", "AgentUpdate")?;
+    for (live_request, reference_request) in live_requests.iter().zip(reference_requests) {
+        let method = live_request["method"].as_str().unwrap_or("");
+        let at = live_request["ms"].as_u64().ok_or("missing request time")?;
+        match method {
+            "POST" => {
+                if at <= handshake {
+                    return Err("child admission POST is not after the handshake reply".into());
+                }
+                compare_post_fields(&live_request["fields"], &reference_request["fields"])?;
+            }
+            "PUT" => {
+                if at < movement {
+                    return Err("a child PUT is before the movement".into());
+                }
+                compare_put_fields(&live_request["fields"], &reference_request["fields"])?;
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn methods(requests: &[Value]) -> Result<Vec<&str>, String> {
+    requests
+        .iter()
+        .map(|request| {
+            request["method"]
+                .as_str()
+                .ok_or_else(|| "child request has no method".to_string())
+        })
+        .collect()
+}
+
+fn stamp_of(udp: &[Value], circuit: &str, message: &str) -> Result<u64, String> {
+    udp.iter()
+        .find(|record| record["circuit"] == circuit && record["message"] == message)
+        .and_then(|record| record["ms"].as_u64())
+        .ok_or_else(|| format!("missing {message} on {circuit}"))
+}
+
+fn compare_post_fields(live: &Value, reference: &Value) -> Result<(), String> {
+    let live_map = live.as_object().ok_or("child POST has no fields")?;
+    let reference_map = reference.as_object().ok_or("capture POST has no fields")?;
+    if live_map.len() != reference_map.len() {
+        return Err(format!(
+            "child POST fields differ: live {}, capture {}",
+            live_map.len(),
+            reference_map.len()
+        ));
+    }
+    for (key, expected) in reference_map {
+        let Some(found) = live_map.get(key) else {
+            return Err(format!("child POST is missing {key}"));
+        };
+        if key == "start_pos" {
+            let found = found.as_str().ok_or("child start_pos is not text")?;
+            let expected = expected.as_str().ok_or("capture start_pos is not text")?;
+            if !vectors_close(found, expected) {
+                return Err(format!(
+                    "child start_pos {found} differs from the capture {expected}"
+                ));
+            }
+            continue;
+        }
+        if found != expected {
+            return Err(format!("child POST field {key} differs from the capture"));
+        }
+    }
+    Ok(())
+}
+
+fn compare_put_fields(live: &Value, reference: &Value) -> Result<(), String> {
+    let mut live = live.clone();
+    let mut reference = reference.clone();
+    if let Some(map) = live.as_object_mut() {
+        map.remove("throttles");
+    }
+    if let Some(map) = reference.as_object_mut() {
+        map.remove("throttles");
+    }
+    if live != reference {
+        return Err("a child PUT differs from the capture".into());
+    }
+    Ok(())
+}
+
+fn vectors_close(live: &str, reference: &str) -> bool {
+    let Some(live) = super::login_probe::vector(live) else {
+        return false;
+    };
+    let Some(reference) = super::login_probe::vector(reference) else {
+        return false;
+    };
+    live.iter()
+        .zip(reference)
+        .all(|(left, right)| (f64::from(*left) - f64::from(right)).abs() <= 0.05)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,6 +936,86 @@ mod tests {
         assert_eq!(
             replay_trace(&dir, &still).unwrap_err(),
             "missing movement-triggered AgentPosition"
+        );
+    }
+
+    #[test]
+    fn child_block_ignores_a_resident_copy_before_the_child_circuit_opens() {
+        let id = Uuid::from_u128(7);
+        let message = ObjectUpdate {
+            region_data: RegionData {
+                region_handle: neighbour_handle(),
+                time_dilation: u16::MAX,
+            },
+            object_data: vec![ObjectData {
+                id: 1,
+                full_id: id,
+                p_code: 9,
+                ..ObjectData::default()
+            }],
+            ..ObjectUpdate::default()
+        };
+        let mut bytes = Vec::new();
+        ferroan_protocol::build_packet(&message, 4, true, false, &[], &mut bytes);
+        let receipt = parse_packet(&bytes).unwrap();
+        let udp = [
+            Record {
+                kind: Kind::UdpOut,
+                time_ms: 103,
+                bytes: bytes.clone(),
+            },
+            Record {
+                kind: Kind::UdpOut,
+                time_ms: 1269,
+                bytes,
+            },
+        ];
+        let alias = Uuid::from_u128(6);
+        let (_block, event) = child_block(Some(&receipt), &udp, "prim", id, 9, alias, 0, 882)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["ms"], 1269);
+        assert_eq!(event["circuit"], "observer-child");
+        assert_eq!(
+            child_block(Some(&receipt), &udp[..1], "prim", id, 9, alias, 0, 882).unwrap_err(),
+            "viewer receipt has no matching C# datagram with the same sequence and body"
+        );
+        let (_block, event) = child_block(Some(&receipt), &udp[1..], "prim", id, 9, alias, 0, 882)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event["ms"], 1269);
+    }
+
+    #[test]
+    fn ferroan_child_view_matches_the_capture_except_time_and_throttles() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../fixtures/child-view/trace.json")).unwrap();
+        compare_ferroan_child_view(&fixture, &fixture).unwrap();
+        let mut throttles = fixture.clone();
+        throttles["requests"][1]["fields"]["throttles"] = json!([]);
+        compare_ferroan_child_view(&throttles, &fixture).unwrap();
+        let mut early = fixture.clone();
+        early["requests"][0]["ms"] = json!(0);
+        assert_eq!(
+            compare_ferroan_child_view(&early, &fixture).unwrap_err(),
+            "child admission POST is not after the handshake reply"
+        );
+        let mut before = fixture.clone();
+        before["requests"][1]["ms"] = json!(1);
+        assert_eq!(
+            compare_ferroan_child_view(&before, &fixture).unwrap_err(),
+            "a child PUT is before the movement"
+        );
+        let mut fallen = fixture.clone();
+        fallen["requests"][0]["fields"]["start_pos"] = json!("<-56, 128, 30>");
+        assert!(compare_ferroan_child_view(&fallen, &fixture).is_err());
+        let mut extra = fixture.clone();
+        let put = extra["requests"][1].clone();
+        extra["requests"].as_array_mut().unwrap().insert(2, put);
+        assert!(
+            compare_ferroan_child_view(&extra, &fixture)
+                .unwrap_err()
+                .contains("methods")
         );
     }
 }

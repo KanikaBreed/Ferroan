@@ -440,6 +440,12 @@ impl Body {
         self.child = child;
     }
 
+    /// The child-agent flag alone. A login or a hop completion holds the
+    /// actor until arrival samples it; that hold is not a neighbour child.
+    pub(crate) fn child_agent(&self) -> bool {
+        self.child
+    }
+
     /// Not root for `ScenePresence.Update`: away in another region, or not
     /// yet arrived (C# keeps a login or a return a child agent until
     /// `CompleteMovement` makes it root, which is when the arrival samples).
