@@ -197,7 +197,7 @@ fn pinned_and_checked(root: &Path, reference: &Path) -> Result<String, String> {
             "OpenSim-Tranquillity checkout is not clean; the oracle only reads it:\n{tranq_status}"
         ));
     }
-    Ok(pinned)
+    Ok(actual)
 }
 
 fn reference_is_clean(reference: &Path) -> bool {

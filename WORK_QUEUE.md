@@ -128,6 +128,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
 | QR47 | R47: an in-transit root is neither demoted nor closed on any create | READY after Q80a |
 | QR48 | R48: a different-session create over an existing child keeps that child | READY after Q80a |
+| QR49 | R49: oracle and live builds check out the REFERENCES.md pin in their own clone | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
 | Q13c1 | P0.13c1: diagnostics secrets: no raw-body hex in the ring, dumps or crash files | DONE (#121) |
@@ -235,7 +236,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
 | Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
 | Q216 | P2.0e4.3: OAR terrain merge | BLOCKED (split into Q216a and Q216b) |
-| Q216a | P2.0e4.3a: OAR terrain merge (`MergeWithBounding`) | READY after Q215 |
+| Q216a | P2.0e4.3a: OAR terrain merge (`MergeWithBounding`) | DONE (this PR) |
 | Q216b | P2.0e4.3b: OAR terrain-member cap in the archive walk | READY after Q214 and Q216a |
 | Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216a |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
