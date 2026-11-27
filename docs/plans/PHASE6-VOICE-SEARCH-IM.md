@@ -438,4 +438,4 @@ Two further viewer-visible behaviours, for the manager to number if the range ha
 
 Behaviour note, not a candidate for a new TB id: a mute name is written into the list file as stored, and a newline or a vertical bar changes how the line splits.
 
-For the manager: with the call features at their defaults, a multiagent voice provision reaches the voice service without a check that the caller belongs to the call (`WebRtcVoiceRegionModule.NonSpatial.cs` 314–320).
+For the manager: with the call features at their defaults, a multiagent voice provision reaches the voice service without a check that the caller belongs to the call.
