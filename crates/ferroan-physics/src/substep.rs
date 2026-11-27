@@ -209,11 +209,12 @@ mod tests {
     }
 
     #[test]
-    fn the_fixture_is_the_pin8_accumulator() {
+    fn the_fixture_is_the_pinned_accumulator() {
+        // Pin9 leaves `SubstepAccumulator.cs` as Pin8 had it.
         let doc = fixture();
         assert_eq!(
             str_field(&doc, "pin"),
-            "c401bceecd1684832ae8ba86a31b5ee01a4ded7b"
+            "41f18f983bb2bfc82e033fed410d361ba57d5aa4"
         );
         assert_eq!(
             str_field(&doc, "source"),

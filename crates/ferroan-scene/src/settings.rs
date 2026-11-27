@@ -567,7 +567,7 @@ mod tests {
     #[tokio::test]
     async fn regionstore_settings_match_the_committed_dump() {
         let dump = dump();
-        assert_eq!(dump["pin"], "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+        assert_eq!(dump["pin"], "41f18f983bb2bfc82e033fed410d361ba57d5aa4");
         assert_eq!(dump["region"], REGION);
         let store = CopiedStore::new("regionstore/settings.db");
         let connection = store.connection();

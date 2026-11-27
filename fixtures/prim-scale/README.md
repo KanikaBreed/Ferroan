@@ -1,6 +1,6 @@
-# Pin8 admitted scale
+# Admitted scale at the pin
 
-[pin8-scales.txt](pin8-scales.txt) records `Shape.Scale.ToBytes` after Pin8 admits a stored part at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`.
+[pin8-scales.txt](pin8-scales.txt) records `Shape.Scale.ToBytes` after the pin admits a stored part. Pin8 (`c401bceecd1684832ae8ba86a31b5ee01a4ded7b`) recorded it; Pin9 (`41f18f983bb2bfc82e033fed410d361ba57d5aa4`) regenerated it with the same bytes. The file keeps its Pin8 name.
 
 `cargo xtask regionstore scales` builds [tools/regionstore-oracle](../../tools/regionstore-oracle/README.md) against a task-owned clone of the pin and writes this file. `cargo xtask regionstore scales-verify` rebuilds the oracle and checks the committed file. The header records the first ten characters of the pin.
 

@@ -21,7 +21,7 @@ fn drop_recording_keeps_the_pinned_structure() {
     assert_eq!(revision.len(), 40);
     assert!(revision.chars().all(|ch| ch.is_ascii_hexdigit()));
     assert_eq!(revision, value(&file_manifest, "revision "));
-    assert_eq!(value(&manifest, "baseline "), "pin8-linux-x86_64");
+    assert_eq!(value(&manifest, "baseline "), "det-886e0886-linux-x64");
     assert_eq!(value(&manifest, "scenario "), "drop");
     assert!(manifest.lines().any(|line| line == "drop"));
 
@@ -48,6 +48,7 @@ fn drop_recording_keeps_the_pinned_structure() {
         &cache,
     ] {
         assert!(!text.contains("stock-1.0.4"), "{text}");
+        assert!(!text.contains("stock-1.1.0"), "{text}");
         assert!(!text.contains("/home/"), "{text}");
         assert!(!text.contains("/mnt/"), "{text}");
         assert!(!text.contains("/tmp/"), "{text}");
@@ -55,7 +56,7 @@ fn drop_recording_keeps_the_pinned_structure() {
 
     assert_eq!(value(&provenance, "scenario "), "drop");
     assert_eq!(value(&provenance, "revision "), revision);
-    assert_eq!(value(&provenance, "baseline "), "pin8-linux-x86_64");
+    assert_eq!(value(&provenance, "baseline "), "det-886e0886-linux-x64");
     assert_eq!(value(&provenance, "heartbeat "), "1/11");
     assert_eq!(value(&provenance, "rate_hz "), "11");
     assert_eq!(value(&provenance, "physics_rate_hz "), "0");
@@ -64,14 +65,15 @@ fn drop_recording_keeps_the_pinned_structure() {
     assert_eq!(value(&provenance, "warmup_steps "), "1");
     assert_eq!(value(&provenance, "subscribe_ms "), "100");
     assert_eq!(value(&provenance, "native_file "), "libjoltc.so");
-    assert_eq!(value(&provenance, "native_size "), "2046568");
+    assert_eq!(value(&provenance, "native_size "), "2701768");
     assert_eq!(
         value(&provenance, "native_sha256 "),
-        "5FC051708BDD05031A816796612A2F87E17ED32CC198F195A43B2305B3D990FD"
+        "27EFC48C813E75294DA11EAF22618BC1E0A5426A50EDDE7870EF4A60C8E4288B"
     );
     assert_eq!(value(&provenance, "native_rid "), "linux-x64");
+    assert_eq!(value(&provenance, "native_origin "), "Rebuilt");
     assert_eq!(value(&provenance, "package "), "JoltPhysics.Native");
-    assert_eq!(value(&provenance, "package_version "), "1.0.4");
+    assert_eq!(value(&provenance, "package_version "), "1.1.0");
     assert_eq!(value(&provenance, "harness_commit "), revision);
     assert_eq!(value(&provenance, "first_heartbeat "), "0");
     assert_eq!(value(&provenance, "samples "), "31");
