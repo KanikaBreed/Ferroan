@@ -12,6 +12,9 @@ The XML files are marked binary in `.gitattributes`. `controls.xml` contains a r
 
 `pin8-xasset-race.json` is the final `AssetOracle xdb exists` response from
 `MySQLXAssetData` at Pin8 (`c401bceecd1684832ae8ba86a31b5ee01a4ded7b`).
+`asset generate` does not write it and carries it over with `README.md` and
+`.gitattributes`. `asset verify` requires those three and refuses any other
+file it did not generate.
 On MySQL 8.4.13 and MariaDB 11.8.9 a transaction held the first asset and
 its new bytes uncommitted. A second writer called `xdb put` with another id
 and the same bytes. The first writer committed once the server showed the

@@ -1,6 +1,6 @@
 # Full-region admission
 
-`full-region.json` is the output of [the access oracle](../../tools/access-oracle/README.md) at pin `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (Pin8). Each case builds a fresh `Scene`, sets `RegionSettings.AgentLimit` to 0, initializes the module with the recorded `permissionmodules` and `serverside_object_permissions` values, and calls `CheckLandPositionAccess` with `NotCrossing` false. The account service returns that case's `user_level` only for that case's agent.
+`full-region.json` is the output of [the access oracle](../../tools/access-oracle/README.md) at pin `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (Pin8). Pin9 regenerated it at `41f18f983bb2bfc82e033fed410d361ba57d5aa4`; only the revision changed. Each case builds a fresh `Scene`, sets `RegionSettings.AgentLimit` to 0, initializes the module with the recorded `permissionmodules` and `serverside_object_permissions` values, and calls `CheckLandPositionAccess` with `NotCrossing` false. The account service returns that case's `user_level` only for that case's agent.
 
 Four cases are module-level only: `default-module-absent` (`Other`), `default-module-empty` (`""`), `default-module-case-sensitive` (`defaultpermissionsmodule`) and `default-module-in-list` (`First, DefaultPermissionsModule , Last`). A Pin8 region using secure loading stops at the first missing name in each list, before admission. The Rust fixture test disables secure loading for these four cases to exercise the captured callbacks.
 
