@@ -126,6 +126,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
+| QR47 | R47: an in-transit root is neither demoted nor closed on any create | READY after Q80a |
+| QR48 | R48: a different-session create over an existing child keeps that child | READY after Q80a |
 | QR49 | R49: oracle and live builds check out the REFERENCES.md pin in their own clone | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -170,7 +172,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q50 | P2.3b2: `AvatarAnimation` and viewer-started animations | DONE (this PR) |
 | Q379 | P2.3e: hide avatars by parcel (`ParcelHideThisAvatar`, `SeeAVs`) | READY after Q50 |
 | Q380 | P2.3f: retry refused inbound posts in order (`AgentAnimation`) | READY after Q50 |
-| Q51 | P2.3c1: wearables, cached textures and the `UploadBakedTexture` cap (D38) | READY after Q18a |
+| Q386 | P2.3g: SeeAVs-false parcel, a denied edit and take-copy, and the already-open-child teleport both ways. This row owns that teleport rerun. Capture the requesting circuit: inventory result, unchanged source, denied alert, and the owner's success | READY after Q379, Q69, Q211, Q212 and Q80b |
+| Q51 | P2.3c1: wearables, then the cached-texture query, and the two-stage `UploadBakedTexture` beside wearables (D38). The three parts stay on this id | READY after Q18a |
 | Q52 | P2.3c2: `AgentSetAppearance`, store and broadcast the baked texture entry | READY after Q51 and Q48 |
 | Q53 | P2.4a1: object model and SQLite load of prims and shapes, `tools/regionstore-oracle` | SPLIT into Q53a to Q53c (#187) |
 | Q53a | P2.4a1a: `tools/regionstore-oracle` and the scalar prim and shape load from SQLite, link numbers as `LoadObjects` leaves them | DONE (#193) |
@@ -191,10 +194,10 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q60c1 | P2.6a3a: a read-only source for the viewer's full group memberships | DONE (this PR) |
 | Q60c2 | P2.6a3b: the Pin8 Land-throttle timing capture for the parcel overlay | DONE (this PR) |
 | Q60c3 | P2.6a3c: deliver the overlay on the Land throttle, live comparison with Pin8 | DONE (this PR) |
-| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | BLOCKED (split into Q61a–Q61c) |
+| Q61 | P2.6b: `ParcelProperties` on arrival, on request and on a parcel change | DONE (split into Q61a–Q61c, all done) |
 | Q61a | P2.6b1: capture Pin8's `ParcelProperties` elements on arrival, on request and on a border walk | DONE (this PR) |
 | Q61b | P2.6b2: encode `SendLandProperties` and match each captured element | DONE (this PR) |
-| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | BLOCKED (split into Q61c1–Q61c2) |
+| Q61c | P2.6b3: deliver `ParcelProperties` on the three paths and compare live with Pin8 | DONE (split into Q61c1–Q61c2, all done) |
 | Q61c1 | P2.6b3a: `ParcelProperties` on arrival, at the initial-data gate and on a parcel-changing walk, with heights taken at land load | DONE (this PR) |
 | Q61c2 | P2.6b3b: `ParcelPropertiesRequest`, the multi-parcel reply cap and the text bound | DONE (this PR) |
 | Q62 | P2.7a: `tools/permissions-oracle` | DONE (this PR) |
@@ -213,59 +216,63 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q65d1 | P2.5a4a: hand off one C#-persisted store to Ferroan | DONE (#304) |
 | Q65d2 | P2.5a4b: compare delivery of 500 persisted parts at the same Task rate | DONE (this PR) |
 | Q66 | P2.5b: compressed and cached updates, the Firestorm-like handshake flags bot mode | BLOCKED (split into Q206–Q207) |
-| Q206 | P2.5b1: compressed object updates | READY |
-| Q207 | P2.5b2: cached object probes | READY |
+| Q206 | P2.5b1: compressed object updates of preconfigured eligible and ineligible groups. The threshold block is encoded whole into the next packet; compare both packets | READY |
+| Q207 | P2.5b2: cached object probes of preconfigured eligible and ineligible groups. Arrival probes are this row's proof | READY |
+| Q387 | P2.5b3: shared cache, selection and persistence. This row owns the live physical-flag toggle, the cache-miss delivery, and the cache-on distance exit and re-entry | READY after Q68, Q206, Q207, Q209 and Q74 |
 | Q67 | P2.5c: interest list, `KillObject`, `ObjectProperties` | BLOCKED (split into Q208–Q209) |
 | Q208 | P2.5c1: object properties and kills | DONE (this PR) |
 | Q209 | P2.5c2: distance culling | READY after Q208 |
-| Q68 | P2.8a: rez a new prim and select it | READY after Q208 and Q64 |
-| Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`) | READY after Q68 |
+| Q68 | P2.8a: rez a new prim and select it. The selecting non-owner's full update arrives before properties, and the owner's result is separate | READY after Q208 and Q64 |
+| Q69 | P2.8b1: edit, transform (`MultipleObjectUpdate`), including a linked child's relative move and rotation | READY after Q68 |
 | Q70 | P2.8b2: edit, texture, shape, extra params, flags and permissions; `build: pass` | BLOCKED (split into Q210–Q211) |
 | Q210 | P2.8b21: texture, shape, extra params, click action and material | READY after Q69 |
-| Q211 | P2.8b22: flags and permissions | READY after Q210 |
-| Q71 | P2.8c: link, unlink and duplicate, `link: pass` | READY after Q211 |
+| Q211 | P2.8b22: flags and permissions. The stored physical flag changes viewer-cache eligibility. Q387 owns the live toggle | READY after Q210 |
+| Q71 | P2.8c: link and unlink, then duplicate, `link: pass`. Both parts stay on this id | READY after Q211 |
 | Q72 | P2.8d: take and delete to trash, `take: pass` | BLOCKED (split into Q212–Q213) |
-| Q212 | P2.8d1: take and take-copy | READY after Q68 |
-| Q213 | P2.8d2: delete to trash, and the store check for take and delete | READY after Q212 and Q74 |
-| Q73 | P2.8e: rez from inventory | READY after Q212 and Q58 |
-| Q74 | P2.9a: persistence on SQLite, the Ferroan-to-C# store swap (D39) | READY after Q211 |
+| Q212 | P2.8d1: take and take-copy. Take and delete use different permission checks | READY after Q68 |
+| Q213 | P2.8d2: delete to trash, including a delete without trash. This row owns the SQLite user-facing delete-to-trash proof. A deleted group must not come back | READY after Q212 and Q74 |
+| Q73 | P2.8e: rez from inventory, single then coalesced, with no-copy consumption and next-owner masks, both directions against C# | READY after Q212 and Q58 |
+| Q74 | P2.9a: SQLite persistence. Periodic backup and the shutdown forced save are proved separately. The storage test is a dirty save, a remove and a reopen of a seeded linkset, with a distinguishable child-inventory item. May split into forced save and periodic backup | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
-| Q214 | P2.0e4.1: OAR control file and region path | DONE (this PR) |
+| Q383 | P2.9c: reopen a C#-written store on SQLite, MySQL and PostgreSQL. Compare the parcel overlay and properties, handshake settings, effective estate and environment. Budget the per-backend split, about three days | READY |
+| Q214 | P2.0e4.1: OAR control file and region path. The path lookup is `ArchiveReadRequest.cs` 460, the skip is 461, and `LoadControlFile` begins at 1298 | DONE (this PR) |
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
-| Q378 | P2.0e4.0: `load oar` console options, including `--default-user` by name | READY after Q214 |
+| Q378 | P2.0e4.0: `load oar` console options. An invalid vector keeps its default and continues. An unresolved `--default-user` aborts the load | READY after Q214 |
 | Q216 | P2.0e4.3: OAR terrain merge | BLOCKED (split into Q216a and Q216b) |
 | Q216a | P2.0e4.3a: OAR terrain merge (`MergeWithBounding`) | DONE (this PR) |
-| Q216b | P2.0e4.3b: OAR terrain-member cap in the archive walk | READY after Q214 and Q216a |
-| Q217 | P2.0e4.4: OAR deferred terrain save | READY after Q216a |
+| Q216b | P2.0e4.3b: OAR terrain-member cap in the archive walk. Cropping stays settled on Q216a and D142 | READY after Q214 and Q216a |
+| Q217 | P2.0e4.4: OAR deferred terrain save. Check the baked row at load, the old live row before the check and tick, and the new live row after. Keep the `58016a7e` evidence when reconciling | READY after Q216a |
 | Q218 | P2.0e4.5a: OAR owner and group resolution | DONE (this PR) |
 | Q377 | P2.0e4.5c: OAR owner lookups over the grid (group record, alias, account, Hypergrid creator names) | READY after Q218 |
-| Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75 and Q225 |
+| Q219 | P2.0e4.5b: OAR place and persist objects | READY after Q218, Q74, Q75, Q225 and Q377 |
 | Q220 | P2.0e4.6a: OAR parcels in memory | DONE (this PR) |
 | Q221 | P2.0e4.6b: OAR clear, install and persist parcels | READY after Q220 and Q224 |
 | Q222 | P2.0e4.7: OAR region, environment and estate settings | READY after Q225, Q226 and Q227 |
-| Q223 | P2.0e4.8: OAR assets | READY after Q218 |
-| Q224 | P2.0e4.w1: parcel removal and non-default parcels on all three databases | READY after Q74 and Q75 |
-| Q225 | P2.0e4.w2: region settings writer on all three databases | READY after Q74 |
+| Q223 | P2.0e4.8: OAR assets. State whether the capture used the forced-cache upload or the ordinary existence query. The stand-alone test starts after Q218. Q384 fetches one transformed object asset, including the partial batch, through the Q377 resolver | READY after Q218 |
+| Q224 | P2.0e4.w1: parcel removal and non-default parcels on all three databases. Depends on Q74 and Q75. Fixtures can start from the existing parcel captures | READY after Q74 and Q75 |
+| Q225 | P2.0e4.w2: region settings writer on all three databases. Depends on Q74. Fixtures can start from Q56's settings capture | READY after Q74 |
 | Q226 | P2.0e4.w3: environment settings writer on all three databases | DONE (this PR) |
 | Q227 | P2.0e4.w4: estate settings writer on all three databases | READY |
+| Q384 | P2.0e4.9: integrated console `load oar` on SQLite, MySQL and PostgreSQL. Replace and merge are two parts of this id, about a day each. Two prepopulated stores per backend. Settings save and handshake while the settings member is read; the telehub save is later, at object placement | READY after Q214, Q378, Q216b, Q217, Q377, Q219, Q221, Q222, Q223, Q224, Q225, Q227, Q382, Q74, Q75 and Q383 |
 | Q228 | P2.0g2: Ferrobot local chat against a Ferroan region | READY |
 | Q76 | P2.10a: object-crossing fixtures from two C# regions | DONE (this PR) |
-| Q76b | P2.10a2: object-crossing fixture with a seated avatar, two C# regions | READY after Q76 |
-| Q77 | P2.10b: object crossing, Ferroan to C# | READY after Q76, Q57, Q69 and Q18c |
-| Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39) | READY after Q77 and Q58 |
-| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | BLOCKED (split into Q79a–Q79c) |
+| Q76b | P2.10a2: seated object-crossing fixture, two C# regions. Reference-only, outside G3 | READY after Q76 |
+| Q77 | P2.10b: object crossing, Ferroan to C#. Delete the source only after `CreateObject` succeeds; a refusal keeps it | READY after Q76, Q57, Q69 and Q18c |
+| Q78 | P2.10c: object crossing, C# to Ferroan, no held crossing (D39). A refusal keeps the source. A successful create deletes it | READY after Q77 and Q58 |
+| Q79 | P2.11a: Ferroan opens a child on the C# neighbour, the neighbour in view (D38) | DONE (split into Q79a–Q79c, all done) |
 | Q79a | P2.11a1: capture a viewer observing a C# neighbour while rooted at home | DONE (this PR) |
 | Q79b | P2.11a2: discover visible neighbours and send child requests | DONE (this PR) |
-| Q79c | P2.11a3: maintain each root's children and compare live visibility | BLOCKED (split into Q79c1–Q79c2) |
+| Q79c | P2.11a3: maintain each root's children and compare live visibility | DONE (split into Q79c1–Q79c2, all done) |
 | Q79c1 | P2.11a3a: one owner for each child across visibility admission, teleport and logout | DONE (this PR) |
-| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | BLOCKED (split into Q79c2a–Q79c2b) |
+| Q79c2 | P2.11a3b: drive the neighbour set from the frame and compare the home and child circuits | DONE (split into Q79c2a–Q79c2b, all done) |
 | Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | DONE (this PR) |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | DONE (this PR) |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split into Q80a–Q80b) |
-| Q80a | P2.11b1: keep the C# neighbour's child a child presence | READY after Q79c2b |
-| Q80b | P2.11b2: apply `AgentPosition` and prove the mirror of child-view live | READY after Q80a |
-| Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80b |
-| Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
+| Q80a | P2.11b1: keep the C# neighbour's child a child presence | DONE (this PR) |
+| Q80b | P2.11b2: apply `AgentPosition` and prove the mirror of child-view live. Q386 owns the already-open-child teleport rerun | READY after Q80a |
+| Q85 | P2.11c: child-agent throttles. Before squaring, subtract the region size once on a positive coordinate above that dimension (`ScenePresence.cs` 5170–5187). The denominator is the fixed region-size constant and the floor is 0.2. Prove a nonstandard-sized neighbour and signed coordinates. Factor-one full update is at 5333 | READY after Q80b |
+| Q385 | P2.12a: the gate runner. Finish registration, result checking and the negative tests. A required scenario that is absent, skipped, pending, failed, or missing its baseline or observation fails. Skip is only for an explicitly optional check. Q81 owns the green run | READY |
+| Q81 | P2.12: the Phase 2 gate report, including the green run. It consumes Q385. The manifest also runs one cross-backend reopen and one viewer-driven edit, disposal, backup and restart after Q74, Q75 and the take, delete and cross leaves. Leaves, each once: Q51, Q52, Q68, Q69, Q71, Q73, Q74, Q75, Q77, Q78, Q80b, Q85, Q206, Q207, Q209, Q210, Q211, Q212, Q213, Q214, Q216b, Q217, Q219, Q221, Q222, Q223, Q224, Q225, Q227, Q228, Q377, Q378, Q379, Q380, Q382, Q383, Q384, Q385, Q386, Q387. Q382 is on the unmerged branch `feat/q217-oar-terrain-save`. Q76b is outside this list | READY after that leaf checklist |
 | Q20 | P1.A1: `AssetService` on MySQL and PostgreSQL, and the pilot's gaps | DONE (#132) |
 | Q21 | P1.0: harness for Phase 1 (`--rust`, `live compare`, `--db`) | DONE (#82) |
 | Q22 | P1.A2: `XAssetService` | SPLIT into Q22a to Q22c (#133) |
@@ -1190,6 +1197,9 @@ The live proof is the mirror of child-view. Home stays C# with BasicPhysics and 
 2. **Q80b — apply `AgentPosition` and prove the mirror** (after Q80a, about one day). `UpdateChildAgent(AgentPosition)` stores `position + offset`, `center + offset` and `Far`, and applies a nonempty children-seed map, then `checkRePrioritization`. The throttle factor stays Q85. A root returns true and does not move. A missing presence or a mismatched session returns false. Live, under the shared live lock with a free port base and `UseSharedCompilation=false`: C# hosts the root and Ferroan is the neighbour, the mirror of `child-view`, the same walk as the Pin8-to-Pin8 capture. The observer on the C# region receives the Ferroan resident and the stored prim. Those blocks match `fixtures/child-view/avatar.bin` and `prim.bin`, with local IDs mapped, and re-encoding the unredacted original still reproduces the captured bytes before anything is published. The child POST, the movement PUTs and `CloseAgent` stay in the capture's order.
 
 Q85 still waits for inbound child throttles and should follow Q80b. This note does not add queue rows and does not retarget Q85 or Q81. P2.11b stays the parent until both parts are done. No new decision or Tranquillity bug number is used.
+
+
+**Q80a — DONE (this PR)** on `feat/q80a-child-presence`. A Default-flag child is seated at the posted start before `CreateAgent` returns, with no physics actor, and `CompleteAgentMovement` does not promote it. A flags-`16` child still waits and can become root. Q80b applies `AgentPosition` and the live mirror.
 
 ### Q65d store swap and viewer load
 
