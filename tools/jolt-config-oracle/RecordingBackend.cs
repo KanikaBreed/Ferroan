@@ -2,10 +2,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Records the character descriptor and the calls JoltCharacter makes while the
-// file oracle compiles it. Every other backend method is unexpected: this
-// process must not reach JoltPhysicsBackend, and it must not load joltc.
-// RecordHeartbeat lets Simulate return without a native step. It stays off
-// for the character compile.
+// file oracle compiles it. Analytic box, sphere and cylinder constructors are
+// recorded only when RecordAnalytic is set. Every other backend method is
+// unexpected: this process must not reach JoltPhysicsBackend, and it must not
+// load joltc. RecordHeartbeat lets Simulate return without a native step. It
+// stays off for the character compile.
 
 using System;
 using System.Collections.Generic;
@@ -31,6 +32,17 @@ sealed class RecordingBackend : IPhysicsBackend
     // capture is proving that a successful Simulate returns 1.
     internal bool RecordHeartbeat;
     internal int HeartbeatSteps;
+
+    // Off for the character compile. An analytic case sets this and records the
+    // dimensions CookPrimShape passes. A vertex array is still unexpected.
+    internal bool RecordAnalytic;
+    internal int BoxCalls;
+    internal int SphereCalls;
+    internal int CylinderCalls;
+    internal Vector3 BoxHalf;
+    internal float SphereRadius;
+    internal float CylinderHalfHeight;
+    internal float CylinderRadius;
 
     internal readonly record struct Movement(Vector3 Velocity, bool Jump, bool Flying);
     internal readonly record struct ShapeCall(float HalfHeight, float Radius);
@@ -85,11 +97,19 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateBoxShape(Vector3 halfExtents)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        BoxCalls++;
+        BoxHalf = halfExtents;
+        return new ShapeId((uint)BoxCalls);
     }
     public ShapeId CreateSphereShape(float radius)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        SphereCalls++;
+        SphereRadius = radius;
+        return new ShapeId((uint)SphereCalls);
     }
     public ShapeId CreateCapsuleShape(float halfHeight, float radius)
     {
@@ -97,7 +117,12 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateCylinderShape(float halfHeight, float radius)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        CylinderCalls++;
+        CylinderHalfHeight = halfHeight;
+        CylinderRadius = radius;
+        return new ShapeId((uint)CylinderCalls);
     }
     public ShapeId CreateConvexHullShape(ReadOnlySpan<Vector3> points)
     {

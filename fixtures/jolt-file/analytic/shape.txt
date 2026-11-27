@@ -1,0 +1,173 @@
+format 1
+method CookPrimShape
+source JoltScene.cs 1229-1259
+cuts JoltScene.cs 2224-2228
+box JoltPhysicsBackend.cs 1712-1718
+sphere JoltPhysicsBackend.cs 1720-1723
+cylinder JoltPhysicsBackend.cs 1731-1741
+access internal
+initialise not_called
+native_proof after_calls
+mesher null
+stock_source jolt-record/drop
+stock_asset_kind analytic-box
+
+case box-static
+physical false
+profile 1
+path 16
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 3F800000 3F800000
+kind box
+analytic true
+box_calls 1
+sphere_calls 0
+cylinder_calls 0
+half 3F000000 3F000000 3F000000
+radius none
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case box-dynamic
+physical true
+profile 1
+path 16
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 3F800000 3F800000
+kind box
+analytic true
+box_calls 1
+sphere_calls 0
+cylinder_calls 0
+half 3F000000 3F000000 3F000000
+radius none
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case sphere-static
+physical false
+profile 5
+path 32
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 40000000 40000000 40000000
+kind sphere
+analytic true
+box_calls 0
+sphere_calls 1
+cylinder_calls 0
+half none
+radius 3F800000
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case sphere-dynamic
+physical true
+profile 5
+path 32
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 40000000 40000000 40000000
+kind sphere
+analytic true
+box_calls 0
+sphere_calls 1
+cylinder_calls 0
+half none
+radius 3F800000
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case cylinder-static
+physical false
+profile 0
+path 16
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 3F800000 40000000
+kind cylinder
+analytic true
+box_calls 0
+sphere_calls 0
+cylinder_calls 1
+half none
+radius none
+cylinder_half 3F800000
+cylinder_radius 3F000000
+axis 3F3504F3 00000000 00000000 3F3504F3
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case cylinder-dynamic
+physical true
+profile 0
+path 16
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 3F800000 40000000
+kind cylinder
+analytic true
+box_calls 0
+sphere_calls 0
+cylinder_calls 1
+half none
+radius none
+cylinder_half 3F800000
+cylinder_radius 3F000000
+axis 3F3504F3 00000000 00000000 3F3504F3
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case ellipsoid-static
+physical false
+profile 5
+path 32
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 40000000 40400000
+kind bbox(fallback)
+analytic false
+box_calls 1
+sphere_calls 0
+cylinder_calls 0
+half 3F000000 3F800000 3FC00000
+radius none
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1
+
+case ellipsoid-dynamic
+physical true
+profile 5
+path 32
+cuts 0 0 0 0 0 0 0 0 0 100 100 0 0
+size 3F800000 40000000 40400000
+kind bbox(fallback)
+analytic false
+box_calls 1
+sphere_calls 0
+cylinder_calls 0
+half 3F000000 3F800000 3FC00000
+radius none
+cylinder_half none
+cylinder_radius none
+axis 00000000 00000000 00000000 3F800000
+hulls 1
+mass_volume 0000000000000000
+shape 1

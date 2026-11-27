@@ -42,6 +42,19 @@ settings and writes `fixtures/jolt-file/stats`. A successful simulate
 contributes 1. Eleven frames in one second show about 55 when the scale is
 on. `SimPhysicsStepMs` stays 20. Ordinary check does not call the reporter.
 
+The same file command calls internal `CookPrimShape` (`JoltScene.cs`
+1229-1259) by reflection on `new JoltScene()` and records the constructor
+the fast path chooses. A box, a sphere and a cylinder are each cooked once
+static and once dynamic. The cylinder case is circle profile and straight
+extrusion; `PrimitiveBaseShape.CreateCylinder()` is not that shape. The
+recording backend stores the half extents, the sphere radius, or the
+cylinder half height and radius. It does not call the native constructors.
+A non-uniform sphere is `bbox(fallback)` with one box constructor, because
+the mesher is null. `analytic_shape` replays the fast path and returns
+nothing for that ellipsoid. The stock drop asset kind stays `analytic-box`.
+Mass and a ray are on the stock harness recording, in
+`fixtures/jolt-record/analytic-envelope.txt`, not in this no-native fixture.
+
 The same file command calls `JoltCharacter` capsule, mass and stand-half,
 `DesiredVelocity`, the jump latch and the ground flags through
 `ApplyCharacterState`, and records the `CharacterDesc` a stub backend

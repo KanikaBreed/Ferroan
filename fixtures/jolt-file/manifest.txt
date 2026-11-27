@@ -7,3 +7,4 @@ compile OpenSim.Region.Framework/Scenes/SimStatsReporter.cs
 note-dilation
 character
 stats
+analytic

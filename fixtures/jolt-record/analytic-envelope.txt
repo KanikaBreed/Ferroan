@@ -1,0 +1,24 @@
+format 1
+channel harness
+scenario analytic-envelope
+baseline det-886e0886-linux-x64
+mass JoltPrim.Mass
+mass_source JoltPrim.cs 1228-1236
+mass_read MassReadoutTests.cs 78-82
+ray JoltScene.RaycastWorld
+ray_source JoltScene.cs 2274-2280
+extent PhysicsActor.Size
+rate_hz 11
+physics_rate_hz 0
+samples 2
+reads 2
+
+shape box-static physical 0 local 4101 pos 42800000 42800000 42340000 size 3F800000 3F800000 3F800000 mass 41200000
+shape box-dynamic physical 1 local 4102 pos 42A00000 42A00000 42340000 size 3F800000 3F800000 3F800000 mass 41200000
+shape sphere-static physical 0 local 4103 pos 42C00000 42C00000 42340000 size 40000000 40000000 40000000 mass 42278D36
+shape sphere-dynamic physical 1 local 4104 pos 42E00000 42E00000 42340000 size 40000000 40000000 40000000 mass 42278D36
+shape cylinder-static physical 0 local 4105 pos 43000000 42400000 42340000 size 3F800000 3F800000 40000000 mass 417B53D2
+shape cylinder-dynamic physical 1 local 4106 pos 43100000 42400000 42340000 size 3F800000 3F800000 40000000 mass 417B53D2
+ray box-static heartbeats 1 start 426C0000 42800000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4101 pos 427E0000 42800000 42340000 normal BF800000 00000000 00000000 depth 40900000
+ray sphere-static heartbeats 1 start 42B60000 42C00000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4103 pos 42BE0000 42C00000 42340000 normal BF800000 00000000 00000000 depth 40800000
+ray cylinder-static heartbeats 1 start 42F60000 42400000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4105 pos 42FF0000 42400000 42340000 normal BF800000 00000000 00000000 depth 40900000
