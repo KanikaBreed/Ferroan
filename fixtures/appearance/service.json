@@ -1,0 +1,166 @@
+{
+  "pin": "41f18f983bb2bfc82e033fed410d361ba57d5aa4",
+  "backend": "sqlite",
+  "seed": {
+    "agent": "a7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+    "rows": [
+      {
+        "name": "Bake:Head",
+        "value": "b7d2ff2e-dc32-44d8-aa61-3d22070a4964"
+      },
+      {
+        "name": "Bake:Upper",
+        "value": "d7d2ff2e-dc32-44d8-aa61-3d22070a4964"
+      }
+    ],
+    "assets": [
+      {
+        "id": "b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+        "data": "/0//UQECAwQ="
+      },
+      {
+        "id": "c7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+        "data": "ABE="
+      },
+      {
+        "id": "d7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+        "data": ""
+      }
+    ]
+  },
+  "indexAfter": [
+    {
+      "name": "Bake:Head",
+      "value": "b7d2ff2e-dc32-44d8-aa61-3d22070a4964"
+    },
+    {
+      "name": "Bake:Upper",
+      "value": "d7d2ff2e-dc32-44d8-aa61-3d22070a4964"
+    }
+  ],
+  "assetsAfter": [
+    {
+      "id": "b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "data": ""
+    },
+    {
+      "id": "c7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "data": "ABE="
+    },
+    {
+      "id": "d7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "data": ""
+    }
+  ],
+  "observations": [
+    {
+      "label": "hit",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 200,
+      "contentType": "image/x-j2c",
+      "reply": "/0//UQECAwQ="
+    },
+    {
+      "label": "channel case",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/HEAD/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 200,
+      "contentType": "image/x-j2c",
+      "reply": "/0//UQECAwQ="
+    },
+    {
+      "label": "unknown token",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/torso/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "mismatched uuid",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/c7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "empty asset",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/upper/d7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "missing asset",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": "",
+      "dropAsset": "b7d2ff2e-dc32-44d8-aa61-3d22070a4964"
+    },
+    {
+      "label": "method",
+      "method": "POST",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": false,
+      "status": 405,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "shard",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": true,
+      "status": 403,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "shard before method",
+      "method": "POST",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/b7d2ff2e-dc32-44d8-aa61-3d22070a4964",
+      "shard": true,
+      "status": 403,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "bad uuid",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head/not-a-uuid",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "short path",
+      "method": "GET",
+      "target": "/texture/a7d2ff2e-dc32-44d8-aa61-3d22070a4964/head",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html;charset=UTF-8",
+      "reply": ""
+    },
+    {
+      "label": "bare path",
+      "method": "GET",
+      "target": "/texture",
+      "shard": false,
+      "status": 404,
+      "contentType": "text/html",
+      "reply": "PEhUTUw\u002BPEhFQUQ\u002BPFRJVExFPjQwNCBQYWdlIG5vdCBmb3VuZDwvVElUTEU\u002BPEJPRFk\u002BPEJSIC8\u002BPEgxPk9vb3BzITwvSDE\u002BPFA\u002BVGhlIHBhZ2UgeW91IHJlcXVlc3RlZCBoYXMgYmVlbiBvYnNjb25kZWQgd2l0aCBieSBrbm9tZXMuIEZpbmQgaGlwcG9zIHF1aWNrITwvUD48L0JPRFk\u002BPC9IVE1MPg=="
+    }
+  ]
+}

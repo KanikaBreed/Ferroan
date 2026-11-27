@@ -58,6 +58,10 @@ impl AvatarHttp {
     pub fn pool_occupancy(&self) -> (u32, u32) {
         self.service.pool_occupancy()
     }
+
+    pub(crate) fn service(&self) -> Arc<AvatarService> {
+        Arc::clone(&self.service)
+    }
     pub fn into_router(self) -> Router {
         Router::new()
             .route("/avatar", post(post_avatar))

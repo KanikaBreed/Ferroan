@@ -3,7 +3,8 @@
 
 //! The grid-services process. This build listens for the asset, user-account,
 //! user-alias, authentication, authorization, avatar and grid-user routes whose ini
-//! sections are present. It also serves the configured XBakes connector.
+//! sections are present. It also serves the configured XBakes connector and, when
+//! the appearance connector is selected, the viewer bake read on this same listener.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
@@ -29,8 +30,8 @@ use axum::Router;
 use ferroan_config::GridLoad;
 use ferroan_services::bakes::Bakes;
 use ferroan_services::{
-    AccountHttp, AliasHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp, PresenceHttp,
-    authorization_router, listen_address, network_port, open_authorization,
+    AccountHttp, AliasHttp, AppearanceHttp, AssetHttp, AuthHttp, AvatarHttp, GridUserHttp,
+    PresenceHttp, authorization_router, listen_address, network_port, open_authorization,
 };
 
 mod status;
@@ -82,19 +83,28 @@ fn run() -> Result<(), String> {
         let bakes = Bakes::configured(config, port).map_err(|e| e.to_string())?;
         let griduser = config.section_names().any(|name| name == "GridUserService");
         let presence = config.section_names().any(|name| name == "PresenceService");
-        if !presence && !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars && bakes.is_none() {
+        let appearance = AppearanceHttp::selected(config, port).map_err(|error| error.to_string())?;
+        if appearance.is_some() && (!avatars || !assets) {
             return Err(
-                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService, BakedTextureService, PresenceService or GridUserService section"
+                "AppearanceService requires AvatarService and AssetService".to_string(),
+            );
+        }
+        if !presence && !assets && !accounts && !aliases && !auth && !authorization && !griduser && !avatars && bakes.is_none() && appearance.is_none() {
+            return Err(
+                "no AssetService, UserAccountService, UserAliasService, AuthenticationService, AuthorizationService, AvatarService, AppearanceService, BakedTextureService, PresenceService or GridUserService section"
                     .to_string(),
             );
         }
         let mut router = Router::new();
         let mut pools = status::Pools::default();
+        let mut opened_assets = None;
+        let mut opened_avatars = None;
         if assets {
             let http = AssetHttp::open(config)
                 .await
                 .map_err(|error| error.to_string())?;
             pools = pools.asset(http.clone());
+            opened_assets = Some(http.clone());
             router = router.merge(http.into_router());
             tracing::info!("ferroan-robust: asset service on {listen}:{port}");
         }
@@ -130,8 +140,17 @@ fn run() -> Result<(), String> {
         if avatars {
             let http = AvatarHttp::open(config).await.map_err(|error| error.to_string())?;
             pools = pools.avatar(http.clone());
+            opened_avatars = Some(http.clone());
             router = router.merge(http.into_router());
             tracing::info!("ferroan-robust: avatar service on {listen}:{port}");
+        }
+        if let Some(section) = appearance {
+            let avatars = opened_avatars.ok_or("AppearanceService requires AvatarService")?;
+            let assets = opened_assets.ok_or("AppearanceService requires AssetService")?;
+            let http = AppearanceHttp::open(config, &section, &avatars, assets)
+                .map_err(|error| error.to_string())?;
+            router = router.merge(http.into_router());
+            tracing::info!("ferroan-robust: viewer bake read on {listen}:{port}");
         }
         if let Some(cache) = bakes {
             router = router.merge(cache.clone().into_router());

@@ -144,6 +144,8 @@ Q27b2 ports the comparison-based introsort in `ArraySortHelper<T>` from .NET 10.
 
 Q27c's `crates/ferroan-services/src/bakes.rs` follows `Source/OpenSim.Server.Handlers/BakedTextures/XBakes.cs` and `XBakesHandler.cs`, connector selection in `Source/OpenSim.Server.GridServer/GridServiceConnectorLoader.cs`, and `BaseHttpServer.cs` and `OSHttpServer/HttpRequestParser.cs` under `Source/OpenSim.Framework.Servers.HttpServer`. All are BSD-licensed at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b`. The oracle calls the pinned handler, service, console and region's `Source/OpenSim.Region.CoreModules/Avatar/BakedTextures/XBakesModule.cs`.
 
+Q27d's viewer bake read follows `Source/OpenSim.Server.Handlers/Appearance/AppearanceServerConnector.cs`, `Source/OpenSim.Services.AvatarService/AppearanceService.cs` and `Source/OpenSim.Services.Interfaces/AppearanceChannels.cs` at Tranquillity `41f18f983bb2bfc82e033fed410d361ba57d5aa4`. Those three files are MPL-2.0, copyright (c) 2026 Legion Builds. The Rust files keep that notice. The oracle compiles the pinned handler and calls the pinned avatar and asset services on SQLite.
+
 ## Names
 
 OpenSimulator, Tranquillity, Aurora Viewer, Second Life, SLua and Linden Lab names identify sources and compatibility targets. Ferroan is independent and does not claim their endorsement. Second Life is a trademark of Linden Research, Inc.

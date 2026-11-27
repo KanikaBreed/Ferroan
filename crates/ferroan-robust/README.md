@@ -4,6 +4,8 @@ The grid-services process. This build serves the asset, user-account, user-alias
 
 The baked-texture cache uses `[BakedTextureService] LocalServiceModule = OpenSim.Server.Handlers.dll:XBakes` and requires `BaseDirectory`. In an ini with a connector list, enable `OpenSim.Server.Handlers.dll:XBakesConnector` on the process's `[Network] port`. In a section-only ini, the service section enables it. Regions set `[XBakes] URL` to the service URL. The authenticated remote console advertises `delete bakes <ID>` while the cache is enabled.
 
+The viewer bake read uses `[AppearanceService] LocalServiceModule = OpenSim.Services.AvatarService.dll:AppearanceService`. It also needs `[AvatarService]` and `[AssetService]`, and it reads the services those sections already opened. In an ini with a connector list, enable `OpenSim.Server.Handlers.dll:AppearanceServerConnector`. A section-only ini enables `[AppearanceService]` directly. The example grid file leaves that connector commented out, so the section alone does not publish the route. This process has one service listener, so `GET /texture` is served on `[Network] port` even when the connector line names another port.
+
 ```sh
 ferroan-robust [--inimaster FILE] [--inifile FILE] [--inidirectory DIR]
 ```

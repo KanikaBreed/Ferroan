@@ -53,6 +53,15 @@ const AVATAR_CROSS: PluginCross = PluginCross {
     ado_prefix: "FERROAN_AVATAR_ADO",
 };
 
+const APPEARANCE_CROSS: PluginCross = PluginCross {
+    label: "appearance",
+    artifacts: ".scratch/appearance-oracle/artifacts",
+    project: "tools/appearance-oracle/AppearanceOracle.csproj",
+    dll: "bin/AppearanceOracle/release/AppearanceOracle.dll",
+    oracle_env: "FERROAN_APPEARANCE_ORACLE",
+    ado_prefix: "FERROAN_APPEARANCE_ADO",
+};
+
 const PRESENCE_CROSS: PluginCross = PluginCross {
     label: "presence",
     artifacts: ".scratch/presence-oracle/artifacts",
@@ -181,6 +190,15 @@ pub fn avatar_service(writing: bool) -> ExitCode {
 /// Record or verify the XBakes HTTP responses, directory contents and console output.
 pub fn avatar_bakes(writing: bool) -> ExitCode {
     service_http(&AVATAR_CROSS, writing, &[("bakes", "bakes.json", None)])
+}
+
+/// Record or check the pinned viewer bake GET on SQLite.
+pub fn appearance_service(writing: bool) -> ExitCode {
+    service_http(
+        &APPEARANCE_CROSS,
+        writing,
+        &[("service", "service.json", None)],
+    )
 }
 
 pub fn presence_service(writing: bool) -> ExitCode {

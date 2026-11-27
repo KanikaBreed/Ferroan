@@ -6,6 +6,8 @@ The avatar service exposes `get_appearance` and `set_appearance` over the config
 
 The XBakes file cache serves GET and POST at `/bakes/<id>`. It preserves the region's upload bytes at `BaseDirectory/id[0..2]/id[2..4]/id[4..6]/id[6..10]/id`. A missing file returns an empty 200. A replacement publishes one complete file, and `delete bakes <ID>` removes it. The cache is independent of the avatar database and the asset service. [Pin8 HTTP and file observations](../../fixtures/avatar/bakes.json)
 
+The viewer bake read serves `GET /texture/<agent>/<channel>/<uuid>`. The channel is one of `head`, `upper`, `lower`, `eyes`, `skirt`, `hair`, `leftarm`, `leftleg`, `aux1`, `aux2` and `aux3`, matched without case. The response is `image/x-j2c` only when `Bake:<Index>` for that agent is that uuid and the asset bytes are non-empty. Anything else that reaches the handler is an empty 404. A method other than GET is an empty 405. `X-SecondLife-Shard` is an empty 403 unless `AllowllHTTPRequestIn` is set. `/texture` with no second segment is the HTML 404 page. The route reads the avatar index and the asset service. It does not write the index, and it is not the XBakes file cache. [Pin9 HTTP observations](../../fixtures/appearance/service.json)
+
 The asset service is what a Tranquillity region calls on Robust.
 
 The routes follow `Source/OpenSim.Server.Handlers/Asset/` at Tranquillity `713857f10b8e91a639a967d4354a4682b080793c`:
