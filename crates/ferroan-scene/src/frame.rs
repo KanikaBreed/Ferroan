@@ -3853,7 +3853,6 @@ mod tests {
         Arc::new(map)
     }
 
-
     /// A Default-flag child gets terrain, the other root, and does not move.
     /// The same generation's login pose keeps it. Another generation replaces it.
     #[test]
