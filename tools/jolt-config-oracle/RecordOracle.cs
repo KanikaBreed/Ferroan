@@ -18,55 +18,12 @@ using OpenSim.Region.PhysicsModules.SharedBase;
 
 namespace Ferroan.JoltConfigOracle;
 
-static class Program
-{
-    static int Main(string[] args)
-    {
-        CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-        CultureInfo.CurrentUICulture = CultureInfo.InvariantCulture;
-        Environment.SetEnvironmentVariable(HarnessOptions.PhysicsRateVariable, null);
-        if (args.Length != 6
-            || args[2] != "--revision" || args[4] != "--reference"
-            || (args[0] != "generate" && args[0] != "verify"))
-        {
-            Console.Error.WriteLine("usage: JoltRecordOracle generate|verify <directory> --revision <40 hex> --reference <path>");
-            return 2;
-        }
-        string directory = Path.GetFullPath(args[1]);
-        string revision = args[3];
-        string reference = Path.GetFullPath(args[5]);
-        if (revision.Length != 40 || revision.Any(ch => !Uri.IsHexDigit(ch)))
-        {
-            Console.Error.WriteLine("revision must be 40 hex characters");
-            return 1;
-        }
-        try
-        {
-            if (args[0] == "generate")
-                RecordOracle.Generate(directory, revision, reference);
-            else
-                RecordOracle.Verify(directory, revision, reference);
-        }
-        catch (NativeSkip skip)
-        {
-            Console.Error.WriteLine("SKIPPED: " + skip.Message);
-            return 3;
-        }
-        catch (Exception exception)
-        {
-            Console.Error.WriteLine(exception);
-            return 1;
-        }
-        return 0;
-    }
-}
-
 sealed class NativeSkip : Exception
 {
     internal NativeSkip(string message) : base(message) { }
 }
 
-static class RecordOracle
+static partial class RecordOracle
 {
     const string FormatLine = "format 1";
     const string ScenarioName = "drop";
@@ -177,7 +134,9 @@ static class RecordOracle
             File.WriteAllText(Path.Combine(caseDir, pair.Key), pair.Value);
     }
 
-    static Captured Capture(string revision)
+    static Captured Capture(string revision) => Capture(revision, 0);
+
+    static Captured Capture(string revision, double physicsRateHz)
     {
         NativeIdentity native = RequireAnchor();
         string cacheDir = Path.Combine(Path.GetTempPath(), "harness-sculpt-cache");
@@ -204,8 +163,11 @@ static class RecordOracle
             UsesShot = source.UsesShot,
             AllowsTerrainFile = source.AllowsTerrainFile,
         };
-        RunResult result = Harness.Run(scenario, new HarnessOptions());
-        host.Finish(result);
+        var options = new HarnessOptions();
+        if (physicsRateHz > 0)
+            options.PhysicsRateHz = physicsRateHz;
+        RunResult result = Harness.Run(scenario, options);
+        host.Finish(result, physicsRateHz);
         ConfirmLoaded(native);
         int cacheAfter = CacheFiles(cacheDir).Count;
         string cacheHash = HashBytes(CacheBytes(cacheDir));
@@ -556,6 +518,7 @@ static class RecordOracle
         bool _warmUp;
         bool _simulatorPrims;
         bool _regionMesher;
+        string _mesherType = "";
         string _presetsBeforeSetup = "";
         readonly List<bool> _awake = new();
 
@@ -600,6 +563,7 @@ static class RecordOracle
             _materials = Materials(_actor);
             _config = ConfigText(scene);
             _regionMesher = run.Mesher != null;
+            _mesherType = run.Mesher == null ? "" : run.Mesher.GetType().FullName ?? "";
             (_effectiveRate, _effectiveWarning, _effectiveNote) = Effective(scene, (float)run.Dt);
             _dt = run.Dt;
             run.Cleanups.Add(() => OnCleanup(run));
@@ -625,7 +589,7 @@ static class RecordOracle
             _stepTicks.Add(null);
         };
 
-        internal void Finish(RunResult result)
+        internal void Finish(RunResult result, double expectedPhysicsRate)
         {
             if (result.Samples.Count == 0)
                 throw new InvalidOperationException("drop produced no samples");
@@ -637,8 +601,14 @@ static class RecordOracle
                 throw new InvalidOperationException("drop produced no terrain collider");
             if (Math.Abs(result.RateHz - 11.0) > 0.0)
                 throw new InvalidOperationException("drop heartbeat was not 11 Hz");
-            if (result.PhysicsRateHz != 0.0)
-                throw new InvalidOperationException("drop physics rate was not 0");
+            if (result.PhysicsRateHz != expectedPhysicsRate)
+            {
+                if (expectedPhysicsRate == 0.0)
+                    throw new InvalidOperationException("drop physics rate was not 0");
+                throw new InvalidOperationException(
+                    "drop physics rate was " + result.PhysicsRateHz.ToString("R", CultureInfo.InvariantCulture)
+                    + ", not " + expectedPhysicsRate.ToString("R", CultureInfo.InvariantCulture));
+            }
             if (_awake.Count != result.Samples.Count)
                 throw new InvalidOperationException("awake flags and samples differ");
         }
@@ -778,6 +748,7 @@ static class RecordOracle
                 WarmUp = _warmUp,
                 SimulatorPrims = _simulatorPrims,
                 RegionMesher = _regionMesher,
+                MesherType = _mesherType,
                 PresetsBeforeSetup = _presetsBeforeSetup,
                 CacheFiles = cacheFiles,
                 CacheHash = cacheHash,
@@ -1029,6 +1000,7 @@ sealed class Captured
     internal bool WarmUp;
     internal bool SimulatorPrims;
     internal bool RegionMesher;
+    internal string MesherType;
     internal string PresetsBeforeSetup;
     internal int CacheFiles;
     internal string CacheHash;

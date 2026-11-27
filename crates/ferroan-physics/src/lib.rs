@@ -47,4 +47,6 @@ mod jolt_config_oracle;
 #[cfg(test)]
 mod jolt_file_oracle;
 #[cfg(test)]
+mod jolt_matched_oracle;
+#[cfg(test)]
 mod jolt_record_oracle;

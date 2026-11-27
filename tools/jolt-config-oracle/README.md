@@ -70,7 +70,8 @@ from `JoltPhysicsBackend.Initialize`, which increments the refcount in the
 same lock, and `Init` then calls `JPH_Init`. A zero refcount and an unmapped
 `joltc` mean that call did not happen. The project reference may load the
 managed assembly that references `JoltPhysics.Native`. Linking joltc is not
-the test. `cargo xtask jolt generate` and `jolt verify` stay on P3.0.
+the test. `cargo xtask jolt generate` and `jolt verify` are the matched-native
+wrapper (P3.0), not this producer.
 
 `cargo xtask jolt record` writes `fixtures/jolt-record/`.
 `cargo xtask jolt record-verify` runs the pinned harness again and requires
