@@ -2,6 +2,8 @@
 
 Ferroan ports from, and checks against, these pinned revisions. The maintainers keep clean, read-only checkouts of them under `~/Git/reference/` (the paths below are relative to that folder). Never build in, edit or commit to a reference checkout; copy what you need into a worktree or `.scratch/`.
 
+Oracle, live, Docker and the console client check the revision out in a task-owned clone under `.scratch/`. They do not build the shared checkout's current HEAD. The revision recorded in a fixture is that clone's `git rev-parse HEAD`. If the pin cannot be checked out, the command stops and names the shared checkout's HEAD and the pin.
+
 To move a pin, open a PR that changes this file and says why, and check what changed between the old and new revisions. For each bug in [TRANQUILLITY_BUGS.md](TRANQUILLITY_BUGS.md) fixed between the two revisions, regenerate the oracles and fixtures that touch it against the fixed behavior, change Ferroan to match, and move its row to Fixed.
 
 | Checkout | Repository | Revision | Licence | Use |

@@ -574,7 +574,7 @@ fn build_linux_locked() -> Result<String, String> {
     let ferrobot = crate::ferrobot_build::build()?;
     let pin = read_pin()?;
     let reference = tranquillity_reference()?;
-    require_clean_pin(&reference, &pin)?;
+    require_clean_source(&reference, &pin)?;
     let src = prepare_source(&reference, &pin)?;
     let capture = repo_root().join("tools/capture/tranquillity-capture.patch");
     let stamp_text = format!(
@@ -587,6 +587,7 @@ fn build_linux_locked() -> Result<String, String> {
     if binary.is_file()
         && grid.is_file()
         && fs::read_to_string(&stamp).ok().as_deref() == Some(stamp_text.as_str())
+        && git(&src, &["rev-parse", "HEAD"]).ok().as_deref() == Some(pin.as_str())
     {
         return Ok(format!(
             "live: build is current\nbinary: {}\ngrid: {}\nferrobot: {}",
@@ -1621,20 +1622,23 @@ fn expand_user(path: &str) -> PathBuf {
 }
 
 #[cfg(target_os = "linux")]
-fn require_clean_pin(reference: &Path, pin: &str) -> Result<(), String> {
+fn require_clean_source(reference: &Path, pin: &str) -> Result<(), String> {
     let head = git(reference, &["rev-parse", "HEAD"])?;
-    if head != pin {
-        return Err(format!(
-            "OpenSim-Tranquillity is at {head}, docs/REFERENCES.md pins {pin}"
-        ));
-    }
     let status = git(reference, &["status", "--porcelain"])?;
-    if !status.is_empty() {
-        return Err(format!(
-            "OpenSim-Tranquillity checkout is not clean; the harness only reads it:\n{status}"
-        ));
+    if status.is_empty() {
+        return Ok(());
     }
-    Ok(())
+    let dirty =
+        format!("The reference checkout is not clean; the harness only reads it:\n{status}");
+    let detail = if head == pin {
+        dirty
+    } else {
+        format!(
+            "{}\n{dirty}",
+            crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, pin)
+        )
+    };
+    Err(format!("{}: {detail}", reference.display()))
 }
 
 #[cfg(target_os = "linux")]
@@ -1686,7 +1690,16 @@ fn reset_source(src: &Path, pin: &str) -> Result<(), String> {
     {
         return Err("refusing to modify the reference checkout".to_string());
     }
-    git(src, &["checkout", "--detach", pin])?;
+    let source = tranquillity_reference()?;
+    let head = git(&source, &["rev-parse", "HEAD"])?;
+    crate::oracle_reference::fetch_pin(src, &source, "OpenSim-Tranquillity", pin, &head)?;
+    if let Err(error) = git(src, &["checkout", "--force", "--detach", pin]) {
+        return Err(format!(
+            "{}: {} ({error})",
+            source.display(),
+            crate::oracle_reference::mismatch("OpenSim-Tranquillity", &head, pin)
+        ));
+    }
     git(src, &["reset", "--hard", pin])?;
     git(src, &["clean", "-fdx"])?;
     Ok(())
