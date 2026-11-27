@@ -71,11 +71,16 @@ pub fn clip_bounding_size(region_x: i32, region_y: i32, size_x: f32, size_y: f32
 ///
 /// `rotation_degrees` is the console angle. Cosine and sine are taken first.
 /// A negative angle then gains 360 before the 0, 90, 180 and 270 tests, so
-/// −90 uses the 270 path. Other angles round half to even, which is
-/// `Math.Round(double)`. Displacement X and Y are floored. Z is added only
-/// after the mask test. The C# rotation loops run one index past the
-/// temporary map; that write throws and is discarded, so this loop stays in
-/// range.
+/// −90 uses the 270 path. Other angles take the non-orthogonal `Math.Round`
+/// path. Displacement X and Y are floored. Z is added only after the mask
+/// test. The C# rotation loops run one index past the temporary map; that
+/// write throws and is discarded, so this loop stays in range.
+///
+/// `incoming` has edges that are multiples of 256, which is what `LoadStream`
+/// returns. A debug build asserts that. The window placement and the
+/// destination cell use wrapping `int` adds, as C# does in an unchecked
+/// context: a floor of 3e9 saturates the cast, the add wraps, and the cell
+/// is skipped.
 pub fn merge_with_bounding(
     destination: &mut Heightmap,
     incoming: &Heightmap,
@@ -91,6 +96,10 @@ pub fn merge_with_bounding(
     if base_x <= 0 || base_y <= 0 || dest_x <= 0 || dest_y <= 0 {
         return Err(TerrainError::Raw32);
     }
+    debug_assert!(
+        base_x % 256 == 0 && base_y % 256 == 0,
+        "incoming edge must be a multiple of 256"
+    );
     let offset_x = base_x / 4;
     let offset_y = base_y / 4;
     let tmp_x = base_x.checked_add(base_x / 2).ok_or(TerrainError::Raw32)?;
@@ -151,21 +160,28 @@ pub fn merge_with_bounding(
     let disp_x = floor_to_i32(displacement[0]);
     let disp_y = floor_to_i32(displacement[1]);
     let disp_z = displacement[2];
-    let start_x = clamp_window(floor_to_i32(bounding_origin[0]) + offset_x, tmp_x);
-    let start_y = clamp_window(floor_to_i32(bounding_origin[1]) + offset_y, tmp_y);
+    // Unchecked C# `int` adds. `floor_to_i32` already saturates, as the cast does.
+    let start_x = clamp_window(
+        floor_to_i32(bounding_origin[0]).wrapping_add(offset_x),
+        tmp_x,
+    );
+    let start_y = clamp_window(
+        floor_to_i32(bounding_origin[1]).wrapping_add(offset_y),
+        tmp_y,
+    );
     let end_x = clamp_window(
-        floor_to_i32(bounding_origin[0] + bounding_size[0]) + offset_x,
+        floor_to_i32(bounding_origin[0] + bounding_size[0]).wrapping_add(offset_x),
         tmp_x,
     );
     let end_y = clamp_window(
-        floor_to_i32(bounding_origin[1] + bounding_size[1]) + offset_y,
+        floor_to_i32(bounding_origin[1] + bounding_size[1]).wrapping_add(offset_y),
         tmp_y,
     );
 
     for y in start_y..end_y {
         for x in start_x..end_x {
-            let dx = x - start_x + disp_x;
-            let dy = y - start_y + disp_y;
+            let dx = x.wrapping_sub(start_x).wrapping_add(disp_x);
+            let dy = y.wrapping_sub(start_y).wrapping_add(disp_y);
             if dx >= 0 && dx < dest_x && dy >= 0 && dy < dest_y {
                 let src = (y as usize) * (tmp_x as usize) + (x as usize);
                 let Some(new_height) = temp.get(src).copied() else {
@@ -334,5 +350,63 @@ mod tests {
         let unclipped = merged("member.r32", STILL, 0.0, ORIGIN, [0.0, 512.0]);
         assert_eq!(unclipped, initial);
         assert_ne!(initial, loaded);
+
+        let rotation180 = merged("member.r32", STILL, 180.0, ORIGIN, REGION);
+        assert_eq!(rotation180, read("rotation180.r32"));
+        assert_ne!(rotation180, loaded);
+        assert_ne!(rotation180, rotation90);
+
+        let shifted = merged("member.r32", [3.5, -7.25, 2.5], 45.0, ORIGIN, REGION);
+        assert_eq!(shifted, read("rotation45-displacement.r32"));
+        assert_ne!(shifted, rotation45);
+
+        let mask_z = merged("mask-member.r32", [0.0, 0.0, 2.5], 0.0, ORIGIN, REGION);
+        assert_eq!(mask_z, read("mask-z.r32"));
+        assert_ne!(mask_z, mask);
+        let kept_z = f32::from_le_bytes(mask_z[at..at + 4].try_into().unwrap());
+        assert_eq!(kept_z.to_bits(), island.to_bits());
+
+        let fractional = merged("member.r32", STILL, 0.0, [-20.5, 30.7], [100.6, 50.2]);
+        assert_eq!(fractional, read("fractional.r32"));
+        assert_ne!(fractional, loaded);
+
+        let rotation_neg45 = merged("member.r32", STILL, -45.0, ORIGIN, REGION);
+        assert_eq!(rotation_neg45, read("rotation-neg45.r32"));
+        assert_ne!(rotation_neg45, rotation45);
+
+        let negative_x = merged("member.r32", [-3.5, 0.0, 0.0], 0.0, ORIGIN, REGION);
+        assert_eq!(negative_x, read("displacement-negx.r32"));
+        assert_ne!(negative_x, loaded);
+
+        let huge_displacement = merged("member.r32", [3e9, 0.0, 0.0], 0.0, ORIGIN, REGION);
+        assert_eq!(huge_displacement, read("displacement-3e9.r32"));
+        assert_eq!(huge_displacement, initial);
+        let huge_origin = merged("member.r32", STILL, 0.0, [3e9, 0.0], REGION);
+        assert_eq!(huge_origin, read("origin-3e9.r32"));
+        assert_eq!(huge_origin, initial);
+
+        let combination = merged("wide.r32", [4.5, -1.25, 0.5], 30.0, [100.0, 100.0], REGION);
+        assert_eq!(combination, read("combination.r32"));
+        assert_ne!(combination, bounding);
+
+        let mut wide_destination = map_from("initial-512.r32");
+        assert_eq!(
+            (wide_destination.width(), wide_destination.height()),
+            (512, 512)
+        );
+        let member = map_from("member.r32");
+        assert_eq!((member.width(), member.height()), (256, 256));
+        merge_with_bounding(
+            &mut wide_destination,
+            &member,
+            STILL,
+            0.0,
+            ORIGIN,
+            [512.0, 512.0],
+        )
+        .unwrap();
+        let varregion = le_bytes(&wide_destination);
+        assert_eq!(varregion, read("varregion.r32"));
+        assert_ne!(varregion, read("initial-512.r32"));
     }
 }

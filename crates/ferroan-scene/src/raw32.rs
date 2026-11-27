@@ -52,7 +52,10 @@ use crate::height::{Heightmap, MAX_EDGE};
 const REGION: i32 = 256;
 
 /// `.r32` and `.f32` are the same RAW32 loader (`TerrainModule.cs` 735–736).
-/// `EndsWith` is ordinal, so the suffix case matches.
+/// Pin8's `EndsWith` is culture-sensitive at `TerrainModule.cs` 485. Ferroan
+/// matches the suffix with ordinal `ends_with` and refuses a name that matches
+/// `.r32` only through an ICU ignorable code point. Q216b records that
+/// difference as TB210, and the decision, when the walk uses this predicate.
 pub fn is_raw32_name(filename: &str) -> bool {
     filename.ends_with(".r32") || filename.ends_with(".f32")
 }

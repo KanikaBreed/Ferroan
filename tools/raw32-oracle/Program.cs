@@ -4,6 +4,7 @@
 using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Text;
+using Nini.Config;
 using OpenMetaverse;
 using OpenSim.Region.CoreModules.World.Archiver;
 using OpenSim.Region.CoreModules.World.Terrain;
@@ -89,7 +90,35 @@ byte[] f32Loaded = LoadOptions(archiver, terrain, scene, initial, f32Path);
 File.WriteAllBytes(Path.Combine(outDir, "f32.r32"), f32Loaded);
 byte[] clip = LoadOptions(archiver, terrain, scene, initial, oarPath, "--bounding-size=<0,512,0>");
 File.WriteAllBytes(Path.Combine(outDir, "clip.r32"), clip);
-Console.WriteLine($"options displacement={displacement.Length} rotation90={rotation90.Length} rotation45={rotation45.Length} bounding={bounding.Length} mask={mask.Length} f32={f32Loaded.Length} clip={clip.Length}");
+byte[] rotation180 = LoadOptions(archiver, terrain, scene, initial, oarPath, "--rotation=180");
+File.WriteAllBytes(Path.Combine(outDir, "rotation180.r32"), rotation180);
+byte[] rotation45Disp = LoadOptions(archiver, terrain, scene, initial, oarPath, "--rotation=45", "--displacement=<3.5,-7.25,2.5>");
+File.WriteAllBytes(Path.Combine(outDir, "rotation45-displacement.r32"), rotation45Disp);
+byte[] maskZ = LoadOptions(archiver, terrain, scene, initial, maskPath, "--displacement=<0,0,2.5>");
+File.WriteAllBytes(Path.Combine(outDir, "mask-z.r32"), maskZ);
+byte[] fractional = LoadOptions(archiver, terrain, scene, initial, oarPath, "--bounding-origin=<-20.5,30.7,0>", "--bounding-size=<100.6,50.2,0>");
+File.WriteAllBytes(Path.Combine(outDir, "fractional.r32"), fractional);
+byte[] rotationNeg45 = LoadOptions(archiver, terrain, scene, initial, oarPath, "--rotation=-45");
+File.WriteAllBytes(Path.Combine(outDir, "rotation-neg45.r32"), rotationNeg45);
+byte[] displacementNegX = LoadOptions(archiver, terrain, scene, initial, oarPath, "--displacement=<-3.5,0,0>");
+File.WriteAllBytes(Path.Combine(outDir, "displacement-negx.r32"), displacementNegX);
+byte[] displacement3e9 = LoadOptions(archiver, terrain, scene, initial, oarPath, "--displacement=<3e9,0,0>");
+File.WriteAllBytes(Path.Combine(outDir, "displacement-3e9.r32"), displacement3e9);
+byte[] origin3e9 = LoadOptions(archiver, terrain, scene, initial, oarPath, "--bounding-origin=<3e9,0,0>");
+File.WriteAllBytes(Path.Combine(outDir, "origin-3e9.r32"), origin3e9);
+byte[] combination = LoadOptions(archiver, terrain, scene, initial, widePath, "--rotation=30", "--displacement=<4.5,-1.25,0.5>", "--bounding-origin=<100,100,0>");
+File.WriteAllBytes(Path.Combine(outDir, "combination.r32"), combination);
+
+// Tile (1000, 1000) is the 256 m scene above. A second region on that tile overlaps it.
+var wideScene = helpers.SetupScene("Raw32Wide", UUID.Random(), 1002, 1002, 512, 512, new IniConfigSource());
+SceneHelpers.SetupSceneModules(wideScene, new TerrainModule(), new ArchiverModule());
+var wideArchiver = (ArchiverModule)wideScene.RequestModuleInterface<IRegionArchiverModule>();
+var wideTerrain = (TerrainModule)wideScene.RequestModuleInterface<ITerrainModule>();
+byte[] initial512 = Save(wideTerrain, "initial-512.r32");
+File.WriteAllBytes(Path.Combine(outDir, "initial-512.r32"), initial512);
+byte[] varregion = LoadOptions(wideArchiver, wideTerrain, wideScene, initial512, oarPath);
+File.WriteAllBytes(Path.Combine(outDir, "varregion.r32"), varregion);
+Console.WriteLine($"options displacement={displacement.Length} rotation90={rotation90.Length} rotation45={rotation45.Length} bounding={bounding.Length} mask={mask.Length} f32={f32Loaded.Length} clip={clip.Length} wide={initial512.Length}");
 
 var raw = new RAW32();
 byte[] streamed;
@@ -197,13 +226,33 @@ if (!f32Loaded.AsSpan().SequenceEqual(loaded) || !clip.AsSpan().SequenceEqual(lo
     Console.WriteLine("the .f32 load or the clipped bounding size differs from the default load");
     return 11;
 }
-foreach (byte[] saved in new[] { displacement, rotation90, rotation45, rotation270, rotationNeg90, bounding, mask, f32Loaded, clip })
+foreach (byte[] saved in new[] { displacement, rotation90, rotation45, rotation270, rotationNeg90, bounding, mask, f32Loaded, clip, rotation180, rotation45Disp, maskZ, fractional, rotationNeg45, displacementNegX, displacement3e9, origin3e9, combination })
 {
     if (saved.Length != 256 * 256 * 4)
     {
         Console.WriteLine($"a merged save is {saved.Length} bytes");
         return 12;
     }
+}
+if (!Distinct(rotation180, loaded) || !Distinct(rotation180, rotation90))
+{
+    Console.WriteLine("rotation 180 matched a load it must not");
+    return 13;
+}
+if (!maskZ.AsSpan(maskAt, 4).SequenceEqual(initial.AsSpan(maskAt, 4)) || maskZ.AsSpan().SequenceEqual(mask))
+{
+    Console.WriteLine("mask displacement Z changed the masked cell or left the rest of the map");
+    return 14;
+}
+if (!displacement3e9.AsSpan().SequenceEqual(initial) || !origin3e9.AsSpan().SequenceEqual(initial))
+{
+    Console.WriteLine("a 3e9 displacement or bounding origin changed the map");
+    return 15;
+}
+if (initial512.Length != 512 * 512 * 4 || varregion.Length != 512 * 512 * 4 || varregion.AsSpan().SequenceEqual(initial512))
+{
+    Console.WriteLine($"the 512 destination load is initial {initial512.Length} merged {varregion.Length}");
+    return 16;
 }
 
 Console.WriteLine("load oar matches LoadStream");
@@ -230,7 +279,11 @@ static byte[] LoadOptions(ArchiverModule archiver, TerrainModule terrain, Scene 
 
 static void Restore(Scene scene, byte[] initial)
 {
-    const int edge = 256;
+    int edge = scene.Heightmap.Width;
+    if (initial.Length != edge * edge * 4 || scene.Heightmap.Height != edge)
+    {
+        throw new InvalidOperationException($"heightmap save is {initial.Length} bytes for edge {edge}");
+    }
     for (int y = 0; y < edge; y++)
     {
         for (int x = 0; x < edge; x++)
