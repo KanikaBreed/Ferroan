@@ -115,12 +115,29 @@ pub struct OarReport {
 }
 
 /// Load the control file and map every later member the way Pin8 does.
+/// No member body after the control file is kept.
 pub fn load_oar(
     root: &SimulatorRegion,
     scenes: &[SimulatorRegion],
     bytes: &[u8],
     source: OarSource,
 ) -> OarReport {
+    load_oar_with(root, scenes, bytes, source, |_, _, _, _, _| false)
+}
+
+/// [`load_oar`] with a keep callback, for a later row that reads selected
+/// members. `keep` is the archive path, the tar type, the declared size, the
+/// region-relative path and `use_entry`. It runs before the body is read.
+pub fn load_oar_with<K>(
+    root: &SimulatorRegion,
+    scenes: &[SimulatorRegion],
+    bytes: &[u8],
+    source: OarSource,
+    keep: K,
+) -> OarReport
+where
+    K: FnMut(&str, &str, i32, &str, bool) -> bool,
+{
     match source {
         OarSource::GzipPath => load_from(
             root,
@@ -128,7 +145,7 @@ pub fn load_oar(
             tar::Session::new(MultiGzDecoder::new(bytes)),
             true,
             || tar::Session::new(MultiGzDecoder::new(bytes)),
-            |_, _, _| false,
+            keep,
         ),
         OarSource::TarSeek => load_from(
             root,
@@ -136,7 +153,7 @@ pub fn load_oar(
             tar::Session::new(Cursor::new(bytes)),
             true,
             || tar::Session::new(Cursor::new(bytes)),
-            |_, _, _| false,
+            keep,
         ),
         OarSource::TarNoSeek => load_from(
             root,
@@ -144,7 +161,7 @@ pub fn load_oar(
             tar::Session::new(Cursor::new(bytes)),
             false,
             || tar::Session::new(Cursor::new(bytes)),
-            |_, _, _| false,
+            keep,
         ),
     }
 }
@@ -160,7 +177,7 @@ fn load_from<R, F, K>(
 where
     R: Read,
     F: FnOnce() -> tar::Session<R>,
-    K: FnMut(&str, &str, i32) -> bool,
+    K: FnMut(&str, &str, i32, &str, bool) -> bool,
 {
     let mut incoming = control::default_size_bits();
     let found = match find_control(&mut session) {
@@ -220,8 +237,9 @@ fn find_control<R: Read>(session: &mut tar::Session<R>) -> Result<Found, String>
     }
 }
 
-/// `keep` sees the archive path, the tar type and the declared size. It does
-/// not see the body. A directory is skipped and is not offered to `keep`.
+/// `keep` sees the archive path, the tar type, the declared size, the
+/// region-relative path and `use_entry`. It does not see the body. A directory
+/// is skipped and is not offered to `keep`.
 fn walk<R, K>(
     session: &mut tar::Session<R>,
     state: &control::Scenes,
@@ -229,7 +247,7 @@ fn walk<R, K>(
 ) -> (Vec<OarEntry>, Option<String>)
 where
     R: Read,
-    K: FnMut(&str, &str, i32) -> bool,
+    K: FnMut(&str, &str, i32, &str, bool) -> bool,
 {
     let mut entries = Vec::new();
     loop {
@@ -256,7 +274,7 @@ where
             continue;
         }
         let (use_entry, scene_id, relative) = state.region_from_path(&member.path);
-        let body = if keep(&member.path, member.kind, member.size) {
+        let body = if keep(&member.path, member.kind, member.size, &relative, use_entry) {
             if let Err(error) = tar::kept_limit(&relative, member.size) {
                 return (entries, Some(error));
             }
@@ -525,7 +543,7 @@ mod tests {
     fn load_bytes<R, K>(bytes: R, keep: K) -> OarReport
     where
         R: Read,
-        K: FnMut(&str, &str, i32) -> bool,
+        K: FnMut(&str, &str, i32, &str, bool) -> bool,
     {
         let root = SimulatorRegion {
             id: Uuid::nil(),
@@ -549,7 +567,7 @@ mod tests {
         bytes.extend(header_only("terrains/r.r32", declared));
         let _guard = tar::LIMIT_TEST.lock().unwrap();
         let before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
-        let report = load_bytes(PanicAfter::new(bytes), |path, _, _| {
+        let report = load_bytes(PanicAfter::new(bytes), |path, _, _, _, _| {
             path.starts_with("terrains/")
         });
         let error = report.error.expect("class cap");
@@ -565,7 +583,7 @@ mod tests {
         bytes.extend(header_only("terrains/r.r32", declared));
         let _guard = tar::LIMIT_TEST.lock().unwrap();
         let before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
-        let report = load_bytes(Cursor::new(bytes), |_, _, _| false);
+        let report = load_bytes(Cursor::new(bytes), |_, _, _, _, _| false);
         assert!(report.error.is_none(), "{:?}", report.error);
         assert_eq!(limit_hits(ferroan_diag::OAR_TERRAIN_BYTES), before);
         let terrain = report
@@ -584,7 +602,7 @@ mod tests {
         let _guard = tar::LIMIT_TEST.lock().unwrap();
         let before = limit_hits(ferroan_diag::OAR_MEMBER_BYTES);
         let class_before = limit_hits(ferroan_diag::OAR_TERRAIN_BYTES);
-        let report = load_bytes(PanicAfter::new(bytes), |_, _, _| true);
+        let report = load_bytes(PanicAfter::new(bytes), |_, _, _, _, _| true);
         let error = report.error.expect("member cap");
         assert!(error.contains(ferroan_diag::OAR_MEMBER_BYTES), "{error}");
         assert!(!error.contains(ferroan_diag::OAR_TERRAIN_BYTES), "{error}");
@@ -599,7 +617,7 @@ mod tests {
         let before = limit_hits(ferroan_diag::OAR_CONTROL_BYTES);
         let report = load_bytes(
             PanicAfter::new(header_only("archive.xml", declared)),
-            |_, _, _| true,
+            |_, _, _, _, _| true,
         );
         let error = report.error.expect("control cap");
         assert!(error.contains(ferroan_diag::OAR_CONTROL_BYTES), "{error}");
@@ -611,7 +629,9 @@ mod tests {
         let mut bytes = tar_member("archive.xml", control_xml());
         bytes.extend(tar_member("notes/a.txt", b"hello"));
         bytes.extend(tar_member("notes/b.txt", b"world"));
-        let report = load_bytes(Cursor::new(bytes), |path, _, _| path.ends_with("b.txt"));
+        let report = load_bytes(Cursor::new(bytes), |path, _, _, _, _| {
+            path.ends_with("b.txt")
+        });
         assert!(report.error.is_none(), "{:?}", report.error);
         let body = |path: &str| {
             report
@@ -624,6 +644,29 @@ mod tests {
         };
         assert!(body("notes/a.txt").is_empty());
         assert_eq!(body("notes/b.txt"), b"world");
+    }
+
+    #[test]
+    fn keep_sees_the_region_relative_path_and_use_entry() {
+        let mut bytes = tar_member("archive.xml", control_xml());
+        bytes.extend(tar_member("notes/b.txt", b"world"));
+        let report = load_bytes(
+            Cursor::new(bytes),
+            |_path, _kind, _size, relative, use_entry| {
+                assert_eq!(relative, "notes/b.txt");
+                assert!(use_entry);
+                true
+            },
+        );
+        assert!(report.error.is_none(), "{:?}", report.error);
+        let kept = report
+            .entries
+            .iter()
+            .find(|entry| entry.path == "notes/b.txt")
+            .unwrap();
+        assert_eq!(kept.body, b"world");
+        assert_eq!(kept.relative, "notes/b.txt");
+        assert!(kept.use_entry);
     }
 
     fn tar_file(path: &str, data: &[u8]) -> Vec<u8> {
