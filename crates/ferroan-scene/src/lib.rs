@@ -94,6 +94,7 @@ pub mod parcels;
 mod payloads;
 pub mod prim_update;
 pub mod prioritizer;
+mod raw32;
 mod settings;
 mod store;
 mod stored_scene;
@@ -118,8 +119,9 @@ pub use entity_queue::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    DeleteRights, HopReturn, Leaving, LocalTeleport, MovedAway, ParcelSender, Pending, Presence,
-    TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink, landed_z,
+    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, DeleteRights, HopReturn, Leaving, LocalTeleport,
+    MovedAway, ParcelSender, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame,
+    ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
@@ -133,6 +135,7 @@ pub use payloads::{
     ObjectAnimation, PhysicsInertia, RenderMaterials, Vehicle,
 };
 pub use prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
+pub use raw32::load_raw32;
 pub use settings::{RegionSettings, SettingsSource, SpawnPoint, open_region_settings};
 pub use store::{TerrainSource, WorldMap, load_world_map, open_terrain};
 pub use walk::AVATAR_SIZE_Z;

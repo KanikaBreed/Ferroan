@@ -1,5 +1,7 @@
 format 1
 revision c401bceecd1684832ae8ba86a31b5ee01a4ded7b
 compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs
+compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs
 
 note-dilation
+character

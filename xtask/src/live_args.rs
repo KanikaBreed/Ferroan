@@ -522,6 +522,16 @@ fn enforce_flags(
     }
     // The Pin8 capture needs basicphysics. The Ferroan compare uses the same
     // scenario on the Ferroan home region and does not select that engine.
+    // Child view keeps basicphysics when Ferroan is home. The neighbour stays C#.
+    if matches!(policy, Policy::ChildView) {
+        if !grid || !flags.basic_physics {
+            return Err(ParseFail::Message(
+                "use live run child-view grid --physics basicphysics for the Pin8 capture"
+                    .to_string(),
+            ));
+        }
+        return Ok(());
+    }
     if matches!(policy, Policy::ParcelTiming) {
         let pin8 = grid && flags.basic_physics && !flags.region_ferroan;
         let ferroan = grid && flags.region_ferroan && !flags.basic_physics;
@@ -826,7 +836,7 @@ mod tests {
                 ferroan.is_ok(),
                 matches!(
                     scenario,
-                    "prim-arrival" | "material-override" | "object-properties"
+                    "prim-arrival" | "material-override" | "object-properties" | "child-view"
                 )
             );
             assert!(run(&["run", scenario, "grid", "--physics", "basicphysics"]).basic_physics);
@@ -1108,7 +1118,21 @@ mod tests {
             );
             return;
         }
-        if matches!(scenario, "parcel-timing" | "parcel-properties") {
+        if scenario == "child-view" {
+            if !grid || !physics {
+                match parsed {
+                    Err(ParseFail::Message(text)) => assert_eq!(
+                        text,
+                        "use live run child-view grid --physics basicphysics for the Pin8 capture",
+                        "{label}"
+                    ),
+                    other => {
+                        panic!("{label} should require the child-view grid form, got {other:?}")
+                    }
+                }
+                return;
+            }
+        } else if matches!(scenario, "parcel-timing" | "parcel-properties") {
             let pin8 = grid && physics && !region;
             let ferroan = grid && region && !physics;
             if !pin8 && !ferroan {
@@ -1126,7 +1150,7 @@ mod tests {
             }
         } else if (matches!(
             scenario,
-            "prim-capture" | "object-cross" | "child-view" | "store-handoff" | "prim-load"
+            "prim-capture" | "object-cross" | "store-handoff" | "prim-load"
         ) || (matches!(
             scenario,
             "prim-arrival" | "material-override" | "object-properties"

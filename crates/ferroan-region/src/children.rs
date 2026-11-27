@@ -136,6 +136,42 @@ struct Destination {
 struct StagedClose {
     session: Uuid,
     end: RegionEnd,
+    /// The admission task still owns this close. A take that does not abort
+    /// that task leaves it here, so the DELETE goes out once.
+    in_flight: bool,
+    /// `close_child` has started. Aborting that await does not send again:
+    /// the neighbour may already have the DELETE.
+    started: bool,
+}
+
+fn parked_close(session: Uuid, end: RegionEnd) -> StagedClose {
+    StagedClose {
+        session,
+        end,
+        in_flight: false,
+        started: false,
+    }
+}
+
+/// A take returns closes no task still owns. An in-flight DELETE stays staged.
+fn take_ready(staged: &mut Vec<StagedClose>) -> Vec<(Uuid, RegionEnd)> {
+    let mut kept = Vec::new();
+    let mut ready = Vec::new();
+    for close in staged.drain(..) {
+        if close.in_flight {
+            kept.push(close);
+        } else {
+            ready.push((close.session, close.end));
+        }
+    }
+    *staged = kept;
+    ready
+}
+
+fn find_staged(book: &mut AgentBook, session: Uuid, region: Uuid) -> Option<&mut StagedClose> {
+    book.staged
+        .iter_mut()
+        .find(|close| close.session == session && close.end.region_id == region)
 }
 
 #[derive(Debug, Default)]
@@ -333,10 +369,7 @@ impl ChildBook {
                 }
             } else {
                 for end in close {
-                    book.staged.push(StagedClose {
-                        session: previous_session,
-                        end,
-                    });
+                    book.staged.push(parked_close(previous_session, end));
                 }
             }
         }
@@ -347,19 +380,15 @@ impl ChildBook {
 
     /// Closes owed to a session a later login replaced, including one staged
     /// when an admission guard dropped after logout. One take sends them.
-    /// Call this only after that admission task has stopped: the guard stages
-    /// the close as it drops, and an earlier take misses it.
+    /// A close whose admission task is still sending stays put: that task
+    /// sends the DELETE, and this take does not send it again.
     pub fn take_staged_closes(&self, agent: Uuid) -> Vec<(Uuid, RegionEnd)> {
         let mut books = self.lock();
         let (staged, finished) = {
             let Some(book) = books.agents.get_mut(&agent) else {
                 return Vec::new();
             };
-            let staged = book
-                .staged
-                .drain(..)
-                .map(|close| (close.session, close.end))
-                .collect();
+            let staged = take_ready(&mut book.staged);
             let finished = book.generations.is_empty() && book.staged.is_empty();
             (staged, finished)
         };
@@ -367,6 +396,108 @@ impl ChildBook {
             books.agents.remove(&agent);
         }
         staged
+    }
+
+    /// Every close that no admission task still owns. Shutdown calls this
+    /// after those tasks have stopped. An in-flight DELETE stays with its task.
+    pub(crate) fn take_every_staged_close(&self) -> Vec<(Uuid, Uuid, RegionEnd)> {
+        let mut books = self.lock();
+        let agents: Vec<Uuid> = books.agents.keys().copied().collect();
+        let mut found = Vec::new();
+        for agent in agents {
+            let finished = {
+                let Some(book) = books.agents.get_mut(&agent) else {
+                    continue;
+                };
+                for (session, end) in take_ready(&mut book.staged) {
+                    found.push((agent, session, end));
+                }
+                book.generations.is_empty() && book.staged.is_empty()
+            };
+            if finished {
+                books.agents.remove(&agent);
+            }
+        }
+        found
+    }
+
+    /// A close the drive has already decided. The destination is no longer
+    /// tracked. The close is in flight until its task finishes or is aborted
+    /// before the DELETE starts, so a far hop does not send it as well.
+    pub fn stage_decided_close(&self, agent: Uuid, session: Uuid, end: RegionEnd) {
+        let mut books = self.lock();
+        books
+            .agents
+            .entry(agent)
+            .or_default()
+            .staged
+            .push(StagedClose {
+                session,
+                end,
+                in_flight: true,
+                started: false,
+            });
+    }
+
+    /// The task has handed this close to HTTP. A later abort must not send it.
+    pub fn begin_decided_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id) {
+            close.started = true;
+        }
+    }
+
+    /// The task stopped before this close's DELETE started. Serve end may send it.
+    pub fn release_unsent_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id)
+            && !close.started
+        {
+            close.in_flight = false;
+        }
+    }
+
+    /// The DELETE returned and the pass did not ack it. A later take may send it.
+    pub fn release_answered_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(close) = find_staged(book, session, end.region_id) {
+            close.in_flight = false;
+        }
+    }
+
+    /// Closes still recorded, including one a task is sending.
+    #[cfg(test)]
+    pub fn staged_outstanding(&self, agent: Uuid) -> usize {
+        let books = self.lock();
+        books
+            .agents
+            .get(&agent)
+            .map(|book| book.staged.len())
+            .unwrap_or(0)
+    }
+
+    /// The DELETE for one decided close returned. One that was not sent stays.
+    pub fn ack_decided_close(&self, agent: Uuid, session: Uuid, end: &RegionEnd) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        if let Some(index) = book
+            .staged
+            .iter()
+            .position(|close| close.session == session && close.end.region_id == end.region_id)
+        {
+            book.staged.remove(index);
+        }
     }
 
     /// Claim `end` for one admission. The seed is stored before the POST.
@@ -669,7 +800,7 @@ impl ChildBook {
         if stale {
             let session = generation_session(&books, agent, generation);
             if let Some(book) = books.agents.get_mut(&agent) {
-                book.staged.push(StagedClose { session, end });
+                book.staged.push(parked_close(session, end));
             }
             remove_destination(&mut books, agent, generation, region);
             return;
@@ -825,7 +956,7 @@ impl ChildBook {
         };
         if let Some(book) = books.agents.get_mut(&agent) {
             for end in stage {
-                book.staged.push(StagedClose { session, end });
+                book.staged.push(parked_close(session, end));
             }
         }
         if empty {
@@ -847,7 +978,18 @@ impl ChildBook {
 
     /// The hop reached this neighbour. Logout does not close it while it is
     /// the remote root. A later admission completion announces once.
+    /// The stored size is left as it is.
     pub fn promote(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
+        self.promote_with(agent, end, seed, None);
+    }
+
+    /// [`Self::promote`] that stores this neighbour's footprint. A zero extent
+    /// stays the 256 m fallback. An existing destination takes the new size.
+    pub fn promote_sized(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: [u32; 2]) {
+        self.promote_with(agent, end, seed, Some(size));
+    }
+
+    fn promote_with(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: Option<[u32; 2]>) {
         let mut books = self.lock();
         let Some(book) = books.agents.get_mut(&agent) else {
             return;
@@ -863,6 +1005,9 @@ impl ChildBook {
             if !seed.is_empty() {
                 destination.seed = seed.to_owned();
             }
+            if let Some(size) = size {
+                destination.size = known_region_size(size);
+            }
             return;
         }
         if generation_book.by_region.len() >= CHILD_DESTINATIONS {
@@ -877,7 +1022,7 @@ impl ChildBook {
                 phase: Phase::Open,
                 promoted: true,
                 announced: false,
-                size: [DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE],
+                size: known_region_size(size.unwrap_or([DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE])),
             },
         );
     }
@@ -920,6 +1065,116 @@ impl ChildBook {
         }
         known
     }
+
+    /// Current-generation destinations. `open` is the phase the position
+    /// update may use. A pending claim is included so a later pass can tell
+    /// it from a neighbour that was never claimed.
+    pub fn tracked(&self, agent: Uuid) -> Vec<TrackedChild> {
+        let books = self.lock();
+        let Some(book) = books.agents.get(&agent) else {
+            return Vec::new();
+        };
+        let Some(generation) = book.generations.get(&book.current) else {
+            return Vec::new();
+        };
+        generation
+            .by_region
+            .values()
+            .map(|destination| TrackedChild {
+                end: destination.end.clone(),
+                promoted: destination.promoted,
+                open: destination.phase == Phase::Open,
+            })
+            .collect()
+    }
+
+    /// Stored footprint of one current-generation destination.
+    pub fn destination_size(&self, agent: Uuid, region: Uuid) -> Option<[u32; 2]> {
+        let books = self.lock();
+        let book = books.agents.get(&agent)?;
+        book.generations
+            .get(&book.current)?
+            .by_region
+            .get(&region)
+            .map(|destination| destination.size)
+    }
+
+    /// `SetNeighbourRegionSizeInfo` (`ScenePresence.cs` 2129–2138). An in-view
+    /// neighbour keeps the size this pass reported. A destination that is not
+    /// in the list falls back to [`DEFAULT_REGION_SIZE`], which is what a
+    /// cleared entry uses on the next close.
+    pub fn refresh_sizes(&self, agent: Uuid, visible: &[(Uuid, [u32; 2])]) {
+        let mut books = self.lock();
+        let Some(book) = books.agents.get_mut(&agent) else {
+            return;
+        };
+        let generation = book.current;
+        let Some(generation_book) = book.generations.get_mut(&generation) else {
+            return;
+        };
+        for destination in generation_book.by_region.values_mut() {
+            let reported = visible
+                .iter()
+                .find(|(region, _)| *region == destination.end.region_id)
+                .map(|(_, size)| *size);
+            destination.size = match reported {
+                Some(size) => known_region_size(size),
+                None => [DEFAULT_REGION_SIZE, DEFAULT_REGION_SIZE],
+            };
+        }
+    }
+
+    /// The neighbour left the root's view. An open child closes once, with
+    /// the session that claimed it. A pending admission closes when its POST
+    /// succeeds and is not closed twice. A promoted destination is the remote
+    /// root and stays.
+    pub fn leave_view(&self, agent: Uuid, region: Uuid) -> Admission {
+        let mut books = self.lock();
+        let Some(generation) = books.agents.get(&agent).map(|book| book.current) else {
+            return Admission::Quiet;
+        };
+        let Some((promoted, phase, end)) = books
+            .agents
+            .get(&agent)
+            .and_then(|book| book.generations.get(&generation))
+            .and_then(|generation_book| generation_book.by_region.get(&region))
+            .map(|destination| {
+                (
+                    destination.promoted,
+                    destination.phase,
+                    destination.end.clone(),
+                )
+            })
+        else {
+            return Admission::Quiet;
+        };
+        if promoted {
+            return Admission::Quiet;
+        }
+        match phase {
+            Phase::Open => {
+                let close = close_for(&books, agent, generation, end);
+                remove_destination(&mut books, agent, generation, region);
+                close
+            }
+            Phase::Pending | Phase::CloseWhenAccepted => {
+                if let Some(destination) = generation_mut(&mut books, agent, generation)
+                    .and_then(|generation_book| generation_book.by_region.get_mut(&region))
+                {
+                    destination.phase = Phase::CloseWhenAccepted;
+                }
+                Admission::Quiet
+            }
+        }
+    }
+}
+
+/// One destination of the current generation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TrackedChild {
+    pub end: RegionEnd,
+    pub promoted: bool,
+    pub open: bool,
 }
 
 /// The claiming generation no longer holds the destination because a
@@ -1953,6 +2208,96 @@ mod tests {
         assert!(book.seed(agent, wide.region_id).is_none());
     }
 
+    /// A stored size of 0 would put the child one cell to the left outside.
+    /// A zero extent is unknown and falls back to 256 m, so it stays.
+    #[test]
+    fn a_zero_size_child_beside_the_destination_stays_inside() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let beside = placed(2, 256, 256);
+        let destination = placed(9, 512, 256);
+        let Claim::New { .. } = book.claim_sized(agent, generation, beside.clone(), [0, 0]) else {
+            panic!("claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, beside.region_id),
+            Admission::Announce { .. }
+        ));
+        book.close_far(
+            agent,
+            &FarDestination {
+                end: destination,
+                size_x: DEFAULT_REGION_SIZE,
+                size_y: DEFAULT_REGION_SIZE,
+            },
+        );
+        assert!(
+            book.take_staged_closes(agent).is_empty(),
+            "a zero-size neighbour beside the destination was closed"
+        );
+    }
+
+    #[test]
+    fn promote_sized_stores_the_footprint_and_unsized_promote_leaves_it() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let existing = end(1);
+        let Claim::New { .. } = book.claim_sized(agent, generation, existing.clone(), [128, 128])
+        else {
+            panic!("claim");
+        };
+        book.promote_sized(agent, &existing, "seed", [512, 64]);
+        assert_eq!(
+            book.destination_size(agent, existing.region_id),
+            Some([512, 64])
+        );
+        book.promote(agent, &existing, "seed");
+        assert_eq!(
+            book.destination_size(agent, existing.region_id),
+            Some([512, 64])
+        );
+        let fresh = end(2);
+        book.promote_sized(agent, &fresh, "seed", [0, 300]);
+        assert_eq!(
+            book.destination_size(agent, fresh.region_id),
+            Some([256, 300])
+        );
+        let plain = end(3);
+        book.promote(agent, &plain, "seed");
+        assert_eq!(
+            book.destination_size(agent, plain.region_id),
+            Some([256, 256])
+        );
+    }
+
+    #[test]
+    fn refresh_sizes_keeps_the_reported_extent_and_clears_the_rest() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let wide = end(1);
+        let pending = end(2);
+        let Claim::New { .. } = book.claim_sized(agent, generation, wide.clone(), [512, 512])
+        else {
+            panic!("wide");
+        };
+        let Claim::New { .. } = book.claim_sized(agent, generation, pending.clone(), [128, 128])
+        else {
+            panic!("pending");
+        };
+        book.refresh_sizes(agent, &[(wide.region_id, [0, 400])]);
+        assert_eq!(
+            book.destination_size(agent, wide.region_id),
+            Some([256, 400])
+        );
+        assert_eq!(
+            book.destination_size(agent, pending.region_id),
+            Some([256, 256])
+        );
+    }
+
     /// claim_work(G1, C), attach(G2, S), claim(G2, C), accepted(G2) announces.
     /// G1's cancelled admission and its timeout must not close C: G2 owns it
     /// on the same session, and CloseAgent would accept that session.
@@ -2101,6 +2446,49 @@ mod tests {
             stop: CreateStop::Answered,
         };
         assert_eq!(PostReport::from_create(&accepted), PostReport::Accepted);
+    }
+
+    #[test]
+    fn leave_view_closes_an_open_child_and_holds_a_pending_one() {
+        let agent = Uuid::from_u128(4);
+        let generation = Uuid::from_u128(8);
+        let book = book_for(agent, generation);
+        let Claim::New { .. } = book.claim(agent, generation, end(1)) else {
+            panic!("open claim");
+        };
+        assert!(matches!(
+            book.accepted(agent, generation, Uuid::from_u128(1)),
+            Admission::Announce { .. }
+        ));
+        let Claim::New { .. } = book.claim(agent, generation, end(2)) else {
+            panic!("pending claim");
+        };
+        book.promote(agent, &end(3), "seed");
+        assert_eq!(
+            book.leave_view(agent, Uuid::from_u128(1)),
+            Admission::Close {
+                end: end(1),
+                session: session(),
+            }
+        );
+        assert!(book.seed(agent, Uuid::from_u128(1)).is_none());
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(2)), Admission::Quiet);
+        assert_eq!(
+            book.accepted(agent, generation, Uuid::from_u128(2)),
+            Admission::Close {
+                end: end(2),
+                session: session(),
+            }
+        );
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(3)), Admission::Quiet);
+        assert_eq!(
+            book.seed(agent, Uuid::from_u128(3)).as_deref(),
+            Some("seed")
+        );
+        let tracked = book.tracked(agent);
+        assert_eq!(tracked.len(), 1);
+        assert!(tracked[0].promoted);
+        assert_eq!(book.leave_view(agent, Uuid::from_u128(9)), Admission::Quiet);
     }
 
     fn dummy_view(agent: Uuid) -> NeighbourView {

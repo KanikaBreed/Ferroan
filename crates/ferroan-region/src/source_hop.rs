@@ -265,12 +265,12 @@ impl HopPresence {
         }
     }
 
-    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str) {
+    fn note_child(&self, agent: Uuid, end: &RegionEnd, seed: &str, size: [u32; 2]) {
         match self {
             Self::Idle => {}
-            Self::Live(state) => state.promote_child(agent, end, seed),
+            Self::Live(state) => state.promote_child_sized(agent, end, seed, size),
             #[cfg(test)]
-            Self::Seeded(book) => book.promote(agent, end, seed),
+            Self::Seeded(book) => book.promote_sized(agent, end, seed, size),
             #[cfg(test)]
             Self::Watch(_) => {}
         }
@@ -284,6 +284,15 @@ impl HopPresence {
             Self::Seeded(book) => book.take_staged_closes(agent),
             #[cfg(test)]
             Self::Watch(_) => Vec::new(),
+        }
+    }
+
+    async fn abort_admissions(&self, agent: Uuid) {
+        match self {
+            Self::Live(state) => state.abort_admissions(agent).await,
+            Self::Idle => {}
+            #[cfg(test)]
+            Self::Seeded(_) | Self::Watch(_) => {}
         }
     }
 
@@ -423,6 +432,13 @@ impl HopEnv {
     /// `ObjectPhysicsProperties` onto this agent's event queue. A missing agent is skipped.
     pub fn enqueue_event(&self, agent: Uuid, element: &[u8]) {
         let _ = self.caps.enqueue_raw_for(agent, element, "object-physics");
+    }
+
+    /// Stop this circuit's admission tasks and wait until each guard drops.
+    /// A cancelled admission stages its close when logout already won, and
+    /// the following [`Self::close_staged`] takes that close.
+    pub async fn abort_admissions(&self, agent: Uuid) {
+        self.presence.abort_admissions(agent).await;
     }
 
     /// Close children a replaced root left behind. The auth token is the session
@@ -675,7 +691,12 @@ async fn perform(work: HopWork<'_>) {
         // The hop owns this destination until this generation is root again.
         // Logout does not close the remote root. A late admission still
         // announces once.
-        presence.note_child(session.agent_id, &destination.end, &caps_path);
+        presence.note_child(
+            session.agent_id,
+            &destination.end,
+            &caps_path,
+            [destination.size_x, destination.size_y],
+        );
     }
     if outside {
         presence.wait_release(session.agent_id).await;
@@ -1020,6 +1041,49 @@ mod tests {
         let (at, _, up) = super::look_axes([f32::NAN, 1.0, 0.0]);
         assert_eq!(at, [1.0, 0.0, 0.0]);
         assert_eq!(up, [0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_hop_to_an_unclaimed_varregion_stores_its_size() {
+        let base = "http://127.0.0.1:9";
+        let region = Uuid::from_u128(9);
+        let server = ferroan_config::Config::parse(&format!(
+            "[Network]\nbind_ip_address=127.0.0.1\nhttp_listener_port=9000\n[GridService]\nGridServerURI={base}\n[PresenceService]\nPresenceServerURI={base}\n[GridUserService]\nGridUserServerURI={base}\n[Map]\nGenerateMaptiles=false\n"
+        ))
+        .unwrap();
+        let regions = ferroan_config::Config::parse(&format!(
+            "[Fixture Region]\nRegionUUID={region}\nLocation=1000,1000\nInternalAddress=127.0.0.1\nInternalPort=9000\nExternalHostName=127.0.0.1\n"
+        ))
+        .unwrap();
+        let config = crate::config::RegionConfig::from_configs(&server, &regions).unwrap();
+        let caps = ferroan_client::CapsRegistry::new(base).unwrap();
+        let (sender, _accepted) = tokio::sync::mpsc::channel(1);
+        let state = crate::simulation::SimulationState::new(&config, caps, sender);
+        let agent = Uuid::from_u128(1);
+        let generation = Uuid::from_u128(11);
+        let session = Uuid::from_u128(2);
+        state.child_book().attach(agent, generation, session);
+        state.seat_generation(agent, generation, session);
+        let end = RegionEnd {
+            server_uri: format!("{base}/"),
+            region_id: Uuid::from_u128(77),
+            name: "Var".to_string(),
+            loc_x: 768,
+            loc_y: 256,
+        };
+        HopPresence::live(state.clone()).note_child(agent, &end, "seed", [768, 512]);
+        assert_eq!(
+            state.child_book().destination_size(agent, end.region_id),
+            Some([768, 512])
+        );
+
+        let book = Arc::new(crate::children::ChildBook::new());
+        book.attach(agent, generation, session);
+        HopPresence::Seeded(Arc::clone(&book)).note_child(agent, &end, "seed", [768, 512]);
+        assert_eq!(
+            book.destination_size(agent, end.region_id),
+            Some([768, 512])
+        );
     }
 
     #[test]
