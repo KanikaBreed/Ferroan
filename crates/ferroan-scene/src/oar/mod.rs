@@ -696,7 +696,8 @@ mod tests {
     /// Pin8's record, adjusted where Ferroan deliberately differs.
     /// A throw carries the event's empty scene list (`OarFileLoaded`). Compact XML that
     /// skips the next element is loaded (D132). A culture-sensitive region
-    /// prefix is compared ordinally (D133, TB196).
+    /// prefix is compared ordinally (D133, TB196). Where both sides refuse a
+    /// third-review control file, the error text stays Ferroan's (D146).
     fn expected(case: &Value) -> Value {
         let mut value = case.clone();
         let object = value.as_object_mut().unwrap();
@@ -714,7 +715,12 @@ mod tests {
             object.remove(key);
         }
         if !case["error"].is_null() {
-            object.insert("error".to_string(), case["dearchive_error"].clone());
+            let error = case["name"]
+                .as_str()
+                .and_then(recorded_error)
+                .map(Value::from)
+                .unwrap_or_else(|| case["dearchive_error"].clone());
+            object.insert("error".to_string(), error);
             object.insert("loaded_scenes".to_string(), json!([]));
         }
         match case["name"].as_str() {
@@ -818,8 +824,32 @@ mod tests {
         assert!(report.loaded_scenes.is_empty(), "{name}");
         assert_eq!(
             report.error.as_deref(),
-            case["dearchive_error"].as_str(),
+            recorded_error(name).or_else(|| case["dearchive_error"].as_str()),
             "{name}"
         );
+    }
+
+    /// D146. Both sides refuse these archives. The text is Ferroan's.
+    fn recorded_error(name: &str) -> Option<&'static str> {
+        match name {
+            "p3-attr-lt" => Some("The input string '8<' was not in a correct format."),
+            "p3-attr-entity" => Some("Reference to undeclared entity 'foo'. Line 2, position 44."),
+            "p3-cdata-root" => Some("Data at the root level is invalid. Line 2, position 10."),
+            "p3-comment-unclosed" => Some(
+                "Unexpected end of file has occurred. The following elements are not closed: \
+                 archive. Line 11, position 10.",
+            ),
+            "p3-lone-cr" => Some("Data at the root level is invalid. Line 1, position 340."),
+            "p3-end-attr" => Some(
+                "Unexpected end of file has occurred. The following elements are not closed: \
+                 creation_info, archive. Line 6, position 19.",
+            ),
+            "p3-cut-attr" => Some("Unexpected end of file has occurred. Line 2, position 44."),
+            "p3-cut-name" => Some(
+                "Unexpected end of file has occurred. The following elements are not closed: \
+                 archive. Line 3, position 8.",
+            ),
+            _ => None,
+        }
     }
 }

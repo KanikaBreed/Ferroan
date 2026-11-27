@@ -571,6 +571,51 @@ internal static class Program
             using (var f = new FileStream(gp, FileMode.Append)) f.Write(Encoding.ASCII.GetBytes("garbage!garbage!"), 0, 16);
             cases.Add(Run("p2-gz-trailing-garbage", "p2-gz-trailing-garbage.oar", "gzip-path", gp, HomeRoot(), HomeScenes()));
         }
+        // Third-review probes.
+        {
+            string decl = "<?xml version=\"1.0\" encoding=\"utf-16\"?>\n";
+            string body = single.Substring(single.IndexOf("<archive"));
+            cases.Add(XmlCase(dir, "p3-doctype", decl + "<!DOCTYPE archive>\n" + body, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-doctype-subset", decl + "<!DOCTYPE archive [<!ENTITY e \"x\">]>\n" + body, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-doctype-entity", decl + "<!DOCTYPE archive [<!ENTITY e \"2\">]>\n" + body.Replace(idLine, "<id>&e;1111111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-doctype-inside", single.Replace("<creation_info>", "<!DOCTYPE x><creation_info>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-attr-charref", single.Replace("major_version=\"0\"", "major_version=\"&#48;\""), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-attr-lt", single.Replace("minor_version=\"8\"", "minor_version=\"8<\""), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-attr-entity", single.Replace("minor_version=\"8\"", "minor_version=\"&foo;\""), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-attr-nospace", single.Replace("major_version=\"0\" minor_version", "major_version=\"0\"minor_version"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cdata-end-text", single.Replace(idLine, "<id>1111]]>1111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cdata-nested", single.Replace(idLine, "<id><![CDATA[<![CDATA[x]]>]]></id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cdata-mixed", single.Replace(idLine, "<id><![CDATA[1111]]>1111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cdata-root", decl + "<![CDATA[x]]>" + body, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-ws-before-decl", "  " + single, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-ws-root", decl + "\n \t\r\n" + body + "\n\t \n", HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-comment-before-root", decl + "<!-- c -->\n" + body, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-comment-before-decl", "<!-- c -->" + single, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-comment-dashes", single.Replace("<creation_info>", "<!-- a -- b --><creation_info>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-comment-unclosed", single.Replace("</archive>", "<!-- open"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-empty", "", HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-only-decl", decl, HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-only-comment", "<!-- c -->", HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-name-digit", single.Replace("<creation_info>", "<creation_info><1x/>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-name-dash", single.Replace("<creation_info>", "<creation_info><-x/>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-lone-cr", single.Replace("\n", "\r") + "junk", HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-crlf", single.Replace("\n", "\r\n") + "junk", HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-charref-7digits", single.Replace(idLine, "<id>&#0000050;1111111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-charref-zero", single.Replace(idLine, "<id>&#0;</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-charref-surrogate", single.Replace(idLine, "<id>&#xD800;</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-charref-one", single.Replace(idLine, "<id>&#1;</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-pi-in-content", single.Replace(idLine, "<id>1111<?pi x?>1111-1111-1111-1111-111111111111</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-bare-amp", single.Replace(idLine, "<id>a & b</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-nul-text", single.Replace(idLine, "<id>a\u0000b</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-ctrl-text", single.Replace(idLine, "<id>a\u0001b</id>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-end-attr", single.Replace("</creation_info>", "</creation_info x=\"1\">"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-decl-version2", single.Replace("version=\"1.0\" encoding", "version=\"2.0\" encoding"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cut-attr", single.Substring(0, single.IndexOf("minor_version=\"8") + 16), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-cut-name", single.Substring(0, single.IndexOf("<creation_info") + 5), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-xml-pi-case", single.Replace("<creation_info>", "<?XML x?><creation_info>"), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-xmlns-default", single.Replace("<archive ", "<archive xmlns=\"urn:x\" "), HomeRoot(), HomeScenes(), null));
+            cases.Add(XmlCase(dir, "p3-ws-id", single.Replace(idLine, "<id> 11111111-1111-1111-1111-111111111111 </id>"), HomeRoot(), HomeScenes(), null));
+        }
     }
 
     static Case XmlCase(string dir, string name, string xml, Placed root, List<Placed> scenes, Action<TarArchiveWriter> more)
