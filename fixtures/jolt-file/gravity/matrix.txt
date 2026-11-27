@@ -1,0 +1,353 @@
+format 1
+method Buoyancy
+source JoltPrim.cs 1784-1819
+source JoltPrim.cs 2303-2332
+source JoltPrim.cs 2755-2767
+source JoltPrim.cs 2794-2810
+source HalcyonBasicForces.cs 103-104
+header HalcyonBasicForces.cs 1-33
+water not_used
+native not_called
+max_linear 43FA0000
+step_rate 447A0000
+gravity_z C11CE80A
+gravity_len 411CE80A
+threshold 3F7A1CAC
+clamp_modifier 501502F9
+clamp_max 474729CF
+clamp_min C74729CF
+function
+in 00000000 out 00000000
+in 80000000 out 80000000
+in BF800000 out BF800000
+in 3F79DB23 out 3F79DB23
+in 3F7A1CAB out 3F7A1CAB
+in 3F7A1CAC out 3F800000
+in 3F7AE148 out 3F800000
+in 3F7FFFFF out 3F800000
+in 3F800000 out 3F800000
+in 3FC00000 out 3FC00000
+in 7FC00001 out 7FC00001
+in 7F800000 out 7F800000
+in FF800000 out FF800000
+case boundary
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 3F800000
+child 0
+initial 00000000
+action buoyancy 00000000
+stored 00000000
+get 00000000
+active false
+activates 0
+writes 0
+action buoyancy 80000000
+stored 00000000
+get 00000000
+active false
+activates 0
+writes 0
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 1
+write 1 3F000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 0
+action buoyancy 00000000
+stored 00000000
+get 00000000
+active false
+activates 0
+writes 1
+write 1 3F800000
+action buoyancy 3F79DB23
+stored 3F79DB23
+get 3F79DB23
+active false
+activates 0
+writes 1
+write 1 3CC49BA0
+action buoyancy 3F7A1CAB
+stored 3F7A1CAB
+get 3F7A1CAB
+active false
+activates 0
+writes 1
+write 1 3CBC6AA0
+action buoyancy 3F7A1CAC
+stored 3F800000
+get 3F800000
+active false
+activates 0
+writes 1
+write 1 00000000
+action buoyancy 3F7AE148
+stored 3F800000
+get 3F800000
+active false
+activates 0
+writes 0
+action buoyancy 3F7FFFFF
+stored 3F800000
+get 3F800000
+active false
+activates 0
+writes 0
+action buoyancy 3F800000
+stored 3F800000
+get 3F800000
+active false
+activates 0
+writes 0
+action buoyancy 3FC00000
+stored 3FC00000
+get 3FC00000
+active false
+activates 0
+writes 1
+write 1 BF000000
+action buoyancy 7FC00001
+stored 3FC00000
+get 3FC00000
+active false
+activates 0
+writes 0
+action buoyancy 7F800000
+stored 3FC00000
+get 3FC00000
+active false
+activates 0
+writes 0
+action buoyancy FF800000
+stored 3FC00000
+get 3FC00000
+active false
+activates 0
+writes 0
+case second-life
+behaviour SecondLife
+physical true
+body 1
+valid true
+modifier 3F800000
+child 0
+initial 00000000
+action buoyancy 3F7AE148
+stored 3F7AE148
+get 3F7AE148
+active false
+activates 0
+writes 1
+write 1 3CA3D700
+action buoyancy 3F7A1CAC
+stored 3F7A1CAC
+get 3F7A1CAC
+active false
+activates 0
+writes 1
+write 1 3CBC6A80
+action buoyancy 3F800000
+stored 3F800000
+get 3F800000
+active false
+activates 0
+writes 1
+write 1 00000000
+case multiplier
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 40000000
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 1
+write 1 3F800000
+case clamp-high
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 501502F9
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 1
+write 1 474729CF
+case clamp-low
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier D01502F9
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 1
+write 1 C74729CF
+case not-physical
+behaviour InWorldz
+physical false
+body 1
+valid true
+modifier 3F800000
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 0
+case invalid-body
+behaviour InWorldz
+physical true
+body 0
+valid false
+modifier 3F800000
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 0
+case child
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 3F800000
+child 2
+initial 00000000
+action child 3E800000
+root_stored 3E800000
+child_stored 00000000
+child_get 3E800000
+active false
+activates 0
+writes 1
+write 1 3F400000
+action child 7FC00001
+root_stored 3E800000
+child_stored 00000000
+child_get 3E800000
+active false
+activates 0
+writes 0
+case vehicle
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 3F800000
+child 0
+initial 00000000
+action type 2
+stored 00000000
+get 00000000
+type_get 2
+active true
+activates 1
+writes 1
+write 1 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active true
+activates 0
+writes 0
+action type 0
+stored 3F000000
+get 3F000000
+type_get 0
+active false
+activates 0
+writes 1
+write 1 3F000000
+case child-vehicle
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 3F800000
+child 2
+initial 00000000
+action type 2
+stored 00000000
+get 00000000
+type_get 2
+active true
+activates 1
+writes 1
+write 1 00000000
+action child 3E800000
+root_stored 3E800000
+child_stored 00000000
+child_get 3E800000
+active true
+activates 0
+writes 0
+action type 0
+stored 3E800000
+get 3E800000
+type_get 0
+active false
+activates 0
+writes 1
+write 1 3F400000
+case unknown-type
+behaviour InWorldz
+physical true
+body 1
+valid true
+modifier 3F800000
+child 0
+initial 00000000
+action buoyancy 3F000000
+stored 3F000000
+get 3F000000
+active false
+activates 0
+writes 1
+write 1 3F000000
+action type 2
+stored 3F000000
+get 3F000000
+type_get 2
+active true
+activates 1
+writes 1
+write 1 00000000
+action type 7
+stored 3F000000
+get 3F000000
+type_get 0
+active false
+activates 0
+writes 1
+write 1 3F000000

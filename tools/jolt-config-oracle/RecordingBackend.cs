@@ -4,10 +4,13 @@
 // Records the character descriptor and the calls JoltCharacter makes while the
 // file oracle compiles it. Analytic box, sphere and cylinder constructors are
 // recorded only when RecordAnalytic is set. SetTerrain's heightfield cook is
-// recorded only when RecordTerrain is set. Every other backend method is
-// unexpected: this process must not reach JoltPhysicsBackend, and it must not
-// load joltc. RecordHeartbeat lets Simulate return without a native step. It
-// stays off for the character compile.
+// recorded only when RecordTerrain is set. Gravity-factor writes, and the
+// vehicle body's friction, damping, sleep, CCD and step-provider calls that
+// surround them, are recorded only when RecordGravity is set. Every other
+// backend method is unexpected: this process must not reach
+// JoltPhysicsBackend, and it must not load joltc. RecordHeartbeat lets
+// Simulate return without a native step. It stays off for the character
+// compile.
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -56,6 +59,14 @@ sealed class RecordingBackend : IPhysicsBackend
     internal ShapeId LastTerrainShape;
     internal Vector3 LastTerrainPosition;
 
+    // Off for the character compile. A gravity case sets this and records
+    // SetBodyGravityFactor. The vehicle path's other body calls are ignored
+    // only while this is set, so a character compile still fails closed.
+    internal bool RecordGravity;
+    internal int Activates;
+    internal readonly List<GravityWrite> GravityWrites = new();
+
+    internal readonly record struct GravityWrite(uint Body, float Factor);
     internal readonly record struct Movement(Vector3 Velocity, bool Jump, bool Flying);
     internal readonly record struct ShapeCall(float HalfHeight, float Radius);
 
@@ -194,7 +205,9 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public IDisposable AttachStepForceProvider(BodyId body, IStepForceProvider provider)
     {
-        return Unexpected<IDisposable>();
+        if (!RecordGravity)
+            return Unexpected<IDisposable>();
+        return new GravityAttachment();
     }
     public void SetBodyShape(BodyId body, ShapeId shape, bool recomputeMass)
     {
@@ -262,11 +275,13 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyFriction(BodyId body, float friction)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyRestitution(BodyId body, float restitution)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyPartMaterial(BodyId body, uint partUserData, float friction, float restitution)
     {
@@ -274,7 +289,8 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyFrictionMin(BodyId body, bool min)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public float GetShapeVolume(ShapeId shape)
     {
@@ -294,11 +310,14 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyDamping(BodyId body, float linear, float angular)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyGravityFactor(BodyId body, float factor)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
+        GravityWrites.Add(new GravityWrite(body.Value, factor));
     }
     public void SetBodyRotationLocks(BodyId body, bool lockX, bool lockY, bool lockZ)
     {
@@ -330,7 +349,9 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void ActivateBody(BodyId body)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
+        Activates++;
     }
     public void DeactivateBody(BodyId body)
     {
@@ -338,11 +359,13 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyAllowSleeping(BodyId body, bool allow)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyContinuousCollision(BodyId body, ContinuousCollision mode)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyWantsContactEvents(BodyId body, bool wants)
     {
@@ -473,6 +496,11 @@ sealed class RecordingBackend : IPhysicsBackend
             return default;
         }
         return Unexpected<StepResult>();
+    }
+
+    sealed class GravityAttachment : IDisposable
+    {
+        public void Dispose() { }
     }
 
     static void Unexpected()
