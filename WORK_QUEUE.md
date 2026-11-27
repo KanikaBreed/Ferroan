@@ -337,7 +337,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q109a | P3.13a1: Capsule, mass, latch, intent and descriptor | DONE (this PR) |
 | Q109b | P3.13a2: Marker after the bind | READY after Q145 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
-| Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
+| Q111 | P3.2a: Padded heightfield samples | DONE (this PR) |
 | Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
 | Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
 | Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
