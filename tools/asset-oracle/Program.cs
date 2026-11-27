@@ -80,6 +80,14 @@ static class Program
         return 0;
     }
 
+    // Committed files in the fixture directory that this generator does not
+    // write. Generate carries them over; verify requires each one and refuses
+    // any other file the generator did not write. README.md and .gitattributes
+    // are documentation; the attributes file keeps the XML as binary so a raw
+    // CR in element text survives checkout. pin8-xasset-race.json is the
+    // MySQLXAssetData race response that `xdb exists` recorded (QR18).
+    static readonly string[] Carried = { "README.md", ".gitattributes", "pin8-xasset-race.json" };
+
     static void Generate(string directory, string revision)
     {
         string scratch = directory + ".partial";
@@ -89,10 +97,7 @@ static class Program
         int count = WriteTree(scratch, revision);
         if (Directory.Exists(directory))
         {
-            // README.md and .gitattributes are not generated. The attributes
-            // file keeps the XML as binary so a raw CR in element text survives
-            // checkout.
-            foreach (string name in new[] { "README.md", ".gitattributes" })
+            foreach (string name in Carried)
             {
                 string source = Path.Combine(directory, name);
                 if (File.Exists(source))
@@ -110,10 +115,76 @@ static class Program
         if (Directory.Exists(scratch))
             Directory.Delete(scratch, true);
         Directory.CreateDirectory(scratch);
-        int count = WriteTree(scratch, revision);
-        CompareTrees(scratch, directory);
-        Directory.Delete(scratch, true);
-        Console.WriteLine("verify: " + count + " asset xml documents match ServerUtils");
+        try
+        {
+            int count = WriteTree(scratch, revision);
+            CompareBothWays(scratch, directory);
+            RequireRejectedWithout(scratch, directory, "pin8-xasset-race.json");
+            RequireRejectedWithout(scratch, directory, "manifest.json");
+            Console.WriteLine("verify: " + count + " asset xml documents match ServerUtils");
+        }
+        finally
+        {
+            if (Directory.Exists(scratch))
+                Directory.Delete(scratch, true);
+        }
+    }
+
+    // Generated files must match the committed ones, every carried file must
+    // be committed, and the committed tree holds nothing else.
+    static void CompareBothWays(string generated, string committed)
+    {
+        CompareTrees(generated, committed);
+        foreach (string name in Carried)
+        {
+            if (!File.Exists(Path.Combine(committed, name)))
+                throw new InvalidOperationException("missing carried " + name);
+        }
+        foreach (string path in Directory.GetFiles(committed, "*", SearchOption.AllDirectories))
+        {
+            string relative = Path.GetRelativePath(committed, path);
+            if (Array.IndexOf(Carried, relative) >= 0)
+                continue;
+            if (!File.Exists(Path.Combine(generated, relative)))
+                throw new InvalidOperationException("not generated and not carried: " + relative);
+        }
+    }
+
+    // The compare must refuse a committed tree with one file taken away.
+    static void RequireRejectedWithout(string generated, string committed, string relative)
+    {
+        string copy = committed + ".without";
+        if (Directory.Exists(copy))
+            Directory.Delete(copy, true);
+        try
+        {
+            CopyTree(committed, copy);
+            File.Delete(Path.Combine(copy, relative));
+            try
+            {
+                CompareBothWays(generated, copy);
+            }
+            catch (InvalidOperationException rejected) when (rejected.Message.EndsWith(relative, StringComparison.Ordinal))
+            {
+                return;
+            }
+            throw new InvalidOperationException("verify accepted a tree without " + relative);
+        }
+        finally
+        {
+            if (Directory.Exists(copy))
+                Directory.Delete(copy, true);
+        }
+    }
+
+    static void CopyTree(string source, string destination)
+    {
+        foreach (string path in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            string target = Path.Combine(destination, Path.GetRelativePath(source, path));
+            Directory.CreateDirectory(Path.GetDirectoryName(target));
+            File.Copy(path, target);
+        }
     }
 
     static int WriteTree(string directory, string revision)
