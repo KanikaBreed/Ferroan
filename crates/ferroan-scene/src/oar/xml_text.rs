@@ -34,14 +34,19 @@
 //!
 //! `LoadControlFile` walks `Read` and `ReadElementContentAsString`. Comments
 //! and processing instructions are skipped. The XML declaration is skipped only
-//! when it is the first bytes of the document. CDATA is character data.
-//! Character references and the five predefined entities are decoded. A second
-//! root, a child element inside a content read, a truncated document, an
-//! end-tag name that does not match, non-whitespace text at the root, an
-//! undeclared entity, a duplicate attribute, a late XML declaration and an
-//! undeclared prefix produce Pin8's exception text, including the line and the
-//! position. The caller's loop reads the next element. It does not skip the
-//! element that follows a content read.
+//! when it is the first bytes of the document, and only version 1.0 is accepted.
+//! CDATA is character data. Character references and the five predefined
+//! entities are decoded. A surrogate reference is stored as U+FFFD, which is
+//! the id the fixture records for `&#xD800;`. The caller's loop reads the next
+//! element. It does not skip the element that follows a content read.
+//!
+//! The fixture is what this reader is checked against. A missing root, a
+//! character reference whose value fits in a code point, a DOCTYPE whose
+//! internal subset is skipped, a DOCTYPE inside the root, a name's first
+//! character, whitespace between attributes, `]]>` in text, `--` in a comment
+//! and a raw character below U+0020 other than tab, LF and CR follow that
+//! fixture. Other malformed input, a bare CR counted as a line end, and an
+//! entity left in an attribute value do not (D146).
 
 /// One start tag, including an empty element.
 pub(super) struct StartEl {
@@ -130,6 +135,9 @@ impl XmlText {
         loop {
             if self.index >= self.src.len() {
                 if self.stack.is_empty() {
+                    if !self.seen_root {
+                        return Err("Root element is missing.".to_string());
+                    }
                     return Ok(None);
                 }
                 return Err(self.eof_error());
@@ -239,8 +247,11 @@ impl XmlText {
     fn parse_attrs(&mut self) -> Result<(Vec<Attr>, Vec<String>, bool), String> {
         let mut attrs = Vec::new();
         let mut prefixes = Vec::new();
+        let mut saw_attr = false;
         loop {
+            let before = self.index;
             self.skip_space();
+            let spaced = self.index != before;
             match self.peek() {
                 None => return Err(self.eof_error()),
                 Some(b'>') => {
@@ -256,9 +267,19 @@ impl XmlText {
                     return Ok((attrs, prefixes, true));
                 }
                 Some(_) => {
+                    if saw_attr && !spaced {
+                        let line = self.line;
+                        let pos = self.col;
+                        let key = self.read_name()?;
+                        return Err(format!(
+                            "'{key}' is an unexpected token. Expecting whitespace. Line {line}, \
+                             position {pos}."
+                        ));
+                    }
                     let key_line = self.line;
                     let key_pos = self.col;
                     let key = self.read_name()?;
+                    saw_attr = true;
                     if attrs.iter().any(|attr| attr.key == key) {
                         return Err(format!(
                             "'{key}' is a duplicate attribute name. Line {key_line}, position \
@@ -313,12 +334,24 @@ impl XmlText {
     }
 
     fn read_name(&mut self) -> Result<String, String> {
+        let line = self.line;
+        let pos = self.col;
+        let Some(first) = self.peek() else {
+            return Err(self.eof_error());
+        };
+        if !is_name_start(first) {
+            if is_name(first) {
+                let shown = first as char;
+                return Err(format!(
+                    "Name cannot begin with the '{shown}' character, hexadecimal value \
+                     0x{first:X}. Line {line}, position {pos}."
+                ));
+            }
+            return Err(self.eof_error());
+        }
         let start = self.index;
         while self.peek().is_some_and(is_name) {
             self.bump();
-        }
-        if start == self.index {
-            return Err(self.eof_error());
         }
         Ok(String::from_utf8_lossy(&self.src[start..self.index]).into_owned())
     }
@@ -326,13 +359,32 @@ impl XmlText {
     fn read_text(&mut self) -> Result<String, String> {
         let mut out = String::new();
         while self.peek().is_some_and(|byte| byte != b'<') {
+            if self.starts_with(b"]]>") {
+                return Err(format!(
+                    "']]>' is not allowed in character data. Line {}, position {}.",
+                    self.line, self.col
+                ));
+            }
             if self.peek() == Some(b'&') {
                 out.push(self.read_reference()?);
-            } else if let Some(byte) = self.bump() {
-                out.push(byte as char);
+            } else {
+                out.push(self.read_raw()?);
             }
         }
         Ok(out)
+    }
+
+    /// One raw character. Tab, LF and CR are the only bytes below U+0020.
+    fn read_raw(&mut self) -> Result<char, String> {
+        let line = self.line;
+        let pos = self.col;
+        let Some(byte) = self.bump() else {
+            return Err(self.eof_error());
+        };
+        if let Some(error) = raw_char_error(byte, line, pos) {
+            return Err(error);
+        }
+        Ok(byte as char)
     }
 
     fn read_quoted(&mut self) -> Result<String, String> {
@@ -350,11 +402,7 @@ impl XmlText {
                     return Ok(out);
                 }
                 Some(b'&') => out.push(self.read_reference()?),
-                Some(_) => {
-                    if let Some(byte) = self.bump() {
-                        out.push(byte as char);
-                    }
-                }
+                Some(_) => out.push(self.read_raw()?),
             }
         }
     }
@@ -396,16 +444,17 @@ impl XmlText {
         if hex {
             self.bump();
         }
-        let mut value: u32 = 0;
+        let radix: u64 = if hex { 16 } else { 10 };
+        let mut value: u64 = 0;
         let mut digits = 0u32;
         loop {
             let Some(byte) = self.peek() else {
                 return Err(self.numeric_syntax(hex));
             };
             let digit = if hex {
-                hex_digit(byte)
+                hex_digit(byte).map(u64::from)
             } else if byte.is_ascii_digit() {
-                Some(u32::from(byte - b'0'))
+                Some(u64::from(byte - b'0'))
             } else {
                 None
             };
@@ -415,23 +464,32 @@ impl XmlText {
                 }
                 break;
             };
-            self.bump();
-            value = value
-                .saturating_mul(if hex { 16 } else { 10 })
-                .saturating_add(digit);
-            digits += 1;
-            if digits > 6 {
+            let Some(next) = value
+                .checked_mul(radix)
+                .and_then(|next| next.checked_add(digit))
+            else {
+                return Err(self.numeric_syntax(hex));
+            };
+            if next > 0x10_FFFF {
                 return Err(self.numeric_syntax(hex));
             }
+            self.bump();
+            value = next;
+            digits += 1;
         }
         self.bump();
-        char::from_u32(value).ok_or_else(|| {
-            format!(
+        // Pin8's reader does not reject a surrogate. The recorded id is U+FFFD.
+        if (0xD800..=0xDFFF).contains(&value) {
+            return Ok('\u{FFFD}');
+        }
+        match u32::try_from(value).ok().and_then(char::from_u32) {
+            Some(ch) => Ok(ch),
+            None => Err(format!(
                 "'{value:X}', hexadecimal value {value:X}, is an invalid character. Line {}, \
                  position {}.",
                 self.line, self.col
-            )
-        })
+            )),
+        }
     }
 
     fn numeric_syntax(&self, hex: bool) -> String {
@@ -447,14 +505,68 @@ impl XmlText {
         if self.starts_with(b"--") {
             self.bump();
             self.bump();
-            self.skip_until(b"-->")?;
-            return Ok(None);
+            return self.skip_comment();
         }
         if self.starts_with(b"[CDATA[") {
             return self.read_cdata();
         }
+        let line = self.line;
+        let pos = self.col;
+        if self.starts_with(b"DOCTYPE") {
+            if !self.stack.is_empty() {
+                return Err(format!(
+                    "Unexpected DTD declaration. Line {line}, position {pos}."
+                ));
+            }
+            self.skip_doctype()?;
+            return Ok(None);
+        }
         self.skip_until(b">")?;
         Ok(None)
+    }
+
+    /// `DtdProcessing.Ignore` drops an internal subset, including a `>` inside it.
+    fn skip_doctype(&mut self) -> Result<(), String> {
+        let mut subset = false;
+        while self.index < self.src.len() {
+            if !subset && self.peek() == Some(b'[') {
+                subset = true;
+                self.bump();
+                continue;
+            }
+            if subset && self.starts_with(b"]>") {
+                self.bump();
+                self.bump();
+                return Ok(());
+            }
+            if !subset && self.peek() == Some(b'>') {
+                self.bump();
+                return Ok(());
+            }
+            self.bump();
+        }
+        Err(self.eof_error())
+    }
+
+    fn skip_comment(&mut self) -> Result<Option<Node>, String> {
+        loop {
+            if self.starts_with(b"-->") {
+                self.bump();
+                self.bump();
+                self.bump();
+                return Ok(None);
+            }
+            if self.starts_with(b"--") {
+                return Err(format!(
+                    "An XML comment cannot contain '--', and '-' cannot be the last character. \
+                     Line {}, position {}.",
+                    self.line, self.col
+                ));
+            }
+            if self.bump().is_none() {
+                return Err(self.eof_error());
+            }
+        }
     }
 
     fn read_cdata(&mut self) -> Result<Option<Node>, String> {
@@ -474,6 +586,9 @@ impl XmlText {
             let Some(byte) = self.bump() else {
                 return Err(self.eof_error());
             };
+            if let Some(error) = raw_char_error(byte, line, pos) {
+                return Err(error);
+            }
             if self.stack.is_empty() && !is_space(byte) {
                 return Err(format!(
                     "Data at the root level is invalid. Line {line}, position {pos}."
@@ -510,7 +625,53 @@ impl XmlText {
                  {line}, position {pos}."
             ));
         }
+        if target == "xml" && at_start {
+            self.check_version()?;
+        }
         self.skip_until(b"?>")
+    }
+
+    /// `version` must be `1.0` when the declaration carries one.
+    fn check_version(&mut self) -> Result<(), String> {
+        self.skip_space();
+        if !self.starts_with(b"version") {
+            return Ok(());
+        }
+        for _ in 0..b"version".len() {
+            self.bump();
+        }
+        self.skip_space();
+        if self.peek() != Some(b'=') {
+            return Ok(());
+        }
+        self.bump();
+        self.skip_space();
+        let Some(quote) = self.peek() else {
+            return Err(self.eof_error());
+        };
+        if quote != b'"' && quote != b'\'' {
+            return Ok(());
+        }
+        self.bump();
+        let line = self.line;
+        let pos = self.col;
+        let mut value = String::new();
+        loop {
+            match self.peek() {
+                None => return Err(self.eof_error()),
+                Some(byte) if byte == quote => {
+                    self.bump();
+                    break;
+                }
+                Some(_) => value.push(self.read_raw()?),
+            }
+        }
+        if value != "1.0" {
+            return Err(format!(
+                "Version number '{value}' is invalid. Line {line}, position {pos}."
+            ));
+        }
+        Ok(())
     }
 
     fn skip_until(&mut self, marker: &[u8]) -> Result<(), String> {
@@ -565,12 +726,33 @@ impl XmlText {
             .map(|open| open.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
+        if names.is_empty() {
+            return format!(
+                "Unexpected end of file has occurred. Line {}, position {}.",
+                self.line, self.col
+            );
+        }
         format!(
             "Unexpected end of file has occurred. The following elements are not closed: {names}. \
              Line {}, position {}.",
             self.line, self.col
         )
     }
+}
+
+fn raw_char_error(byte: u8, line: i32, pos: i32) -> Option<String> {
+    if byte >= 0x20 || matches!(byte, b'\t' | b'\n' | b'\r') {
+        return None;
+    }
+    let shown = if byte == 0 {
+        ".".to_string()
+    } else {
+        (byte as char).to_string()
+    };
+    Some(format!(
+        "'{shown}', hexadecimal value 0x{byte:02X}, is an invalid character. Line {line}, \
+         position {pos}."
+    ))
 }
 
 fn is_name(byte: u8) -> bool {
@@ -798,6 +980,156 @@ mod tests {
         let mut reader = XmlText::new(declared.as_bytes().to_vec());
         let element = reader.next_element().unwrap().unwrap();
         assert_eq!(element.name, "a:archive");
+    }
+
+    #[test]
+    fn a_missing_root_matches_pin8() {
+        assert_eq!(drive("").unwrap_err(), "Root element is missing.");
+        assert_eq!(
+            drive("<?xml version=\"1.0\" encoding=\"utf-16\"?>").unwrap_err(),
+            "Root element is missing."
+        );
+        assert_eq!(drive("<!-- c -->").unwrap_err(), "Root element is missing.");
+    }
+
+    #[test]
+    fn a_seven_digit_reference_and_a_surrogate_load() {
+        let digits = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>&#0000050;1111111-1111-1111-1111-111111111111</id>",
+        );
+        assert!(
+            drive(&digits)
+                .unwrap()
+                .iter()
+                .any(|row| row == "id=21111111-1111-1111-1111-111111111111")
+        );
+        let surrogate = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>&#xD800;</id>",
+        );
+        assert!(
+            drive(&surrogate)
+                .unwrap()
+                .iter()
+                .any(|row| row == "id=\u{FFFD}")
+        );
+        let zero = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>&#0;</id>",
+        );
+        assert!(drive(&zero).unwrap().iter().any(|row| row == "id=\u{0}"));
+    }
+
+    #[test]
+    fn a_doctype_subset_is_skipped_and_one_inside_the_root_is_refused() {
+        let body = single().replacen("<?xml version=\"1.0\" encoding=\"utf-16\"?>\n", "", 1);
+        let xml = format!(
+            "<?xml version=\"1.0\" encoding=\"utf-16\"?>\n<!DOCTYPE archive [<!ENTITY e \
+             \"x\">]>\n{body}"
+        );
+        assert!(
+            drive(&xml)
+                .unwrap()
+                .iter()
+                .any(|row| row.starts_with("id=11111111"))
+        );
+        let inside = single().replace("<creation_info>", "<!DOCTYPE x><creation_info>");
+        assert_eq!(
+            drive(&inside).unwrap_err(),
+            "Unexpected DTD declaration. Line 3, position 5."
+        );
+    }
+
+    #[test]
+    fn a_name_must_begin_with_a_name_start_character() {
+        let digit = single().replace("<creation_info>", "<creation_info><1x/>");
+        assert_eq!(
+            drive(&digit).unwrap_err(),
+            "Name cannot begin with the '1' character, hexadecimal value 0x31. Line 3, position \
+             19."
+        );
+        let dash = single().replace("<creation_info>", "<creation_info><-x/>");
+        assert_eq!(
+            drive(&dash).unwrap_err(),
+            "Name cannot begin with the '-' character, hexadecimal value 0x2D. Line 3, position \
+             19."
+        );
+    }
+
+    #[test]
+    fn attributes_require_whitespace_between_them() {
+        let xml = single().replace(
+            "major_version=\"0\" minor_version",
+            "major_version=\"0\"minor_version",
+        );
+        assert_eq!(
+            drive(&xml).unwrap_err(),
+            "'minor_version' is an unexpected token. Expecting whitespace. Line 2, position 27."
+        );
+    }
+
+    #[test]
+    fn markup_in_text_and_in_a_comment_matches_pin8() {
+        let text = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>1111]]>1111-1111-1111-1111-111111111111</id>",
+        );
+        assert_eq!(
+            drive(&text).unwrap_err(),
+            "']]>' is not allowed in character data. Line 5, position 13."
+        );
+        let nested = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id><![CDATA[<![CDATA[x]]>]]></id>",
+        );
+        assert_eq!(
+            drive(&nested).unwrap_err(),
+            "']]>' is not allowed in character data. Line 5, position 31."
+        );
+        let comment = single().replace("<creation_info>", "<!-- a -- b --><creation_info>");
+        assert_eq!(
+            drive(&comment).unwrap_err(),
+            "An XML comment cannot contain '--', and '-' cannot be the last character. Line 3, \
+             position 10."
+        );
+    }
+
+    #[test]
+    fn a_raw_control_and_a_bad_version_match_pin8() {
+        let nul = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>a\u{0}b</id>",
+        );
+        assert_eq!(
+            drive(&nul).unwrap_err(),
+            "'.', hexadecimal value 0x00, is an invalid character. Line 5, position 10."
+        );
+        let ctrl = single().replace(
+            "<id>11111111-1111-1111-1111-111111111111</id>",
+            "<id>a\u{1}b</id>",
+        );
+        assert_eq!(
+            drive(&ctrl).unwrap_err(),
+            "'\u{1}', hexadecimal value 0x01, is an invalid character. Line 5, position 10."
+        );
+        let version = single().replace("version=\"1.0\"", "version=\"2.0\"");
+        assert_eq!(
+            drive(&version).unwrap_err(),
+            "Version number '2.0' is invalid. Line 1, position 16."
+        );
+    }
+
+    #[test]
+    fn eof_with_an_empty_stack_names_no_element() {
+        let xml = single();
+        let at = xml.find("minor_version=\"8").unwrap() + 16;
+        let error = drive(&xml[..at]).unwrap_err();
+        assert!(!error.contains("not closed"), "{error}");
+        assert!(
+            error.starts_with("Unexpected end of file has occurred. Line "),
+            "{error}"
+        );
     }
 
     fn compact(xml: &str) -> String {
