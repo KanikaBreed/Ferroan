@@ -87,6 +87,8 @@ Q107's `crates/ferroan-physics/src/jolt_config.rs` ports `Source/OpenSim.Region.
 
 Q109's `crates/ferroan-physics/src/character.rs` ports `Source/OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs`, `NonFiniteGuard.cs` (`Ok`) and `Source/OpenSim.Region.PhysicsModules.Jolt.Backend/IPhysicsBackend.cs` (`CharacterDesc.Default`) at Tranquillity `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` (MPL-2.0, Copyright (c) 2026 Legion Builds). The file keeps that notice and remains available under MPL-2.0. The C# source is not copied. `tools/jolt-config-oracle` calls the pinned character for the capsule fixture and is new Ferroan code. That port does not link a native library.
 
+Q116's `crates/ferroan-physics/src/dilation.rs` ports `JoltScene.NoteDilationSample` at Tranquillity `41f18f983bb2bfc82e033fed410d361ba57d5aa4` (MPL-2.0, Copyright (c) 2026 Legion Builds) and the FPS transform in `SimStatsReporter.cs` (BSD-3-Clause, OpenSimulator contributors, cite lines 1-26). The file keeps both notices. The C# source is not copied. The oracle calls the pinned methods. No native library.
+
 ## Native libraries
 
 `ferroan-physics` links [Jolt Physics](https://github.com/jrouwe/JoltPhysics) 5.6.0 (commit `e77f175595e64cb44218cc9d9d56fc365ad0e36a`) through [`oxijolt-sys`](https://github.com/pockerhead/oxijolt) 1.6.0 (tag `v1.6.0`). The crate is MIT OR Apache-2.0, copyright Artem Balashow. Jolt is MIT, copyright Jorrit Rouwe. The build uses `JOLTC_PREBUILT=require` and `cross-platform-deterministic`, single precision. The safe `oxijolt` crate is not a dependency. Only `ferroan-physics` depends on `oxijolt-sys`.

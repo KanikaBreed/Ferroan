@@ -36,7 +36,11 @@ the machine clock; the producer checks the stored double against
 `1/Stopwatch.Frequency` and records the dilation float from `_timeDilation`.
 Exact stored ratios are 1, 0.75, 0.625 at sample 3 and 0.5625 at sample 7.
 The Rust test checks the fixture's structure and pins all twelve scene A
-dilation values. The dilation window port that replays it is P3.3b.
+dilation values. `DilationWindow` replays the ratio. The same command calls
+`Simulate` and the reporter's FPS transform for both `Normalized55FPS`
+settings and writes `fixtures/jolt-file/stats`. A successful simulate
+contributes 1. Eleven frames in one second show about 55 when the scale is
+on. `SimPhysicsStepMs` stays 20. Ordinary check does not call the reporter.
 
 The same file command calls `JoltCharacter` capsule, mass and stand-half,
 `DesiredVelocity`, the jump latch and the ground flags through

@@ -344,7 +344,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
 | Q115 | P3.3: Physics thread and the request queue | DONE (this PR) |
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
-| Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
+| Q116 | P3.3b: Dilation window and stats transform | DONE (this PR) |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
 | Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |

@@ -4,6 +4,8 @@
 // Records the character descriptor and the calls JoltCharacter makes while the
 // file oracle compiles it. Every other backend method is unexpected: this
 // process must not reach JoltPhysicsBackend, and it must not load joltc.
+// RecordHeartbeat lets Simulate return without a native step. It stays off
+// for the character compile.
 
 using System;
 using System.Collections.Generic;
@@ -25,6 +27,10 @@ sealed class RecordingBackend : IPhysicsBackend
     internal readonly List<float> Buoyancies = new();
     internal readonly List<bool> Contacts = new();
     internal readonly List<Vector3> Transforms = new();
+    // Simulate's budget, step and capacity reads. Off unless the dilation
+    // capture is proving that a successful Simulate returns 1.
+    internal bool RecordHeartbeat;
+    internal int HeartbeatSteps;
 
     internal readonly record struct Movement(Vector3 Velocity, bool Jump, bool Flying);
     internal readonly record struct ShapeCall(float HalfHeight, float Radius);
@@ -377,10 +383,14 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void BeginRayCastBudget()
     {
+        if (RecordHeartbeat)
+            return;
         Unexpected();
     }
     public long RayCastsRefused(RayCastBudget budget)
     {
+        if (RecordHeartbeat)
+            return 0;
         return Unexpected<long>();
     }
     public int OverlapSphere(Vector3 center, float radius, QueryFilter filter, Span<BodyId> results)
@@ -402,10 +412,17 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public PhysicsCapacityStats GetCapacityStats()
     {
+        if (RecordHeartbeat)
+            return default;
         return Unexpected<PhysicsCapacityStats>();
     }
     public StepResult Step(float deltaTime, Span<BodyState> bodyUpdates, Span<CharacterState> characterUpdates, Span<ContactReport> contacts)
     {
+        if (RecordHeartbeat)
+        {
+            HeartbeatSteps++;
+            return default;
+        }
         return Unexpected<StepResult>();
     }
 
