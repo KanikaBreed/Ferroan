@@ -13,8 +13,9 @@
 use ferroan_protocol::msgs::{
     AgentMovementComplete, AgentUpdate, ChatFromSimulator, ChatFromViewer, DeRezObject,
     ImprovedTerseObjectUpdate, KillObject, MultipleObjectUpdate, ObjectAdd, ObjectName,
-    ObjectProperties, ObjectPropertiesFamily, ObjectUpdate, RequestObjectPropertiesFamily,
-    TeleportFailed, TeleportFinish, TeleportLocal, TeleportLocationRequest,
+    ObjectProperties, ObjectPropertiesFamily, ObjectSelect, ObjectUpdate,
+    RequestObjectPropertiesFamily, TeleportFailed, TeleportFinish, TeleportLocal,
+    TeleportLocationRequest,
 };
 use ferroan_protocol::{IncomingPacket, Msg, field_str, str_field};
 use glam::{Quat, Vec3};
@@ -134,6 +135,21 @@ pub fn transform(agent: Agent, local_id: u32, kind: u8, value: Vec3) -> Multiple
             type_: kind,
             data: vec3_bytes(value),
         });
+    message
+}
+
+pub fn select_objects(agent: Agent, local_ids: &[u32]) -> ObjectSelect {
+    let mut message = ObjectSelect::default();
+    message.agent_data.agent_id = agent.agent_id;
+    message.agent_data.session_id = agent.session_id;
+    message.object_data = local_ids
+        .iter()
+        .map(
+            |local_id| ferroan_protocol::msgs::object_select::ObjectData {
+                object_local_id: *local_id,
+            },
+        )
+        .collect();
     message
 }
 
