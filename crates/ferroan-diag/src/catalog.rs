@@ -124,3 +124,4 @@ pub const OAR_PARCEL_XML_BYTES: &str = "oar.parcel-xml-bytes";
 pub const OAR_PARCEL_ACCESS: &str = "oar.parcel-access";
 pub const OAR_PARCEL_BITMAP_BYTES: &str = "oar.parcel-bitmap-bytes";
 pub const OAR_PARCEL_BITMAPS: &str = "oar.parcel-bitmaps";
+pub const FORMAT_CHARS: &str = "format.chars";
