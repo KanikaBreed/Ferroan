@@ -119,10 +119,7 @@ pub fn scales(writing: bool) -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     };
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -165,9 +162,7 @@ pub fn parcels() -> ExitCode {
         Err(code) => return code,
     };
     let result = (|| -> Result<(), String> {
-        let pin = pinned_revision(
-            &fs::read_to_string(root.join("docs/REFERENCES.md")).map_err(|e| e.to_string())?,
-        )?;
+        let pin = revision_in_use(&root)?;
         let db = root.join(".scratch/regionstore-oracle/parcels.db");
         fs::copy(root.join(FIXTURE), &db).map_err(|e| e.to_string())?;
         let json = oracle_stdout(
@@ -218,10 +213,7 @@ pub fn settings() -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     };
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -266,10 +258,7 @@ pub fn serialize() -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     };
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -312,10 +301,7 @@ fn xml_capture(command: &str, output: &str) -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     };
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -383,10 +369,7 @@ pub fn cross() -> ExitCode {
     if verify_fixture(&root, &dll) != ExitCode::SUCCESS {
         return ExitCode::FAILURE;
     }
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -753,10 +736,7 @@ fn dispatch(writing: bool) -> ExitCode {
         Ok(path) => path,
         Err(code) => return code,
     };
-    let pinned = match fs::read_to_string(root.join("docs/REFERENCES.md"))
-        .map_err(|error| error.to_string())
-        .and_then(|text| pinned_revision(&text))
-    {
+    let pinned = match revision_in_use(&root) {
         Ok(pin) => pin,
         Err(error) => {
             eprintln!("{LABEL}: {error}");
@@ -841,6 +821,15 @@ fn build_oracle() -> Result<std::path::PathBuf, ExitCode> {
         return Err(ExitCode::FAILURE);
     }
     Ok(dll)
+}
+
+/// The clone's `git rev-parse HEAD`, which is the revision a fixture records.
+fn revision_in_use(root: &Path) -> Result<String, String> {
+    let text =
+        fs::read_to_string(root.join("docs/REFERENCES.md")).map_err(|error| error.to_string())?;
+    let pinned = pinned_revision(&text)?;
+    let clone = root.join(".scratch/oracle-sources/OpenSim-Tranquillity");
+    crate::oracle_reference::require_head(&clone, "OpenSim-Tranquillity", &pinned)
 }
 
 fn detach_at_pin(clone: &Path, source: &Path, pin: &str) -> Result<(), String> {

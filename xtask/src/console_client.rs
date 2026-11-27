@@ -32,11 +32,20 @@ pub fn run() -> ExitCode {
 }
 
 fn drive() -> Result<String, String> {
-    let pin = locate_pin()?;
     let Some(dotnet) = which_dotnet() else {
         return Ok("console-client: skipped (dotnet is absent)".to_string());
     };
-    let dll = build(&dotnet, &pin)?;
+    let shared = locate_pin()?;
+    let pin = crate::oracle_reference::read_pins()?.tranquillity;
+    let source = crate::repo_root().join(".scratch/console-client/src");
+    let actual = crate::oracle_reference::checkout_pin(
+        &shared,
+        &source,
+        "OpenSim-Tranquillity",
+        &pin,
+        true,
+    )?;
+    let dll = build(&dotnet, &source)?;
     // Worker threads keep the console serving after `listen` returns.
     // A current-thread runtime stops polling when `block_on` returns.
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -57,7 +66,8 @@ fn drive() -> Result<String, String> {
     let output = invoke(&dotnet, &dll, port)?;
     drop(listener);
     drop(guard);
-    judge(&output)
+    let verdict = judge(&output)?;
+    Ok(format!("{verdict}\nconsole-client: built {actual}"))
 }
 
 fn judge(output: &str) -> Result<String, String> {
