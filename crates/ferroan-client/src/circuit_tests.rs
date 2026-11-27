@@ -394,7 +394,7 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
     Arc::new(move |agent, call| {
         let mut poses = store.lock().unwrap_or_else(|poison| poison.into_inner());
         let result: crate::circuit::SceneResult = match call {
-            SceneCall::Pose(pose) => {
+            SceneCall::Pose(pose, _) => {
                 poses.insert(agent, pose.position);
                 Ok(SceneReply::Pose(pose))
             }

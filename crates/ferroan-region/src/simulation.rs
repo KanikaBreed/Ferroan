@@ -296,6 +296,8 @@ struct ActiveSession {
     logout_done: watch::Receiver<()>,
     /// Shared with the circuit that can promote this child.
     slot: ReturnSlot,
+    /// `ChildrenCapSeeds` for this child. Replaced on accept and on reuse.
+    known_seeds: Vec<(u64, String)>,
 }
 
 impl ActiveSession {
@@ -426,6 +428,10 @@ impl AcceptedAgent {
         if let Some(session) = sessions.get_mut(&self._lease.agent_id)
             && session.generation == self._lease.generation
         {
+            // A neighbour view child never becomes the root session.
+            if session.slot.is_view() {
+                return;
+            }
             session.root = true;
             session.set_child_place(None);
             session.slot.note_rooted();
@@ -458,6 +464,11 @@ impl AcceptedAgent {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .insert(self._lease.agent_id, identity);
+    }
+
+    /// The circuit generation that owns this admission.
+    pub fn generation(&self) -> Uuid {
+        self._lease.generation
     }
 
     /// The grid logout runs only while this generation is still the root.
@@ -536,11 +547,12 @@ impl Drop for SessionLease {
             publish_agents(&sessions, &self.meters);
         }
         // The successor is whoever replaced this lease. Captured before the
-        // sessions lock drops: a child accepted while this identity was held
-        // wrote only `prepared`, and SendInitialData can arm before mark_root.
+        // sessions lock drops: a hop child accepted while this identity was
+        // held wrote only `prepared`, and SendInitialData can arm before
+        // mark_root. A view child is not that identity.
         let successor = sessions
             .get(&self.agent_id)
-            .filter(|session| session.generation != self.generation)
+            .filter(|session| session.generation != self.generation && !session.slot.is_view())
             .map(|session| session.generation);
         drop(sessions);
         // `remember_identity` takes `prepared` then `roots`. Do not take
@@ -567,6 +579,17 @@ impl Drop for SessionLease {
             }
         }
     }
+}
+
+/// How a same-session child create reused the circuit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ChildReuse {
+    /// Already a child. Seeds replaced. The initial-data wait is not reset.
+    Kept,
+    /// A flags-16 root was demoted with the hop child flag. The actor stays.
+    HopDemoted,
+    /// A Default-flag root was demoted. The caller awaits the scene demote.
+    ViewDemoted,
 }
 
 impl SimulationState {
@@ -735,6 +758,7 @@ impl SimulationState {
                     cancel: Some(cancel),
                     logout_done: logout_wait,
                     slot: ReturnSlot::new(false),
+                    known_seeds: Vec::new(),
                 },
             );
     }
@@ -1014,7 +1038,11 @@ impl SimulationState {
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .replace(logout_wait.clone());
-        let slot = ReturnSlot::new(fields.child);
+        let slot = if fields.view_child() {
+            ReturnSlot::new_view()
+        } else {
+            ReturnSlot::new(fields.child)
+        };
         let child = Arc::new(Mutex::new(child));
         let rooted_when_replaced = Arc::new(AtomicBool::new(false));
         sessions.insert(
@@ -1029,6 +1057,7 @@ impl SimulationState {
                 cancel: Some(cancel),
                 logout_done: logout_wait,
                 slot: slot.clone(),
+                known_seeds: fields.children_seeds.clone(),
             },
         );
         publish_agents(&sessions, &self.meters);
@@ -1184,11 +1213,11 @@ impl SimulationState {
         &self,
         fields: &AgentFields,
         place: OwnedSemaphorePermit,
-    ) -> Result<(), &'static str> {
+    ) -> Result<ChildReuse, &'static str> {
         if !self.admission_open.load(Ordering::Acquire) {
             return Err("Logins to this region are disabled");
         }
-        {
+        let outcome = {
             let mut sessions = self
                 .sessions
                 .lock()
@@ -1199,16 +1228,98 @@ impl SimulationState {
             if session.session_id != fields.session_id || session.departed.load(Ordering::Acquire) {
                 return Err("Child agent is not in this region");
             }
+            let was_root = session.root;
             session.root = false;
             session.set_child_place(Some(place));
-            session.slot.arm_child();
+            session.known_seeds.clone_from(&fields.children_seeds);
+            if fields.view_child() {
+                session.slot.arm_view();
+            } else {
+                session.slot.arm_child();
+            }
             publish_agents(&sessions, &self.meters);
+            if !was_root {
+                ChildReuse::Kept
+            } else if fields.view_child() {
+                // The awaited demote clears the actor. mark_child would not.
+                ChildReuse::ViewDemoted
+            } else {
+                ChildReuse::HopDemoted
+            }
+        };
+        if outcome == ChildReuse::HopDemoted {
+            // A flags-16 hop stays an actor until the return arrives or fails.
+            self.mark_child(fields.agent_id, true);
         }
-        self.mark_child(fields.agent_id, true);
         let path = format!("/CAPS/{}0000/", fields.caps_path);
         match self.caps.register_agent(&path, fields.agent_id) {
-            Ok(()) | Err(CapsError::Occupied) => Ok(()),
+            Ok(()) | Err(CapsError::Occupied) => Ok(outcome),
             Err(_) => Err("Could not create seed capability"),
+        }
+    }
+
+    /// A root whose circuit is mid-hop. Leave it. An existing child does not
+    /// take this path.
+    fn root_in_transit(&self, agent: Uuid, session: Uuid) -> bool {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&agent)
+            .is_some_and(|row| {
+                row.session_id == session
+                    && !row.departed.load(Ordering::Acquire)
+                    && row.root
+                    && !row.is_child()
+                    && row.slot.in_transit()
+            })
+    }
+
+    /// `ChildrenCapSeeds` stored for this agent. Empty when the agent is absent
+    /// or the create carried no array.
+    pub fn known_seeds(&self, agent: Uuid) -> Vec<(u64, String)> {
+        self.sessions
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .get(&agent)
+            .map(|session| session.known_seeds.clone())
+            .unwrap_or_default()
+    }
+
+    /// The view child is in the scene before `CreateAgent` returns.
+    async fn seat_view_child(&self, agent: Uuid, position: [f32; 3]) {
+        let Some(frame) = &self.scene else {
+            return;
+        };
+        let Some(owner) = self.generation_of(agent) else {
+            return;
+        };
+        let pose = ferroan_scene::Presence {
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 0.0,
+        };
+        let seated = match frame.seat_view_child(agent, pose, owner) {
+            Ok(pending) => pending.wait().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = seated {
+            tracing::debug!("scene view child was not seated: {error}");
+        }
+    }
+
+    /// `HasMovedAway(false)` then `MakeChildAgent`. The position stays.
+    async fn make_child_presence(&self, agent: Uuid) {
+        let Some(frame) = &self.scene else {
+            return;
+        };
+        let made = match frame.make_child(agent) {
+            Ok(pending) => pending.wait().await,
+            Err(error) => Err(error),
+        };
+        if let Err(error) = made {
+            tracing::debug!("scene child demote was not applied: {error}");
         }
     }
 
@@ -1572,11 +1683,39 @@ async fn handle(
         if lock_wait.is_zero() {
             return create_refused(busy, peer);
         }
-        let Ok(_lifecycle) = tokio::time::timeout(lock_wait, gate.lock()).await else {
+        let Ok(lifecycle) = tokio::time::timeout(lock_wait, gate.lock()).await else {
             return create_refused(busy, peer);
         };
-        let answer = match state.reuse_child(&fields, place) {
-            Ok(()) => {
+        if state.root_in_transit(agent, fields.session_id) {
+            drop(place);
+            drop(lifecycle);
+            return json_reply(
+                json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
+                false,
+            );
+        }
+        let reused = state.reuse_child(&fields, place);
+        drop(lifecycle);
+        let answer = match reused {
+            Ok(ChildReuse::ViewDemoted) => {
+                // HasMovedAway(false), then MakeChildAgent. The position stays.
+                state
+                    .moved_away(
+                        agent,
+                        false,
+                        &RegionEnd {
+                            server_uri: String::new(),
+                            region_id: fields.source_region,
+                            name: String::new(),
+                            loc_x: 0,
+                            loc_y: 0,
+                        },
+                    )
+                    .await;
+                state.make_child_presence(agent).await;
+                json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()})
+            }
+            Ok(ChildReuse::Kept | ChildReuse::HopDemoted) => {
                 json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()})
             }
             Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
@@ -1626,8 +1765,16 @@ async fn handle(
     let _lifecycle = lifecycle;
     // A child keeps the connection open. A login still closes it.
     let child_create = fields.child;
+    let view_child = fields.view_child();
+    let posted = fields.start_pos;
     let answer = match state.accept_in_slot(fields, level, slot, child) {
-        Ok(()) => json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()}),
+        Ok(()) => {
+            if view_child {
+                // The presence is observable before this JSON success.
+                state.seat_view_child(agent, posted).await;
+            }
+            json!({"reason":"Authorized", "success":true, "your_ip":peer.ip().to_string()})
+        }
         // The C# serializer omits false values in CreateAgent replies.
         Err(reason) => json!({"reason":reason, "your_ip":peer.ip().to_string()}),
     };
@@ -2127,6 +2274,11 @@ struct AgentFields {
     id0: String,
     service_urls: Vec<(String, String)>,
     appearance: Option<Appearance>,
+    /// `ChildrenCapSeeds`. A missing or non-array field is empty. First handle wins.
+    children_seeds: Vec<(u64, String)>,
+    /// `source_uuid` on a child create. Absent or unparseable is nil, so a
+    /// demote does not treat any root as already knowing the source region.
+    source_region: Uuid,
 }
 
 impl AgentFields {
@@ -2224,12 +2376,22 @@ impl AgentFields {
             id0: optional_string(args, "id0"),
             service_urls: circuit_service_urls(args),
             appearance: args.get("packed_appearance").map(appearance_from_json),
+            children_seeds: child_seeds(args),
+            source_region: json_uuid(args.get("source_uuid")).unwrap_or(Uuid::nil()),
         })
     }
 
+    /// A neighbour's view child. Teleport flags are `Default` (`"0"`).
+    fn view_child(&self) -> bool {
+        self.child && self.teleport_flags == 0
+    }
+
     fn clamp_position(&mut self, size: [u32; 2]) {
-        // Scene.NewUserConnection clamps root-login X/Y, preserving Z for
-        // CompleteMovement's later terrain/landing correction (P2.0e).
+        // Scene.NewUserConnection clamps X/Y only when teleportFlags != Default.
+        // A view child's posted start, including a negative X, is kept. Z stays.
+        if self.teleport_flags == 0 {
+            return;
+        }
         for (coordinate, extent) in self.start_pos[..2].iter_mut().zip(size) {
             if *coordinate < 0.0 {
                 *coordinate = 1.0;
@@ -2238,6 +2400,41 @@ impl AgentFields {
             }
         }
     }
+}
+
+/// `AgentCircuitData.Unpack` of `children_seeds`. A missing or non-array value
+/// is empty. An entry that is not a map is skipped. A handle that does not
+/// parse is skipped. The first handle wins. A missing handle is zero.
+fn child_seeds(args: &Map<String, Value>) -> Vec<(u64, String)> {
+    let Some(Value::Array(items)) = args.get("children_seeds") else {
+        return Vec::new();
+    };
+    let mut seeds = Vec::new();
+    for item in items {
+        let Some(pair) = item.as_object() else {
+            continue;
+        };
+        let handle = match pair.get("handle") {
+            Some(value) => {
+                let Some(text) = value.as_str() else {
+                    continue;
+                };
+                let Ok(handle) = text.parse::<u64>() else {
+                    continue;
+                };
+                handle
+            }
+            None => 0,
+        };
+        if seeds.iter().any(|(seen, _)| *seen == handle) {
+            continue;
+        }
+        let Some(seed) = pair.get("seed").and_then(Value::as_str) else {
+            continue;
+        };
+        seeds.push((handle, seed.to_owned()));
+    }
+    seeds
 }
 
 /// AgentCircuitData prefers the serviceurls map, falling back to legacy key/value pairs.
@@ -2882,6 +3079,8 @@ mod tests {
             id0: String::new(),
             service_urls: Vec::new(),
             appearance: None,
+            children_seeds: Vec::new(),
+            source_region: Uuid::nil(),
         }
     }
 
@@ -3163,7 +3362,9 @@ mod tests {
             let mut fields = other_agent(u128::from(n), n);
             fields.child = true;
             fields.via_login = false;
-            fields.teleport_flags = 0;
+            // A hop child. A Default-flag view child cannot be marked root,
+            // so it would keep this place.
+            fields.teleport_flags = 16;
             fields
         };
         for n in 10..10 + CHILD_DISPATCH_CAPACITY as u32 {
@@ -3877,6 +4078,7 @@ mod tests {
         state.accept(child).unwrap();
         let accepted = receiver.recv().await.unwrap();
         assert!(accepted.return_slot.is_child());
+        assert!(accepted.return_slot.is_view());
         assert!(!accepted.still_root());
         assert!(state.meters().diag_lines().contains("root_agents: 1\n"));
         assert!(state.meters().diag_lines().contains("child_agents: 1\n"));
@@ -3964,6 +4166,8 @@ mod tests {
         let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
         let value: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(value["success"], true);
+        assert!(accepted.return_slot.is_child());
+        assert!(!accepted.return_slot.is_view());
         assert!(matches!(
             accepted.cancelled.try_recv(),
             Err(oneshot::error::TryRecvError::Empty)
@@ -4786,6 +4990,482 @@ mod tests {
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
         let after = refuse_count(&ferroan_diag::metrics(), HTTP_POST_BODY);
         assert!(after > before);
+    }
+
+    async fn watch(
+        frame: &ferroan_scene::TerrainFrame,
+        agent: Uuid,
+    ) -> (u32, std::sync::Arc<ferroan_scene::terse::ViewerFeed>) {
+        let feed = frame.new_feed();
+        let link = ferroan_scene::ViewerLink {
+            rights: ferroan_scene::DeleteRights::default(),
+            feed: std::sync::Arc::clone(&feed),
+            seeds_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            circuit_open: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            look: std::sync::Arc::new(ferroan_scene::AvatarLook {
+                first_name: "Watch".to_string(),
+                last_name: "User".to_string(),
+                title: String::new(),
+                visual_params: Vec::new(),
+                texture: Vec::new(),
+                height: 1.9,
+                hover: 0.0,
+            }),
+            teleport_flags: 1 << 7,
+        };
+        let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
+        (local_id, feed)
+    }
+
+    fn kill_ids(feed: &ferroan_scene::terse::ViewerFeed) -> Vec<u32> {
+        feed.take_avatar_packets(usize::MAX)
+            .into_iter()
+            .filter_map(|packet| match packet {
+                ferroan_scene::AvatarPacket::Kill(ids) => Some(ids[0]),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn pose_at(position: [f32; 3]) -> ferroan_scene::Presence {
+        ferroan_scene::Presence {
+            position,
+            rotation: [0.0, 0.0, 0.0, 1.0],
+            velocity: [0.0; 3],
+            control_flags: 0,
+            draw_distance: 255.0,
+        }
+    }
+
+    fn view_post(fields: &AgentFields, region: Uuid, start: &str, seeds: Value) -> Request {
+        sourced_view_post(fields, region, start, seeds, None)
+    }
+
+    fn sourced_view_post(
+        fields: &AgentFields,
+        region: Uuid,
+        start: &str,
+        seeds: Value,
+        source: Option<Uuid>,
+    ) -> Request {
+        let mut body = json!({
+            "agent_id": fields.agent_id.to_string(),
+            "session_id": fields.session_id.to_string(),
+            "secure_session_id": fields.secure_session_id.to_string(),
+            "circuit_code": fields.circuit_code.to_string(),
+            "caps_path": fields.caps_path,
+            "start_pos": start,
+            "first_name": fields.first_name,
+            "last_name": fields.last_name,
+            "destination_uuid": region.to_string(),
+            "destination_name": "Fixture Region",
+            "teleport_flags": "0",
+            "child": true,
+            "children_seeds": seeds,
+        });
+        if let Some(source) = source {
+            body["source_uuid"] = json!(source.to_string());
+        }
+        Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{}/", fields.agent_id))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    async fn put_raw(
+        state: &SimulationState,
+        peer: SocketAddr,
+        agent: Uuid,
+        body: Value,
+    ) -> String {
+        let request = Request::builder()
+            .method("PUT")
+            .uri(format!("/agent/{agent}/"))
+            .body(axum::body::Body::from(body.to_string()))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(
+            to_bytes(response.into_body(), MAX_BODY)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap()
+    }
+
+    /// The captured neighbour child stays at the posted start, with no actor,
+    /// and a mismatched session changes neither the scene nor the circuit.
+    #[tokio::test]
+    async fn a_captured_view_child_stays_unclamped_and_unpromoted() {
+        let trace: Value =
+            serde_json::from_str(include_str!("../../../fixtures/child-view/trace.json")).unwrap();
+        let fields = trace["requests"][0]["fields"].clone();
+        let agent = Uuid::parse_str(fields["agent_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(fields["destination_uuid"].as_str().unwrap()).unwrap();
+        let (base, task) = presence_server(
+            presence_reply(agent),
+            Duration::ZERO,
+            Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        );
+        let caps = CapsRegistry::new(&base).unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state = SimulationState::new(&test_config(&base, region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let request = Request::builder()
+            .method("POST")
+            .uri(format!("/agent/{agent}/"))
+            .body(axum::body::Body::from(fields.to_string()))
+            .unwrap();
+        let response = handle(State(state.clone()), ConnectInfo(peer), request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        let mut accepted = receiver.recv().await.unwrap();
+        assert!(accepted.return_slot.is_view());
+        assert!(!accepted.still_root());
+        let start = fields["start_pos"]
+            .as_str()
+            .unwrap()
+            .trim()
+            .trim_start_matches('<')
+            .trim_end_matches('>');
+        let mut expected = [0.0f32; 3];
+        for (slot, part) in expected.iter_mut().zip(start.split(',')) {
+            *slot = part.trim().parse().unwrap();
+        }
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position, expected);
+        assert!(seat.child);
+        assert!(!seat.actor);
+        let wrong = put_raw(
+            &state,
+            peer,
+            agent,
+            json!({
+                "message_type": "AgentPosition",
+                "agent_uuid": agent.to_string(),
+                "session_uuid": Uuid::from_u128(99).to_string(),
+                "position": "<1, 2, 3>",
+            }),
+        )
+        .await;
+        assert_eq!(wrong, "False");
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position, expected);
+        assert_eq!(accepted.return_slot.position(), [128.0, 128.0, 30.0]);
+        let deleted = delete_agent(&state, peer, agent, region, "not-the-session").await;
+        assert_eq!(deleted, format!("OpenSim agent {agent}"));
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position, expected);
+        assert!(seat.child);
+        assert!(!seat.actor);
+        task.abort();
+    }
+
+    /// Same session, not in transit: the root becomes a child and keeps its position.
+    #[tokio::test]
+    async fn a_same_session_view_child_demotes_a_root_and_keeps_the_circuit() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state =
+            SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let root = synthetic_agent();
+        let agent = root.agent_id;
+        state.accept(root.clone()).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        let root_pos = [200.0, 128.0, 25.0];
+        frame
+            .arrive(agent, pose_at(root_pos), [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            view_post(
+                &root,
+                region,
+                "<-56, 128, 6.916>",
+                json!([{"handle": "4", "seed": "kept"}]),
+            ),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(!accepted.still_root());
+        assert!(accepted.return_slot.is_view());
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position, root_pos);
+        assert!(seat.child);
+        assert!(!seat.actor);
+        assert_eq!(state.known_seeds(agent), vec![(4, "kept".to_string())]);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    /// An in-transit root is left as the root. The child permit is not kept.
+    #[tokio::test]
+    async fn an_in_transit_root_is_not_demoted() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state =
+            SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let root = synthetic_agent();
+        let agent = root.agent_id;
+        state.accept(root.clone()).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        accepted.return_slot.note_transit(true);
+        let root_pos = [200.0, 128.0, 25.0];
+        frame
+            .arrive(agent, pose_at(root_pos), [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            view_post(&root, region, "<-56, 128, 6.916>", json!([])),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert!(accepted.still_root());
+        assert!(!accepted.return_slot.is_view());
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position, root_pos);
+        assert!(!seat.child);
+        assert!(seat.actor);
+        assert!(receiver.try_recv().is_err());
+    }
+
+    /// A different session closes the old root and seats the view child.
+    #[tokio::test]
+    async fn a_different_session_closes_the_stale_root() {
+        let region = Uuid::from_u128(5);
+        let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (base, task) =
+            presence_server(presence_reply(Uuid::from_u128(1)), Duration::ZERO, hits);
+        let caps = CapsRegistry::new(&base).unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let mut state = SimulationState::new(&test_config(&base, region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let root = synthetic_agent();
+        let agent = root.agent_id;
+        state.accept(root).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        frame
+            .arrive(agent, pose_at([200.0, 128.0, 25.0]), [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let (root_local, root_feed) = watch(&frame, agent).await;
+        let observer = Uuid::from_u128(90);
+        let (_observer_local, observer_feed) = watch(&frame, observer).await;
+        let _ = root_feed.take_avatar_packets(usize::MAX);
+        let _ = observer_feed.take_avatar_packets(usize::MAX);
+        let mut child = synthetic_agent();
+        child.child = true;
+        child.via_login = false;
+        child.teleport_flags = 0;
+        child.session_id = Uuid::from_u128(70);
+        child.secure_session_id = Uuid::from_u128(71);
+        child.caps_path = "00000000000040008000000000000070".to_string();
+        child.circuit_code = 2;
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            view_post(&child, region, "<-56, 128, 6.916>", json!([])),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Ok(CircuitStop::Disable)
+        ));
+        let child_agent = receiver.recv().await.unwrap();
+        assert!(child_agent.return_slot.is_view());
+        assert!(!child_agent.still_root());
+        let seat = frame.seated(agent).unwrap().wait().await.unwrap().unwrap();
+        assert_eq!(seat.pose.position[0], -56.0);
+        assert_eq!(seat.pose.position[1], 128.0);
+        assert!(seat.child);
+        assert!(!seat.actor);
+        assert_eq!(kill_ids(&observer_feed), vec![root_local]);
+        assert!(kill_ids(&root_feed).is_empty());
+        child_agent.mark_root();
+        drop(accepted);
+        assert!(state.child_identity(agent).is_none());
+        task.abort();
+    }
+
+    /// `MakeChildAgent` sends the out-of-view kill to every root, then a
+    /// second kill only to a root that does not know `source_uuid`.
+    #[tokio::test]
+    async fn a_same_session_demote_spares_the_second_kill_when_the_root_knows_the_source() {
+        let region = Uuid::from_u128(5);
+        let source = Uuid::from_u128(7);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(4);
+        let mut state =
+            SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let frame = Arc::new(ferroan_scene::TerrainFrame::start_without_map().unwrap());
+        state.keep_scene(Arc::clone(&frame));
+        let hopper_id = Uuid::from_u128(80);
+        let knower_id = Uuid::from_u128(81);
+        let stranger_id = Uuid::from_u128(82);
+        let mut hopper = synthetic_agent();
+        hopper.agent_id = hopper_id;
+        hopper.session_id = hopper_id;
+        hopper.secure_session_id = Uuid::from_u128(180);
+        hopper.circuit_code = 80;
+        hopper.caps_path = Uuid::from_u128(280).to_string();
+        state.accept(hopper.clone()).unwrap();
+        let accepted = receiver.recv().await.unwrap();
+        accepted.mark_root();
+        frame
+            .arrive(hopper_id, pose_at([200.0, 128.0, 25.0]), [1.0, 0.0, 0.0])
+            .unwrap()
+            .wait()
+            .await
+            .unwrap();
+        let (hopper_local, _hopper_feed) = watch(&frame, hopper_id).await;
+        for id in [knower_id, stranger_id] {
+            frame
+                .arrive(id, pose_at([128.0, 128.0, 25.0]), [1.0, 0.0, 0.0])
+                .unwrap()
+                .wait()
+                .await
+                .unwrap();
+        }
+        let (_knower_local, knower_feed) = watch(&frame, knower_id).await;
+        let (_stranger_local, stranger_feed) = watch(&frame, stranger_id).await;
+        let mut knower = synthetic_agent();
+        knower.agent_id = knower_id;
+        knower.session_id = knower_id;
+        knower.secure_session_id = Uuid::from_u128(181);
+        knower.circuit_code = 81;
+        knower.caps_path = Uuid::from_u128(281).to_string();
+        state.accept(knower).unwrap();
+        let knower_generation = state.root_generation(knower_id).unwrap();
+        let end = RegionEnd {
+            server_uri: "http://127.0.0.1:9/".to_string(),
+            region_id: source,
+            name: "Neighbour".to_string(),
+            loc_x: 256,
+            loc_y: 256,
+        };
+        assert!(matches!(
+            state.claim_child(knower_id, knower_generation, end),
+            crate::children::Claim::New { .. }
+        ));
+        assert!(matches!(
+            state.finish_child(knower_id, knower_generation, source),
+            crate::children::Admission::Announce { .. }
+        ));
+        let _ = knower_feed.take_avatar_packets(usize::MAX);
+        let _ = stranger_feed.take_avatar_packets(usize::MAX);
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state),
+            ConnectInfo(peer),
+            sourced_view_post(
+                &hopper,
+                region,
+                "<-56, 128, 6.916>",
+                json!([]),
+                Some(source),
+            ),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert_eq!(kill_ids(&knower_feed), vec![hopper_local]);
+        assert_eq!(kill_ids(&stranger_feed), vec![hopper_local, hopper_local]);
+        drop(accepted);
+    }
+
+    /// An existing view child keeps the circuit and replaces known seeds.
+    #[tokio::test]
+    async fn an_existing_child_keeps_the_circuit_and_replaces_known_seeds() {
+        let region = Uuid::from_u128(5);
+        let caps = CapsRegistry::new("http://127.0.0.1:8002").unwrap();
+        let (sender, mut receiver) = mpsc::channel(2);
+        let state = SimulationState::new(&test_config("http://127.0.0.1:9", region), caps, sender);
+        let mut child = synthetic_agent();
+        child.child = true;
+        child.via_login = false;
+        child.teleport_flags = 0;
+        state.accept(child.clone()).unwrap();
+        let mut accepted = receiver.recv().await.unwrap();
+        assert!(accepted.return_slot.is_view());
+        let peer = "127.0.0.1:9".parse().unwrap();
+        let response = handle(
+            State(state.clone()),
+            ConnectInfo(peer),
+            view_post(
+                &child,
+                region,
+                "<-56, 128, 6.916>",
+                json!([
+                    {"handle": "10", "seed": "one"},
+                    {"handle": "nope"},
+                    {"handle": "10", "seed": "two"},
+                    {"handle": "11", "seed": "three"}
+                ]),
+            ),
+        )
+        .await;
+        let body = to_bytes(response.into_body(), MAX_BODY).await.unwrap();
+        let value: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["success"], true);
+        assert!(matches!(
+            accepted.cancelled.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(accepted.return_slot.is_view());
+        assert!(!accepted.still_root());
+        assert_eq!(
+            state.known_seeds(child.agent_id),
+            vec![(10, "one".to_string()), (11, "three".to_string())]
+        );
+        assert!(receiver.try_recv().is_err());
     }
 
     async fn delete_agent(

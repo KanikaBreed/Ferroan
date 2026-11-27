@@ -990,6 +990,84 @@ mod tests {
             root_session,
             "a visibility child replaced the root identity"
         );
+        drop(root);
+        assert!(
+            state.child_identity(agent).is_none(),
+            "a view child was published when the old lease dropped"
+        );
+        let child = accepted_rx.recv().await.unwrap();
+        assert!(child.return_slot.is_view());
+        // A Default-flag child does not become the root identity.
+        child.mark_root();
+        assert!(state.child_identity(agent).is_none());
+        home_server.abort();
+    }
+
+    /// A flags-16 child accepted while a root identity is held is published
+    /// when that lease drops, so an enable before mark_root still posts.
+    #[tokio::test]
+    async fn a_hop_child_identity_is_published_when_the_old_lease_drops() {
+        let root_body: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        let agent = Uuid::parse_str(root_body["agent_id"].as_str().unwrap()).unwrap();
+        let root_session = Uuid::parse_str(root_body["session_id"].as_str().unwrap()).unwrap();
+        let region = Uuid::parse_str(root_body["destination_uuid"].as_str().unwrap()).unwrap();
+        let home_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let home_base = format!("http://{}", home_listener.local_addr().unwrap());
+        let caps = CapsRegistry::new(&home_base).unwrap();
+        let (accepted_tx, mut accepted_rx) = mpsc::channel(1);
+        let config = region_config(&home_base, region);
+        let state = SimulationState::new(&config, caps.clone(), accepted_tx);
+        let app = state.clone().router().merge(caps.router()).route(
+            "/presence",
+            axum::routing::post(move || {
+                let reply = presence_reply(agent);
+                async move { reply }
+            }),
+        );
+        let home_server = tokio::spawn(async move {
+            axum::serve(
+                home_listener,
+                app.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .unwrap();
+        });
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .build()
+            .unwrap();
+        let post = |body: Value| {
+            let http = http.clone();
+            let home_base = home_base.clone();
+            async move {
+                http.post(format!("{home_base}/agent/{agent}/"))
+                    .header("content-type", "application/json")
+                    .body(body.to_string())
+                    .send()
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(post(root_body).await.status(), reqwest::StatusCode::OK);
+        let root = accepted_rx.recv().await.unwrap();
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            root_session
+        );
+        let child_session = Uuid::from_u128(70);
+        let mut child_body: Value = serde_json::from_str(CREATE_REQUEST).unwrap();
+        child_body["child"] = json!(true);
+        child_body["teleport_flags"] = json!("16");
+        child_body["session_id"] = json!(child_session.to_string());
+        child_body["secure_session_id"] = json!(Uuid::from_u128(71).to_string());
+        child_body["caps_path"] = json!("00000000000040008000000000000099");
+        child_body["circuit_code"] = json!("2");
+        assert_eq!(post(child_body).await.status(), reqwest::StatusCode::OK);
+        assert_eq!(
+            state.child_identity(agent).unwrap().session_id,
+            root_session,
+            "a hop child replaced the root identity"
+        );
         let (recorded_tx, mut recorded_rx) = mpsc::channel(4);
         let neighbour_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let neighbour_addr = neighbour_listener.local_addr().unwrap();
@@ -1035,6 +1113,7 @@ mod tests {
         .expect("enable between the lease drop and mark_root did not post");
         assert_eq!(method.unwrap(), "POST");
         let child = accepted_rx.recv().await.unwrap();
+        assert!(!child.return_slot.is_view());
         child.mark_root();
         assert_eq!(
             state.child_identity(agent).unwrap().session_id,

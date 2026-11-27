@@ -126,6 +126,8 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | QR43 | R43: the region-slot UDP port test holds the free port for TCP and UDP | DONE (this PR) |
 | QR45 | R45: a role zone survives a revoked `pg_roles`, a file zone needs a readable command line, and a bad `PGTZ` is refused before the pool | DONE (this PR) |
 | QR46 | R46: the C# neighbour seed leaves 5 cm under the physics capsule | DONE (this PR) |
+| QR47 | R47: an in-transit root is neither demoted nor closed on any create | READY after Q80a |
+| QR48 | R48: a different-session create over an existing child keeps that child | READY after Q80a |
 | QR49 | R49: oracle and live builds check out the REFERENCES.md pin in their own clone | DONE (this PR) |
 | Q86 | P2.6a3a2: read group memberships from the Local (SQLite) groups connector | DONE (this PR) |
 | Q13c | P0.13c: logging and diagnostics fixes from the review (secrets in the diag ring first) | SPLIT into Q13c1 to Q13c3 (#119) |
@@ -262,7 +264,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q79c2a | P2.11a3b1: finish every child claim exactly once, and close children on a far hop | DONE (this PR) |
 | Q79c2b | P2.11a3b2: drive the neighbour set from the frame, live against the Q79a capture | DONE (this PR) |
 | Q80 | P2.11b: Ferroan accepts the C# neighbour's child and `AgentPosition` | BLOCKED (split into Q80a–Q80b) |
-| Q80a | P2.11b1: keep the C# neighbour's child a child presence | READY after Q79c2b |
+| Q80a | P2.11b1: keep the C# neighbour's child a child presence | DONE (this PR) |
 | Q80b | P2.11b2: apply `AgentPosition` and prove the mirror of child-view live | READY after Q80a |
 | Q85 | P2.11c: child-agent throttles: scale the throttles an `AgentPosition` or `AgentData` carries, and send `GetThrottlesPacked(1)` on the outgoing ones | READY after Q80b |
 | Q81 | P2.12: the Phase 2 gate report and the `MANUAL_CHECKS.md` section | READY after Q40 to Q80 and Q82 to Q85 |
@@ -1190,6 +1192,9 @@ The live proof is the mirror of child-view. Home stays C# with BasicPhysics and 
 2. **Q80b — apply `AgentPosition` and prove the mirror** (after Q80a, about one day). `UpdateChildAgent(AgentPosition)` stores `position + offset`, `center + offset` and `Far`, and applies a nonempty children-seed map, then `checkRePrioritization`. The throttle factor stays Q85. A root returns true and does not move. A missing presence or a mismatched session returns false. Live, under the shared live lock with a free port base and `UseSharedCompilation=false`: C# hosts the root and Ferroan is the neighbour, the mirror of `child-view`, the same walk as the Pin8-to-Pin8 capture. The observer on the C# region receives the Ferroan resident and the stored prim. Those blocks match `fixtures/child-view/avatar.bin` and `prim.bin`, with local IDs mapped, and re-encoding the unredacted original still reproduces the captured bytes before anything is published. The child POST, the movement PUTs and `CloseAgent` stay in the capture's order.
 
 Q85 still waits for inbound child throttles and should follow Q80b. This note does not add queue rows and does not retarget Q85 or Q81. P2.11b stays the parent until both parts are done. No new decision or Tranquillity bug number is used.
+
+
+**Q80a — DONE (this PR)** on `feat/q80a-child-presence`. A Default-flag child is seated at the posted start before `CreateAgent` returns, with no physics actor, and `CompleteAgentMovement` does not promote it. A flags-`16` child still waits and can become root. Q80b applies `AgentPosition` and the live mirror.
 
 ### Q65d store swap and viewer load
 

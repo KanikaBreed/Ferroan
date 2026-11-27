@@ -379,6 +379,47 @@ async fn a_new_child_waits_for_the_update_without_a_second_handshake() {
         Err(oneshot::error::TryRecvError::Empty)
     ));
     assert!(slot.is_child());
+    assert!(!slot.is_view());
+}
+
+#[tokio::test]
+async fn a_view_child_completes_movement_without_a_root_report() {
+    let slot = crate::return_hop::ReturnSlot::new_view();
+    let arrival = ArrivalConfig {
+        return_slot: Some(slot.clone()),
+        position: [-56.0, 128.0, 6.916],
+        look_at: [0.0, 1.0, 0.0],
+        ..ArrivalConfig::default()
+    };
+    let mut state = State::new(HandshakeConfig::for_region(identity().region_id), arrival);
+    let (sender, mut notification) = oneshot::channel();
+    state.root_arrival = Some(sender);
+    let io = RecordedIo::default();
+    connect(&mut state, &io).await;
+    state
+        .handle(&io, peer(), &identity(), &wire(&movement(), 2), 0)
+        .await
+        .unwrap();
+    assert!(state.arrived);
+    assert!(!state.return_wait);
+    assert!(!state.return_started);
+    assert_eq!(io.arrivals(), 0);
+    assert!(matches!(
+        notification.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(slot.is_view());
+    state
+        .handle(&io, peer(), &identity(), &wire(&movement(), 3), 0)
+        .await
+        .unwrap();
+    assert!(!state.return_wait);
+    assert_eq!(io.arrivals(), 0);
+    assert!(matches!(
+        notification.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    assert!(slot.is_view());
 }
 
 #[tokio::test]

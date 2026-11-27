@@ -491,6 +491,12 @@ impl Body {
         self.motion.sit_ground
     }
 
+    /// The physics actor. A view child has none. A login hold also has none
+    /// until arrival; that hold is not [`Self::child_agent`].
+    pub(crate) fn has_actor(&self) -> bool {
+        self.actor
+    }
+
     pub(crate) fn view(&self) -> Motion {
         self.motion
     }
