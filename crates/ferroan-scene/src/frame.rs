@@ -3934,6 +3934,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         let replaced = scene.presences.get(&child).unwrap();
         assert_eq!(replaced.pose.position, [1.0, 1.0, 1.0]);
@@ -4032,6 +4033,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         let (_child_feed, _) = open_viewer_flags(&mut scene, child, true, 0);
         for _ in 0..4 {
@@ -4056,6 +4058,7 @@ mod tests {
             None,
             &[],
             0,
+            no_physics(),
         ));
         assert!(
             packet_kinds(&staying_feed)
