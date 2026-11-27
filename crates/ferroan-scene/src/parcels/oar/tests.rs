@@ -304,7 +304,7 @@ async fn run_case(
 #[tokio::test]
 async fn every_parcel_load_matches_pin8() {
     let fixture: Fixture = serde_json::from_str(FIXTURE).unwrap();
-    assert_eq!(fixture.revision, "c401bceecd1684832ae8ba86a31b5ee01a4ded7b");
+    assert_eq!(fixture.revision, ferroan_diag::TRANQUILLITY_PIN);
     let mut known: HashSet<Uuid> = fixture.file_ids.values().copied().collect();
     known.extend(fixture.existing.iter().map(|row| row.global_id));
     let default_local = fixture

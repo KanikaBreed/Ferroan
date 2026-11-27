@@ -2,7 +2,7 @@
 
 The live harness (P0.10 in [ACTION_PLAN.md](ACTION_PLAN.md)) runs a real Tranquillity region on this machine and drives it with `ferroan-bot`. It is Linux-only. Run state, the scratch Tranquillity tree and the generated password stay under `.scratch/live/`. The password is not printed. The reference checkout is only read. Set `FERROAN_REF` when that checkout is not `~/Git/reference`.
 
-Pin8 is [KanikaBreed/OpenSim-Tranquillity](https://github.com/KanikaBreed/OpenSim-Tranquillity) `dev-build` at `c401bceecd1684832ae8ba86a31b5ee01a4ded7b` ([D21](DECISIONS.md)). Pin7 was OpenSim-NGC `develop` `1052cbae82`. Pin6 was KanikaBreed/OpenSim-Tranquillity `dev-build` `1d7abb8337`. Pin5 was that fork's `dev-build` `c70fee205f`. Pin4 was OpenSim-NGC `develop` `f67db54399`. Pin3 (`40432e0`, the maintainer's `dev-build`) merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56). The clean shared reference checkout is at Pin8. CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). Builds use separate writable scratch copies; `FERROAN_REF` selects clean alternate reference checkouts when needed.
+Pin9 is [KanikaBreed/OpenSim-Tranquillity](https://github.com/KanikaBreed/OpenSim-Tranquillity) `dev-build` at `41f18f983bb2bfc82e033fed410d361ba57d5aa4` (tag `ferroan-pin9`, [D21](DECISIONS.md), [D144](DECISIONS.md)): Pin8 plus the Jolt 5.6 move, so the C# region built from it ships the deterministic linux-x64 joltc `886e0886`, which `JoltNative.targets` copies over the package file. The harness runs that region on its default ubODE or on `basicphysics`, so no live run loads the Jolt module. Pin8 was `dev-build` `c401bceecd` (tag `ferroan-pin8`). Pin7 was OpenSim-NGC `develop` `1052cbae82`. Pin6 was KanikaBreed/OpenSim-Tranquillity `dev-build` `1d7abb8337`. Pin5 was that fork's `dev-build` `c70fee205f`. Pin4 was OpenSim-NGC `develop` `f67db54399`. Pin3 (`40432e0`, the maintainer's `dev-build`) merged in [#56](https://github.com/KanikaBreed/Ferroan/pull/56). The clean shared reference checkout is at Pin9. CI reads both the clone URL and revision from [REFERENCES.md](REFERENCES.md). Builds use separate writable scratch copies; `FERROAN_REF` selects clean alternate reference checkouts when needed.
 
 The fixed C# sends `LogoutReply` immediately. The strict login checks still require that packet and a fresh arrival on the current circuit. The Rust region also follows pending ViaLogin connections, clears stranded GridUser users at startup, and attempts independent close notifications. Controlled C# observations for those cases and trusted-host parsing are regenerated with `cargo xtask pin3 generate` and checked with `cargo xtask pin3 verify`; see [the fixture provenance](../fixtures/pin3/README.md).
 
@@ -203,7 +203,7 @@ Start from a Ferroan worktree root; the commands create a separate scratch clone
    ```sh
    W="$PWD/.scratch/tranquillity-live"
    git clone --no-checkout https://github.com/KanikaBreed/OpenSim-Tranquillity.git "$W"
-   git -C "$W" checkout --detach c401bceecd1684832ae8ba86a31b5ee01a4ded7b
+   git -C "$W" checkout --detach 41f18f983bb2bfc82e033fed410d361ba57d5aa4
    cd "$W"
    dotnet publish Source/OpenSim.Server.RegionServer/OpenSim.Server.RegionServer.csproj -c Release -r linux-x64
    P="$W/Source/OpenSim.Server.RegionServer/bin/Release/net10.0/linux-x64/publish"
