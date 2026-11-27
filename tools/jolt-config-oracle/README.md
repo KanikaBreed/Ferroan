@@ -106,8 +106,12 @@ counts stock `OnStep` calls the seam forwarded. `first_heartbeat` is the
 first heartbeat index the host observed. A wrong-clock file and a
 wrong-collider file change one captured number each. Verify writes each
 file over its channel and requires the tree compare to reject it. The
-baseline name is `pin8-linux-x86_64`. An unknown native prints `SKIPPED`
-and exits 3, and that result does not pass.
+anchor is the pin's deterministic linux-x64 joltc (origin `Rebuilt`, 2,701,768
+bytes, SHA-256 `27EFC48C…288B`); `JoltRecordOracle.csproj` imports the pin's
+`JoltNative.targets`, which copies that file over the package's. The baseline
+name is `det-886e0886-linux-x64`, which must equal `BaselineCheck.KeyFor` of
+the loaded build. Any other native prints `SKIPPED` and exits 3, and that
+result does not pass.
 The command clears `JOLT_HARNESS_PHYSICS_RATE` before it builds the harness
 options. It does not patch the pin and it does not start a region.
 

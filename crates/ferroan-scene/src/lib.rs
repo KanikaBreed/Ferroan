@@ -70,6 +70,8 @@
 //! `ferroan-region` keeps this load at startup. Stored prims have full update blocks ([`prim_update`]).
 //! Initial data queues them in link order. Q65c3 drains them onto the wire.
 //! An OAR load's creator, owner and group rewrite is [`oar_owners`].
+//! Region environment settings load, store and remove are [`environment`].
+//! Startup does not call that writer.
 
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
@@ -80,6 +82,7 @@ pub mod client_flags;
 pub mod coarse;
 mod compress;
 pub mod entity_queue;
+mod environment;
 mod error;
 mod estate;
 mod frame;
@@ -88,6 +91,7 @@ mod initial;
 mod motion;
 pub mod oar_owners;
 pub mod object_permissions;
+pub mod object_properties;
 mod objects;
 pub mod parcels;
 mod payloads;
@@ -115,19 +119,22 @@ pub use entity_queue::{
     FULL_UPDATE_WITH_ANIM, FieldPacket, KILL, MATERIAL_OVR, MAX_ENTITY_UPDATES, POSITION,
     QueuedUpdate, ROTATION, SCALE, SEND_IN_TRANSIT, TERSE_UPDATE, UPDATE_PROBE, VELOCITY, classify,
 };
+pub use environment::{
+    EnvironmentError, load_region_environment, remove_region_environment, store_region_environment,
+};
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway,
-    ParcelSender, Pending, Presence, Seat, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame,
-    ViewerLink, landed_z,
+    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, DeleteRights, HopReturn, Leaving, LocalTeleport,
+    MovedAway, ParcelSender, Pending, Presence, Seat, TELEPORT_IS_FLYING, TeleportStored,
+    TerrainFrame, ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
 pub use motion::{Applied, MAX_DRAW_DISTANCE, Motion, MotionUpdate, ReturnData, clock_ms};
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
-    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
+    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, omv_uuid, open_objects,
 };
 pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,

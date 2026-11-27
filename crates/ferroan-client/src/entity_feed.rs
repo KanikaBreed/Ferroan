@@ -184,6 +184,15 @@ pub fn coarse_update(
     }
 }
 
+/// Object-property payloads from one `ProcessEntityPropertyRequests` pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PropertySend {
+    /// Zero-coded `ObjectProperties` payloads, message id included.
+    pub objects: Vec<Vec<u8>>,
+    /// Raw `ObjectPropertiesFamily` payloads. The circuit zero-codes them.
+    pub families: Vec<Vec<u8>>,
+}
+
 /// The region's side of one viewer's entity updates.
 pub trait EntityUpdates: Send + Sync {
     /// `HandleHasUpdates` for the task category.
@@ -197,6 +206,10 @@ pub trait EntityUpdates: Send + Sync {
     /// A feed that never reaches that gate leaves this false.
     fn take_land_pass(&self) -> bool {
         false
+    }
+    /// `ProcessEntityPropertyRequests` with a fresh task budget.
+    fn take_properties(&self, _budget: i32) -> PropertySend {
+        PropertySend::default()
     }
 }
 

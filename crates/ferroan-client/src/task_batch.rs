@@ -38,15 +38,20 @@
 use crate::AVATAR_TERSE_LEN;
 use ferroan_protocol::{
     Msg, Writer,
-    msgs::{ObjectUpdate, object_update::ObjectData},
+    msgs::{ObjectProperties, ObjectUpdate, object_update::ObjectData},
     packet::{HEADER_SIZE, MAX_DATAGRAM},
 };
 
-/// One callback's Task sends: full packets, terse blocks, then material bodies.
+/// `LLUDPServer.MAXPAYLOAD`. Property packets split at this absolute position.
+const MAX_PAYLOAD: usize = 1200;
+
+/// One callback's Task sends: full packets, terse blocks, material bodies, then kills.
 pub struct TaskPackets {
     pub full: Vec<Vec<u8>>,
     pub terse: Vec<[u8; AVATAR_TERSE_LEN]>,
     pub materials: Vec<Vec<u8>>,
+    /// Local ids recorded from `PrimUpdateFlags.Kill` during this drain.
+    pub kills: Vec<u32>,
 }
 
 /// One Task queue-empty callback, bounded by its byte estimate and reliable window.
@@ -57,6 +62,7 @@ pub struct TaskBatch {
     full: Option<FullPackets>,
     terse: Vec<[u8; AVATAR_TERSE_LEN]>,
     materials: Vec<Vec<u8>>,
+    kills: Vec<u32>,
 }
 
 impl TaskBatch {
@@ -80,7 +86,14 @@ impl TaskBatch {
             full: None,
             terse: Vec::new(),
             materials: Vec::new(),
+            kills: Vec::new(),
         }
+    }
+
+    /// `PrimUpdateFlags.Kill`: 30 estimated bytes, no full or terse slot.
+    pub fn note_kill(&mut self, local_id: u32) {
+        self.budget -= 30;
+        self.kills.push(local_id);
     }
 
     pub fn has_room(&self) -> bool {
@@ -124,6 +137,7 @@ impl TaskBatch {
             full: self.full.map(FullPackets::finish).unwrap_or_default(),
             terse: self.terse,
             materials: self.materials,
+            kills: self.kills,
         }
     }
 
@@ -195,6 +209,87 @@ impl FullPackets {
         if self.count != 0
             && (HEADER_SIZE + self.current.bytes.len() >= 900 || self.count == u8::MAX)
         {
+            self.current.bytes.truncate(last);
+            self.current.zeros = pending;
+            self.emit();
+            self.current.append(block);
+        }
+        let size =
+            HEADER_SIZE + self.current.bytes.len() + if self.current.zeros == 0 { 0 } else { 2 };
+        if size > MAX_DATAGRAM {
+            ferroan_diag::drop_bound(
+                ferroan_diag::UDP_DATAGRAM,
+                ferroan_diag::Kind::Hard,
+                MAX_DATAGRAM as u64,
+                size as u64,
+                "udp",
+            );
+            self.current = self.header.clone();
+            return;
+        }
+        self.count += 1;
+    }
+
+    fn emit(&mut self) {
+        if self.count == 0 {
+            return;
+        }
+        self.current.bytes[self.header.bytes.len() - 1] = self.count;
+        self.current.flush_zeros();
+        let complete = std::mem::replace(&mut self.current, self.header.clone());
+        self.packets.push(complete.bytes);
+        self.count = 0;
+    }
+
+    fn finish(mut self) -> Vec<Vec<u8>> {
+        self.emit();
+        self.packets
+    }
+}
+
+/// `ProcessEntityPropertyRequests` object packets. `Position` excludes the open
+/// zero run. A block that would land at or past `MAXPAYLOAD` starts the next
+/// packet when an earlier block is already in this one. The count byte stays
+/// nonzero, so overwriting the placeholder does not change the zero coding.
+pub fn object_property_packets(blocks: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+    let mut packets = PropertyPackets::new();
+    for block in blocks {
+        packets.push(block);
+    }
+    packets.finish()
+}
+
+struct PropertyPackets {
+    header: CodedBody,
+    current: CodedBody,
+    count: u8,
+    packets: Vec<Vec<u8>>,
+}
+
+impl PropertyPackets {
+    fn new() -> Self {
+        let mut prefix = Vec::new();
+        ObjectProperties::ID.encode(&mut prefix);
+        prefix.push(1);
+        let mut header = CodedBody::default();
+        header.append(&prefix);
+        Self {
+            current: header.clone(),
+            header,
+            count: 0,
+            packets: Vec::new(),
+        }
+    }
+
+    fn push(&mut self, block: &[u8]) {
+        let last = self.current.bytes.len();
+        let pending = self.current.zeros;
+        self.current.append(block);
+        // C# `Position` is six plus this length. It splits at `Position >= MAXPAYLOAD`.
+        if self.count != 0 && HEADER_SIZE + self.current.bytes.len() >= MAX_PAYLOAD {
             self.current.bytes.truncate(last);
             self.current.zeros = pending;
             self.emit();
@@ -458,9 +553,48 @@ mod tests {
             full,
             terse,
             materials,
+            ..
         } = batch.finish();
         assert!(full.is_empty());
         assert!(terse.is_empty());
         assert_eq!(materials, vec![vec![31, 1], b"kept".to_vec()]);
+    }
+
+    #[test]
+    fn property_packets_split_when_the_coded_position_reaches_maxpayload() {
+        let block = vec![0x11; 400];
+        let packets = object_property_packets(&[block.clone(), block.clone(), block]);
+        assert_eq!(packets.len(), 2);
+        assert_eq!(packets[0][2], 2);
+        assert_eq!(packets[1][2], 1);
+        assert_eq!(packets[0].len(), 3 + 800);
+        assert_eq!(packets[1].len(), 3 + 400);
+
+        // Position is 6 + bytes.len(). 1193 keeps (position 1199). 1194 splits.
+        let first = vec![0x11];
+        let keep = vec![0x11; 1189];
+        let kept = object_property_packets(&[first.clone(), keep]);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].len(), 1193);
+        assert_eq!(kept[0][2], 2);
+
+        let split = vec![0x11; 1190];
+        let split_packets = object_property_packets(&[first, split]);
+        assert_eq!(split_packets.len(), 2);
+        assert_eq!(split_packets[0][2], 1);
+        assert_eq!(split_packets[1][2], 1);
+
+        assert!(object_property_packets(&[vec![0x11; 4100]]).is_empty());
+    }
+
+    #[test]
+    fn a_kill_costs_thirty_bytes_and_no_slot() {
+        let mut batch = TaskBatch::new(7, 40, 1);
+        batch.note_kill(9);
+        assert_eq!(batch.budget(), 10);
+        assert!(batch.has_room());
+        batch.note_kill(10);
+        assert!(!batch.has_room());
+        assert_eq!(batch.finish().kills, vec![9, 10]);
     }
 }

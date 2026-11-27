@@ -4923,6 +4923,7 @@ mod tests {
                     hover: 0.0,
                 }),
                 teleport_flags: 1 << 7,
+                rights: ferroan_scene::DeleteRights::default(),
             };
             let local_id = frame.attach(agent, link).unwrap().wait().await.unwrap();
             let pose = ferroan_scene::Presence {
@@ -4997,6 +4998,7 @@ mod tests {
     ) -> (u32, std::sync::Arc<ferroan_scene::terse::ViewerFeed>) {
         let feed = frame.new_feed();
         let link = ferroan_scene::ViewerLink {
+            rights: ferroan_scene::DeleteRights::default(),
             feed: std::sync::Arc::clone(&feed),
             seeds_sent: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             circuit_open: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),

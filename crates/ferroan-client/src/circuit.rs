@@ -72,7 +72,7 @@ use crate::chat::{ChatSeat, DEBUG_CHANNEL, RegionChat, ViewerBound};
 use crate::datagram_log::DatagramLog;
 use crate::entity_feed::{
     AvatarPacket, EntityFeed, QUEUE_EMPTY_BELOW, QUEUE_EMPTY_INTERVAL, QUEUE_EMPTY_MS,
-    terse_packets,
+    kill_packets, terse_packets,
 };
 use crate::names::{CircuitNames, RegionNames, Requested, UserName};
 use crate::source_hop::{HopCommand, HopOut, HopPose, HopRequest, SourceHop};
@@ -87,17 +87,18 @@ use ferroan_diag::{
 };
 use ferroan_protocol::msgs::{
     AgentAnimation, AgentPause, AgentResume, AgentThrottle, AgentUpdate, ChatFromViewer,
-    CompleteAgentMovement, CompletePingCheck, DisableSimulator, KickUser, LayerData, LogoutReply,
-    LogoutRequest, PacketAck, ParcelOverlay, ParcelPropertiesRequest, RegionHandshakeReply,
-    SetAlwaysRun, StartPingCheck, TeleportLocal, TeleportLocationRequest, UUIDNameRequest,
-    UseCircuitCode, logout_reply, packet_ack, start_ping_check,
+    CompleteAgentMovement, CompletePingCheck, DeRezObject, DisableSimulator, KickUser, LayerData,
+    LogoutReply, LogoutRequest, ObjectSelect, PacketAck, ParcelOverlay, ParcelPropertiesRequest,
+    RegionHandshakeReply, RequestObjectPropertiesFamily, SetAlwaysRun, StartPingCheck,
+    TeleportLocal, TeleportLocationRequest, UUIDNameRequest, UseCircuitCode, logout_reply,
+    packet_ack, start_ping_check,
 };
 use ferroan_protocol::packet::{self, MAX_DATAGRAM};
 use ferroan_protocol::reliability::{
     MAX_UNACKED, RecentSequences, ReliableWindow, SequenceCounter,
 };
 use ferroan_protocol::{IncomingPacket, Msg, Writer};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -117,6 +118,57 @@ const MAX_PENDING_ACKS: usize = 4096;
 /// `LLUDPClient.DequeueOutgoing` sends only resends while more than this many
 /// reliable packets wait for an ack.
 const ACK_STALL: usize = 50;
+/// `DeRezAction.Delete`.
+const DEREZ_DELETE: u8 = 6;
+
+/// One `HandlerDeRezObject` transaction still waiting for its packets.
+struct DeRezCollect {
+    seen: HashSet<u8>,
+    ids: Vec<u32>,
+}
+
+/// Pending multi-packet `DeRezObject` transactions kept per circuit.
+const MAX_DEREZ_TRANSACTIONS: usize = 8;
+
+/// `HandlerDeRezObject` (`LLClientView.cs` 9218–9276). `PacketCount` of 1 or 0
+/// acts at once. A larger count collects by `TransactionID`, ignores a repeated
+/// `PacketNumber`, and returns the ids only when the current packet's count
+/// has all arrived. A new transaction past `MAX_DEREZ_TRANSACTIONS` is refused
+/// and not stored. One already in the map still accepts its remaining packets.
+fn collect_derez(
+    pending: &mut HashMap<Uuid, DeRezCollect>,
+    transaction: Uuid,
+    count: u8,
+    number: u8,
+    ids: Vec<u32>,
+) -> Option<Vec<u32>> {
+    if count <= 1 {
+        return Some(ids);
+    }
+    if !pending.contains_key(&transaction) && pending.len() >= MAX_DEREZ_TRANSACTIONS {
+        ferroan_diag::refuse(
+            ferroan_diag::UDP_DEREZ_TRANSACTIONS,
+            Kind::Hard,
+            MAX_DEREZ_TRANSACTIONS as u64,
+            pending.len() as u64 + 1,
+            "udp",
+        );
+        return None;
+    }
+    let entry = pending.entry(transaction).or_insert_with(|| DeRezCollect {
+        seen: HashSet::new(),
+        ids: Vec::new(),
+    });
+    if !entry.seen.insert(number) {
+        return None;
+    }
+    entry.ids.extend(ids);
+    if entry.seen.len() >= usize::from(count) {
+        pending.remove(&transaction).map(|done| done.ids)
+    } else {
+        None
+    }
+}
 const ACKS_PER_PACKET: usize = 255;
 /// Maximum unsent TeleportLocal replies per circuit, independent of Land and other Task traffic.
 const MAX_PENDING_TELEPORTS: usize = 256;
@@ -306,6 +358,13 @@ pub enum SceneCall {
     HandshakeReply,
     /// `ParcelPropertiesRequest`. The frame queues the elements, then answers.
     ParcelRequest(ParcelQuery),
+    /// `RequestObjectPropertiesFamily`. One post, no answer. A full inbound
+    /// queue drops it.
+    PropertiesFamily { object_id: Uuid, request_flags: u32 },
+    /// `ObjectSelect`. One post, no answer. A full inbound queue drops it.
+    ObjectSelect(Vec<u32>),
+    /// `DeRezObject` with destination Delete. One post, no answer.
+    DeRezDelete(Vec<u32>),
     /// The stored pose. A missing record is [`SceneReply::Missing`].
     Read,
 }
@@ -613,6 +672,8 @@ struct State {
     handshake_reply: Option<Uuid>,
     /// `UUIDNameRequest` answers. Absent when the region has no name lookup.
     names: Option<CircuitNames>,
+    /// `HandlerDeRezObject`'s multi-packet collection, keyed by TransactionID.
+    derez: HashMap<Uuid, DeRezCollect>,
 }
 impl State {
     #[cfg(test)]
@@ -715,6 +776,7 @@ impl State {
             queue_empty_at: now,
             handshake_reply: None,
             names: None,
+            derez: HashMap::new(),
         })
     }
 
@@ -903,6 +965,7 @@ impl State {
             full,
             terse: blocks,
             materials,
+            kills,
         } = crate::TaskBatch::drain(feed.updates.as_ref(), region_handle, budget, room);
         let mut queued = !full.is_empty();
         for bytes in full {
@@ -924,6 +987,30 @@ impl State {
             self.pending_task.push_back(Payload {
                 bytes,
                 coding: Coding::Plain,
+                reliable: true,
+            });
+            queued = true;
+        }
+        // `SendKillObject` runs at the end of `ProcessEntityUpdates`, before properties.
+        for packet in kill_packets(&kills) {
+            self.pending_task.push_back(encode_payload(&packet)?);
+            queued = true;
+        }
+        // `HandleQueueEmpty` gives properties the same fresh task budget.
+        let property_budget = self.throttle.bytes_can_send(TASK, QUEUE_EMPTY_MS);
+        let properties = feed.updates.take_properties(property_budget);
+        for bytes in properties.objects {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Preencoded,
+                reliable: true,
+            });
+            queued = true;
+        }
+        for bytes in properties.families {
+            self.pending_task.push_back(Payload {
+                bytes,
+                coding: Coding::Zero,
                 reliable: true,
             });
             queued = true;
@@ -1395,6 +1482,44 @@ impl State {
             if let Ok(update) = packet.decode::<SetAlwaysRun>() {
                 self.forward_always_run(expect, update.agent_data.always_run);
             }
+        } else if packet.id == RequestObjectPropertiesFamily::ID {
+            if let Ok(request) = packet.decode::<RequestObjectPropertiesFamily>() {
+                self.post_scene(
+                    expect.agent_id,
+                    SceneCall::PropertiesFamily {
+                        object_id: request.object_data.object_id,
+                        request_flags: request.object_data.request_flags,
+                    },
+                );
+            }
+        } else if packet.id == ObjectSelect::ID {
+            if let Ok(request) = packet.decode::<ObjectSelect>() {
+                let ids = request
+                    .object_data
+                    .iter()
+                    .map(|block| block.object_local_id)
+                    .collect();
+                self.post_scene(expect.agent_id, SceneCall::ObjectSelect(ids));
+            }
+        } else if packet.id == DeRezObject::ID {
+            if let Ok(request) = packet.decode::<DeRezObject>()
+                && request.agent_block.destination == DEREZ_DELETE
+            {
+                let ids = request
+                    .object_data
+                    .iter()
+                    .map(|block| block.object_local_id)
+                    .collect();
+                if let Some(ids) = collect_derez(
+                    &mut self.derez,
+                    request.agent_block.transaction_id,
+                    request.agent_block.packet_count,
+                    request.agent_block.packet_number,
+                    ids,
+                ) {
+                    self.post_scene(expect.agent_id, SceneCall::DeRezDelete(ids));
+                }
+            }
         } else if packet.id == LogoutRequest::ID {
             let mut reply = LogoutReply::default();
             reply.agent_data.agent_id = expect.agent_id;
@@ -1577,6 +1702,13 @@ impl State {
         }
         self.always_run = Some((expect.agent_id, always_run));
         self.flush_motion();
+    }
+
+    /// A property, select, or delete post. A full inbound queue drops it.
+    fn post_scene(&mut self, agent: Uuid, call: SceneCall) {
+        if let Some(scene) = self.login_scene.clone() {
+            let _ = scene(agent, call);
+        }
     }
 
     /// `RegionHandshakeReply` onto the frame, without waiting.
@@ -3125,6 +3257,75 @@ mod timing_tests;
 mod regression_tests;
 
 #[cfg(test)]
+mod derez_collect_tests {
+    use super::collect_derez;
+    use std::collections::HashMap;
+    use uuid::Uuid;
+
+    #[test]
+    fn a_split_delete_waits_until_every_packet_and_ignores_a_repeat() {
+        let transaction = Uuid::from_u128(7);
+        let mut pending = HashMap::new();
+        assert!(collect_derez(&mut pending, transaction, 3, 0, vec![1]).is_none());
+        assert!(collect_derez(&mut pending, transaction, 3, 0, vec![9]).is_none());
+        assert_eq!(pending[&transaction].ids, vec![1]);
+        // The completing packet's count is the one that finishes the set.
+        let ids = collect_derez(&mut pending, transaction, 2, 1, vec![2, 3]).unwrap();
+        assert_eq!(ids, vec![1, 2, 3]);
+        assert!(pending.is_empty());
+        assert_eq!(
+            collect_derez(&mut pending, transaction, 1, 0, vec![4]).unwrap(),
+            vec![4]
+        );
+    }
+
+    fn refuse_hits() -> u64 {
+        let prefix =
+            "ferroan_limit_hits_total{limit=\"udp.derez-transactions\",action=\"refuse\"} ";
+        ferroan_diag::metrics()
+            .lines()
+            .find_map(|line| line.strip_prefix(prefix)?.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// A ninth unfinished transaction is refused. An open one still finishes,
+    /// a repeated packet number is not a new transaction, and a single packet
+    /// never enters the map.
+    #[test]
+    fn a_new_derez_transaction_past_the_cap_is_refused() {
+        let before = refuse_hits();
+        let mut pending = HashMap::new();
+        for n in 0..super::MAX_DEREZ_TRANSACTIONS {
+            let id = Uuid::from_u128(n as u128);
+            assert!(collect_derez(&mut pending, id, 2, 0, vec![n as u32]).is_none());
+        }
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
+        assert_eq!(refuse_hits(), before);
+        let extra = Uuid::from_u128(100);
+        assert!(collect_derez(&mut pending, extra, 2, 0, vec![9]).is_none());
+        assert!(!pending.contains_key(&extra));
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
+        assert_eq!(refuse_hits(), before + 1);
+        let open = Uuid::from_u128(0);
+        assert!(collect_derez(&mut pending, open, 2, 0, vec![99]).is_none());
+        assert_eq!(refuse_hits(), before + 1);
+        assert_eq!(pending[&open].ids, vec![0]);
+        let ids = collect_derez(&mut pending, open, 2, 1, vec![1]).unwrap();
+        assert_eq!(ids, vec![0, 1]);
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS - 1);
+        assert!(collect_derez(&mut pending, extra, 2, 0, vec![9]).is_none());
+        assert!(pending.contains_key(&extra));
+        assert_eq!(refuse_hits(), before + 1);
+        assert_eq!(
+            collect_derez(&mut pending, Uuid::from_u128(200), 1, 0, vec![4]).unwrap(),
+            vec![4]
+        );
+        assert!(!pending.contains_key(&Uuid::from_u128(200)));
+        assert_eq!(pending.len(), super::MAX_DEREZ_TRANSACTIONS);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use std::collections::HashMap;
     use std::net::SocketAddr;
@@ -3385,7 +3586,10 @@ mod tests {
                 | SceneCall::AgentAnimation(_)
                 | SceneCall::HandshakeReply
                 | SceneCall::InitialLand
-                | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
+                | SceneCall::ParcelRequest(_)
+                | SceneCall::PropertiesFamily { .. }
+                | SceneCall::ObjectSelect(_)
+                | SceneCall::DeRezDelete(_) => Ok(SceneReply::Applied),
                 SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                     flying: false,
                     pose: crate::source_hop::HopPose::default(),

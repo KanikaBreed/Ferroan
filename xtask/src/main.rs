@@ -711,6 +711,8 @@ mod tests {
             "       cargo xtask live run prim-arrival grid --physics basicphysics\n",
             "       cargo xtask live run material-override grid --physics basicphysics\n",
             "       cargo xtask live run material-override grid --region ferroan\n",
+            "       cargo xtask live run object-properties grid --region ferroan\n",
+            "       cargo xtask live run object-properties grid --physics basicphysics\n",
             "       cargo xtask live run <scenario>|all [grid] [--region ferroan] [--physics basicphysics] [--rust <service>,…] [--db sqlite|mysql|pgsql]\n",
             "       cargo xtask live run login grid --region ferroan\n",
             "       cargo xtask live run limits grid --region ferroan\n",

@@ -415,7 +415,10 @@ fn recording_scene(store: Arc<Mutex<HashMap<Uuid, [f32; 3]>>>) -> LoginScene {
             | SceneCall::AgentAnimation(_)
             | SceneCall::HandshakeReply
             | SceneCall::InitialLand
-            | SceneCall::ParcelRequest(_) => Ok(SceneReply::Applied),
+            | SceneCall::ParcelRequest(_)
+            | SceneCall::PropertiesFamily { .. }
+            | SceneCall::ObjectSelect(_)
+            | SceneCall::DeRezDelete(_) => Ok(SceneReply::Applied),
             SceneCall::Departure => Ok(SceneReply::Departure(crate::circuit::SceneDeparture {
                 flying: false,
                 pose: crate::source_hop::HopPose::default(),
@@ -671,6 +674,7 @@ async fn local_teleport_stays_behind_the_frames_preteleport_terse() {
             hover: 0.0,
         }),
         teleport_flags: 1 << 7,
+        rights: ferroan_scene::DeleteRights::default(),
     };
     let local_id = frame
         .attach(expect.agent_id, link)

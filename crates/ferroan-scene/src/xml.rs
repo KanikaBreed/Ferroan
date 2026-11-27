@@ -114,7 +114,7 @@ mod coalesced;
 pub use coalesced::{from_coalesced_xml, from_coalesced_xml_data, to_coalesced_xml};
 
 #[cfg(test)]
-pub(crate) use xml_read::blank_part;
+pub(crate) use xml_read::{blank_item, blank_part};
 pub use xml_read::{from_original_xml, from_xml2};
 
 /// XML2: the form a crossing sends. No script state.
@@ -736,10 +736,7 @@ pub(crate) fn part_creator(identification: &str) -> (Uuid, Option<String>) {
         return (Uuid::nil(), None);
     }
     let mut parts = identification.split(';');
-    let id = parts
-        .next()
-        .and_then(|text| Uuid::parse_str(text).ok())
-        .unwrap_or(Uuid::nil());
+    let id = parts.next().map(crate::omv_uuid).unwrap_or(Uuid::nil());
     let Some(home) = parts.next() else {
         return (id, None);
     };
@@ -757,15 +754,12 @@ pub(crate) fn item_creator(identification: &str) -> (Uuid, Option<String>) {
         return (Uuid::nil(), None);
     }
     if !identification.contains(';') {
-        return (Uuid::parse_str(identification).unwrap_or(Uuid::nil()), None);
+        return (crate::omv_uuid(identification), None);
     }
-    let parts: Vec<&str> = identification.split(';').collect();
-    let id = parts
-        .first()
-        .and_then(|text| Uuid::parse_str(text).ok())
-        .unwrap_or(Uuid::nil());
-    let home = parts.get(1).copied().unwrap_or("");
-    let name = parts.get(2).copied().unwrap_or("Unknown User");
+    let mut parts = identification.split(';');
+    let id = parts.next().map(crate::omv_uuid).unwrap_or(Uuid::nil());
+    let home = parts.next().unwrap_or("");
+    let name = parts.next().unwrap_or("Unknown User");
     (id, Some(format!("{home};{name}")))
 }
 
@@ -1500,7 +1494,7 @@ mod tests {
     use uuid::Uuid;
 
     const REGION: &str = "11111111-1111-1111-1111-111111111111";
-    const PIN: &str = "c401bceecd1684832ae8ba86a31b5ee01a4ded7b";
+    const PIN: &str = "41f18f983bb2bfc82e033fed410d361ba57d5aa4";
 
     fn fixture_dir() -> std::path::PathBuf {
         std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/regionstore")

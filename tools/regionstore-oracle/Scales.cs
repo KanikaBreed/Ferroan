@@ -39,7 +39,7 @@ static class ScaleProbe
         var scene = new Scene(new OpenSim.Framework.RegionInfo());
         var lines = new List<string>
         {
-            "# Pin8 " + shortPin + " Shape.Scale.ToBytes after AddRestoredSceneObject(group, false, true, false).",
+            "# Pin " + shortPin + " Shape.Scale.ToBytes after AddRestoredSceneObject(group, false, true, false).",
             "# Scene(RegionInfo): ClampPrimSize false and CollidablePrims true unless the row says otherwise.",
             "# Size fields start at Scene's defaults unless the row names them. CreatePrimUpdateBlock writes these",
             "# twelve bytes with AddVector3 at offset 28 of ObjectUpdate.ObjectData.",
