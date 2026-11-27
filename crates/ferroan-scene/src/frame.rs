@@ -44,7 +44,7 @@
 //! [`ChildNotice`]. The 16 m significant-movement trigger is not this path.
 //! HTTP stays off this thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
@@ -59,11 +59,13 @@ use uuid::Uuid;
 
 use crate::animation::{Anim, AnimationTransfer};
 use crate::avatars::{AvatarFull, AvatarLook, AvatarPacket, block_rotation};
+use crate::client_flags::{LinksetPermissions, PermissionMode};
 use crate::coarse::{self, COARSE_EVERY_FRAMES, CoarseState};
 use crate::compress::{self, TerrainLayer};
 use crate::error::TerrainError;
 use crate::height::{DEFAULT_HEIGHT, Heightmap, movement_z};
 use crate::motion::{Body, Motion, MotionUpdate, ReturnData, clock_ms};
+use crate::object_permissions::{ActionPermissions, ActionTarget, ObjectAction, PresenceState};
 use crate::prioritizer::{PriorityEntity, PriorityViewer, best_avatar_responsiveness};
 use crate::stored_scene::StoredScene;
 use crate::terse::{
@@ -314,6 +316,24 @@ pub struct ViewerLink {
     /// `TeleportFlags` from the accepted login. Zero asks for terrain and the
     /// overlay again at `SendInitialData` (`ScenePresence.cs` 4338).
     pub teleport_flags: u32,
+    /// `CanDeleteObject` inputs for this viewer. The region sets `groups` at
+    /// attach. `is_god` and `friend_roots` stay unset in production, as in
+    /// Pin8: god mode is not granted, and the friend path is dead through TB96.
+    pub rights: DeleteRights,
+}
+
+/// God, group powers and friend modify grants for `CanDeleteObject`.
+/// A restored group is never an attachment, so that input stays on the scene.
+/// `is_god` and `friend_roots` stay unset in production. The region sets only
+/// `groups` at attach, matching Pin8: god mode is not granted, and the friend
+/// path is dead through TB96.
+#[derive(Clone, Debug, Default)]
+pub struct DeleteRights {
+    pub is_god: bool,
+    /// Group id to the powers from the login membership map.
+    pub groups: HashMap<Uuid, u64>,
+    /// Root ids for which `IsFriendWithPerms(object, owner)` is true.
+    pub friend_roots: HashSet<Uuid>,
 }
 
 /// A root that hopped away has arrived at its destination
@@ -490,6 +510,27 @@ enum Inbound {
     HandshakeReply {
         agent: Uuid,
     },
+    /// `RequestObjectPropertiesFamily`. The frame queues the root.
+    PropertiesFamily {
+        agent: Uuid,
+        object_id: Uuid,
+        request_flags: u32,
+    },
+    /// `ObjectSelect`. The frame queues a property reply for each live part.
+    ObjectSelect {
+        agent: Uuid,
+        local_ids: Vec<u32>,
+    },
+    /// `DeRezObject` Delete. Owner, root, and not an attachment.
+    DeRezDelete {
+        agent: Uuid,
+        local_ids: Vec<u32>,
+    },
+    /// Replace `CanDeleteObject` inputs captured for this viewer.
+    DeleteRights {
+        agent: Uuid,
+        rights: DeleteRights,
+    },
 }
 
 struct Avatar {
@@ -528,6 +569,7 @@ struct Scene {
     admitted_counts: Option<HashMap<Uuid, crate::parcels::PrimCounts>>,
     /// `LandObject.m_lastSeqId` for each local id, shared by every client.
     parcel_seq: HashMap<i32, i32>,
+    objects: Arc<StoredScene>,
     /// `Scene.m_useFlySlow`, `[Startup] enableflyslow`.
     fly_slow: bool,
 }
@@ -637,6 +679,7 @@ impl TerrainFrame {
             groups: Arc::clone(&objects.groups),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            objects: Arc::clone(&objects),
             fly_slow: false,
         };
         // Start the packet clock before the first AgentUpdate can be stamped.
@@ -776,6 +819,36 @@ impl TerrainFrame {
     /// inbound slot, no answer.
     pub fn handshake_reply(&self, agent: Uuid) -> Result<(), TerrainError> {
         self.push(Inbound::HandshakeReply { agent })
+    }
+
+    /// `RequestObjectPropertiesFamily`. A missing part is left alone.
+    pub fn properties_family(
+        &self,
+        agent: Uuid,
+        object_id: Uuid,
+        request_flags: u32,
+    ) -> Result<(), TerrainError> {
+        self.push(Inbound::PropertiesFamily {
+            agent,
+            object_id,
+            request_flags,
+        })
+    }
+
+    /// `ObjectSelect`. Selection state stays with a later row.
+    pub fn object_select(&self, agent: Uuid, local_ids: Vec<u32>) -> Result<(), TerrainError> {
+        self.push(Inbound::ObjectSelect { agent, local_ids })
+    }
+
+    /// `DeRezObject` Delete for roots this agent may delete. The store row stays.
+    pub fn derez_delete(&self, agent: Uuid, local_ids: Vec<u32>) -> Result<(), TerrainError> {
+        self.push(Inbound::DeRezDelete { agent, local_ids })
+    }
+
+    /// `CanDeleteObject` inputs from the login membership map, god level and
+    /// friend grants. A missing viewer keeps the empty default.
+    pub fn set_delete_rights(&self, agent: Uuid, rights: DeleteRights) -> Result<(), TerrainError> {
+        self.push(Inbound::DeleteRights { agent, rights })
     }
 
     pub fn has_map(&self) -> bool {
@@ -1056,6 +1129,18 @@ fn apply(post: Inbound, scene: &mut Scene) {
         Inbound::AlwaysRun { agent, always_run } => {
             if let Some(avatar) = presences.get_mut(&agent) {
                 avatar.body.set_always_run(always_run);
+            }
+        }
+        Inbound::PropertiesFamily {
+            agent,
+            object_id,
+            request_flags,
+        } => scene.enqueue_family(agent, object_id, request_flags),
+        Inbound::ObjectSelect { agent, local_ids } => scene.enqueue_selected(&agent, &local_ids),
+        Inbound::DeRezDelete { agent, local_ids } => scene.delete_owned_roots(agent, &local_ids),
+        Inbound::DeleteRights { agent, rights } => {
+            if let Some(viewer) = scene.viewers.get_mut(&agent) {
+                viewer.link.rights = rights;
             }
         }
     }
@@ -2159,6 +2244,105 @@ impl Scene {
         }
     }
 
+    /// `RequestObjectPropertiesFamily` queues the root, whichever part was asked.
+    fn enqueue_family(&self, agent: Uuid, object_id: Uuid, request_flags: u32) {
+        let Some(viewer) = self.viewers.get(&agent) else {
+            return;
+        };
+        let Some(root) = self.objects.root_of_uuid(object_id) else {
+            return;
+        };
+        viewer.link.feed.enqueue_family(root, request_flags);
+    }
+
+    /// `SelectPrim` sends the property reply. A non-owner select also sends a
+    /// full update before the properties (`Scene.PacketHandlers.cs` 210–211).
+    /// That full update is Q68 (P2.8a).
+    fn enqueue_selected(&self, agent: &Uuid, local_ids: &[u32]) {
+        let Some(viewer) = self.viewers.get(agent) else {
+            return;
+        };
+        for &local_id in local_ids {
+            if self.objects.get(local_id).is_some() {
+                viewer.link.feed.enqueue_object(local_id);
+            }
+        }
+    }
+
+    /// `DeRezObjects` Delete: `CanDeleteObject`, the root, and not an attachment.
+    /// The group leaves the in-memory scene. The store row stays.
+    fn delete_owned_roots(&self, agent: Uuid, local_ids: &[u32]) {
+        let Some(rights) = self
+            .viewers
+            .get(&agent)
+            .map(|viewer| viewer.link.rights.clone())
+        else {
+            return;
+        };
+        for &local_id in local_ids {
+            let Some(facts) = self.objects.describe(local_id) else {
+                continue;
+            };
+            if !facts.is_root || facts.attachment || !self.can_delete(agent, local_id, &rights) {
+                continue;
+            }
+            if !self.objects.remove_group(facts.root_local_id) {
+                continue;
+            }
+            self.kill_object_everywhere(facts.root_local_id);
+        }
+    }
+
+    /// `PermissionsModule.CanDeleteObject` for a live client: god, the owner,
+    /// a friend modify grant on the root, or group powers.
+    fn can_delete(&self, agent: Uuid, local_id: u32, rights: &DeleteRights) -> bool {
+        let Some(live) = self.objects.live_linkset(local_id) else {
+            return false;
+        };
+        let presence = if self.presences.contains_key(&agent) {
+            PresenceState::Active
+        } else {
+            PresenceState::Missing
+        };
+        let group = live.root.group_id;
+        let membership = rights.groups.get(&group).map(|powers| (group, *powers));
+        let masks = LinksetPermissions::from_parts(live.root, live.children);
+        let target = ActionTarget {
+            root: live.root,
+            part: live.part,
+            masks,
+            attachment: false,
+            deleted: false,
+        };
+        let root_id = live.root.uuid;
+        let owner = live.root.owner_id;
+        let permissions = ActionPermissions {
+            agent,
+            is_god: rights.is_god,
+            mode: PermissionMode::Enforce,
+            membership,
+            presence,
+            administrator: false,
+            bypass_value: true,
+            service_group_powers: &|_| None,
+            friend_grant: &|grantee, grant_owner| {
+                grant_owner == owner && grantee == root_id && rights.friend_roots.contains(&root_id)
+            },
+        };
+        permissions.allows(ObjectAction::Delete, Some(&target))
+    }
+
+    /// Immediate kill, then the delayed kill, on every open viewer.
+    fn kill_object_everywhere(&self, local_id: u32) {
+        for (other, _) in self.viewer_order() {
+            if self.is_open(&other)
+                && let Some(viewer) = self.viewers.get(&other)
+            {
+                viewer.link.feed.kill_object(local_id);
+            }
+        }
+    }
+
     /// `RemoveClient`: the leaving root's local id on every remaining viewer.
     fn kill_everywhere(&self, local_id: u32) {
         for (other, _) in self.viewer_order() {
@@ -2571,6 +2755,7 @@ mod tests {
             circuit_open: Arc::new(AtomicBool::new(true)),
             look: look_of(&agent.as_u128().to_string()),
             teleport_flags: 1 << 7,
+            rights: DeleteRights::default(),
         };
         let local_id = frame.attach(agent, link).unwrap().blocking_wait().unwrap();
         (local_id, feed, seeds)
@@ -3039,6 +3224,7 @@ mod tests {
             groups: Arc::default(),
             admitted_counts: None,
             parcel_seq: HashMap::new(),
+            objects: Arc::default(),
             fly_slow: false,
         }
     }
@@ -3066,6 +3252,7 @@ mod tests {
             circuit_open: Arc::clone(&circuit_open),
             look: look_of(&agent.as_u128().to_string()),
             teleport_flags,
+            rights: DeleteRights::default(),
         };
         let (reply, _answer) = oneshot::channel();
         assert!(answer(
@@ -4388,6 +4575,7 @@ mod tests {
             circuit_open: Arc::new(AtomicBool::new(false)),
             look: look_of("closed"),
             teleport_flags: 1 << 7,
+            rights: DeleteRights::default(),
         };
         frame.attach(agent, link).unwrap().blocking_wait().unwrap();
         feed
@@ -4694,6 +4882,172 @@ mod tests {
         assert_eq!(stopped.target_velocity, [0.0, 0.0, 0.0]);
         assert!(stopped.always_run);
         assert_eq!(read(&frame, agent).velocity, [0.0, 0.0, 0.0]);
+    }
+
+    /// `DeRezObjects`: the owner, a root, and `IsAttachment` (false for a stored
+    /// group). Both open viewers get the immediate kill and the delayed kill.
+    #[test]
+    fn delete_owned_roots_fans_out_two_kills_and_refuses_the_rest() {
+        use std::sync::Arc;
+
+        use crate::client_flags::OBJECT_MANIPULATE;
+        use crate::terse::ViewerUpdate;
+        use crate::xml::blank_part;
+        use crate::{ObjectGroup, ObjectPart};
+
+        let owner = Uuid::from_u128(1);
+        let watcher_agent = Uuid::from_u128(2);
+        let stranger = Uuid::from_u128(3);
+        let god = Uuid::from_u128(4);
+        let friend = Uuid::from_u128(5);
+        let member = Uuid::from_u128(6);
+        let group_id = Uuid::from_u128(0x70);
+
+        let part = |id: u128, owner_id: Uuid| {
+            let mut part = blank_part();
+            part.uuid = Uuid::from_u128(id);
+            part.owner_id = owner_id;
+            part.last_owner_id = owner_id;
+            part
+        };
+        let grouped = |parts: Vec<ObjectPart>| ObjectGroup {
+            from_item_id: Uuid::nil(),
+            rez_parameter: None,
+            parts,
+        };
+        let mut child = part(0x22, owner);
+        child.link_num = 2;
+        let mut worn = part(0x31, owner);
+        worn.shape.pcode = 9;
+        worn.shape.state = 4;
+        let mut deeded = part(0x71, group_id);
+        deeded.group_id = group_id;
+        let groups = vec![
+            grouped(vec![part(0x41, owner)]),
+            grouped(vec![part(0x21, owner), child]),
+            grouped(vec![worn]),
+            grouped(vec![part(0x51, owner)]),
+            grouped(vec![part(0x61, owner)]),
+            grouped(vec![deeded]),
+        ];
+        let frame = TerrainFrame::with_objects(None, Arc::new(groups), None).unwrap();
+        let agents = [owner, watcher_agent, stranger, god, friend, member];
+        let feeds: Vec<_> = agents
+            .iter()
+            .map(|agent| attach(&frame, *agent).1)
+            .collect();
+        for agent in agents {
+            login(&frame, agent, pose_at([128.0, 128.0, 25.0]));
+        }
+        let local = |id: u128| {
+            let id = Uuid::from_u128(id);
+            frame
+                .objects
+                .groups
+                .iter()
+                .flat_map(|group| &group.parts)
+                .find(|part| part.uuid == id)
+                .unwrap()
+                .local_id
+        };
+        let drain = |feed: &crate::terse::ViewerFeed| {
+            while !feed.take_avatar_packets(64).is_empty() {}
+            feed.begin_update_pass();
+            while feed.take_update().is_some() {}
+        };
+        let kills = |feed: &crate::terse::ViewerFeed, root: u32| {
+            let mut immediate = 0;
+            loop {
+                let batch = feed.take_avatar_packets(64);
+                if batch.is_empty() {
+                    break;
+                }
+                immediate += batch
+                    .iter()
+                    .filter(
+                        |packet| matches!(packet, AvatarPacket::Kill(ids) if ids.contains(&root)),
+                    )
+                    .count();
+            }
+            feed.begin_update_pass();
+            let mut delayed = 0;
+            while let Some(update) = feed.take_update() {
+                if let ViewerUpdate::Kill { local_id } = update
+                    && local_id == root
+                {
+                    delayed += 1;
+                }
+            }
+            (immediate, delayed)
+        };
+        for feed in &feeds {
+            drain(feed);
+        }
+
+        let stranger_root = local(0x41);
+        frame.derez_delete(stranger, vec![stranger_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], stranger_root), (0, 0));
+        assert_eq!(kills(&feeds[1], stranger_root), (0, 0));
+        assert!(frame.objects.describe(stranger_root).is_some());
+
+        let link_root = local(0x21);
+        let link_child = local(0x22);
+        frame.derez_delete(owner, vec![link_child]).unwrap();
+        let _ = frames(&frame);
+        assert!(frame.objects.describe(link_root).is_some());
+        assert!(frame.objects.describe(link_child).is_some());
+        assert_eq!(kills(&feeds[0], link_root), (0, 0));
+        assert_eq!(kills(&feeds[1], link_root), (0, 0));
+
+        frame.derez_delete(owner, vec![link_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], link_root), (1, 1));
+        assert_eq!(kills(&feeds[1], link_root), (1, 1));
+        assert!(frame.objects.describe(link_root).is_none());
+
+        let worn_root = local(0x31);
+        frame.derez_delete(owner, vec![worn_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], worn_root), (1, 1));
+        assert_eq!(kills(&feeds[1], worn_root), (1, 1));
+        assert!(frame.objects.describe(worn_root).is_none());
+
+        let god_root = local(0x51);
+        frame
+            .set_delete_rights(
+                god,
+                DeleteRights {
+                    is_god: true,
+                    ..DeleteRights::default()
+                },
+            )
+            .unwrap();
+        frame.derez_delete(god, vec![god_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], god_root), (1, 1));
+        assert_eq!(kills(&feeds[1], god_root), (1, 1));
+        assert!(frame.objects.describe(god_root).is_none());
+
+        let friend_root = local(0x61);
+        let mut friend_rights = DeleteRights::default();
+        friend_rights.friend_roots.insert(Uuid::from_u128(0x61));
+        frame.set_delete_rights(friend, friend_rights).unwrap();
+        frame.derez_delete(friend, vec![friend_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], friend_root), (1, 1));
+        assert_eq!(kills(&feeds[1], friend_root), (1, 1));
+        assert!(frame.objects.describe(friend_root).is_none());
+
+        let deeded_root = local(0x71);
+        let mut member_rights = DeleteRights::default();
+        member_rights.groups.insert(group_id, OBJECT_MANIPULATE);
+        frame.set_delete_rights(member, member_rights).unwrap();
+        frame.derez_delete(member, vec![deeded_root]).unwrap();
+        let _ = frames(&frame);
+        assert_eq!(kills(&feeds[0], deeded_root), (1, 1));
+        assert_eq!(kills(&feeds[1], deeded_root), (1, 1));
+        assert!(frame.objects.describe(deeded_root).is_none());
     }
 
     fn armed_gate(position: [f32; 3], draw: f32, view: f32) -> ChildGate {

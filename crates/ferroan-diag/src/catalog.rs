@@ -29,6 +29,7 @@ pub const UDP_PENDING_LOGIN_BURST: &str = "udp.pending-login-burst";
 pub const UDP_DATAGRAM: &str = "udp.datagram";
 pub const UDP_ZERO_EXPANSION: &str = "udp.zero-expansion";
 pub const UDP_PENDING_TELEPORTS: &str = "udp.pending-teleports";
+pub const UDP_DEREZ_TRANSACTIONS: &str = "udp.derez-transactions";
 pub const UDP_UNACKED: &str = "udp.unacked";
 pub const UDP_RETRIES: &str = "udp.retries";
 pub const CLIENT_CHAT_QUEUE: &str = "client.chat-queue";

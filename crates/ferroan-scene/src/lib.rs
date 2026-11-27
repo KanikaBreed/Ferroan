@@ -93,6 +93,7 @@ mod motion;
 pub mod oar;
 pub mod oar_owners;
 pub mod object_permissions;
+pub mod object_properties;
 mod objects;
 pub mod parcels;
 mod payloads;
@@ -126,9 +127,9 @@ pub use environment::{
 pub use error::{ObjectError, TerrainError};
 pub use estate::{EstateAccess, EstateError, MAX_ESTATE_MANAGERS, open_estate};
 pub use frame::{
-    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, HopReturn, Leaving, LocalTeleport, MovedAway,
-    ParcelSender, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame, ViewerLink,
-    landed_z,
+    CHILD_NOTICE_QUEUE, ChildNotice, ChildPass, DeleteRights, HopReturn, Leaving, LocalTeleport,
+    MovedAway, ParcelSender, Pending, Presence, TELEPORT_IS_FLYING, TeleportStored, TerrainFrame,
+    ViewerLink, landed_z,
 };
 pub use height::{Heightmap, REVISION_V2_GZIP, movement_z};
 pub use initial::{DEFAULT_INITIAL_TERRAIN, InitialTerrain};
@@ -138,7 +139,7 @@ pub use oar::{
 };
 pub use objects::{
     InventoryItem, MAX_LINKSET_PRIMS, MAX_REGION_OBJECTS, ObjectGroup, ObjectPart, ObjectRaw,
-    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, open_objects,
+    ObjectShape, ObjectStoreKind, load_objects, load_objects_limited, omv_uuid, open_objects,
 };
 pub use payloads::{
     DynAttrs, Keyframe, KeyframeMotion, LinksetData, LinksetEntry, MaterialOverride, MediaFace,
