@@ -1,6 +1,6 @@
 [package]
 name = "ferroan-regex"
-description = "The part of the .NET pattern parser that accepts a pattern or raises the same parse error"
+description = "The part of the .NET pattern parser that accepts a pattern, records its groups, or raises the same parse error"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

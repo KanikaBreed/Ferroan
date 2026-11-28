@@ -1,0 +1,457 @@
+{
+  "cases": [
+    {
+      "pattern": "(?\u003C8\u003Ea)(b)",
+      "subject": "ab",
+      "numbers": [
+        0,
+        1,
+        8
+      ],
+      "names": [
+        "0",
+        "1",
+        "8"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "number": 1,
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        },
+        {
+          "number": 8,
+          "success": true,
+          "index": 0,
+          "name": "",
+          "value": "a"
+        }
+      ]
+    },
+    {
+      "pattern": "(?\u003C8\u003Ea)",
+      "subject": "a",
+      "numbers": [
+        0,
+        8
+      ],
+      "names": [
+        "0",
+        "8"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        },
+        {
+          "number": 8,
+          "success": true,
+          "index": 0,
+          "name": "",
+          "value": "a"
+        }
+      ]
+    },
+    {
+      "pattern": "(a)|(?\u003C5\u003Eb)",
+      "subject": "b",
+      "numbers": [
+        0,
+        1,
+        5
+      ],
+      "names": [
+        "0",
+        "1",
+        "5"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "b"
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "1",
+          "value": ""
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "b"
+        },
+        {
+          "number": 1,
+          "success": false,
+          "index": 0,
+          "name": "1",
+          "value": ""
+        },
+        {
+          "number": 5,
+          "success": true,
+          "index": 0,
+          "name": "",
+          "value": "b"
+        }
+      ]
+    },
+    {
+      "pattern": "(?\u003Cname\u003Ea)(b)",
+      "subject": "ab",
+      "numbers": [
+        0,
+        1,
+        2
+      ],
+      "names": [
+        "0",
+        "1",
+        "name"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        },
+        {
+          "success": true,
+          "index": 0,
+          "name": "name",
+          "value": "a"
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "number": 1,
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        },
+        {
+          "number": 2,
+          "success": true,
+          "index": 0,
+          "name": "name",
+          "value": "a"
+        }
+      ]
+    },
+    {
+      "pattern": "(a)(b)",
+      "subject": "ab",
+      "numbers": [
+        0,
+        1,
+        2
+      ],
+      "names": [
+        "0",
+        "1",
+        "2"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "success": true,
+          "index": 0,
+          "name": "1",
+          "value": "a"
+        },
+        {
+          "success": true,
+          "index": 1,
+          "name": "2",
+          "value": "b"
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "number": 1,
+          "success": true,
+          "index": 0,
+          "name": "1",
+          "value": "a"
+        },
+        {
+          "number": 2,
+          "success": true,
+          "index": 1,
+          "name": "2",
+          "value": "b"
+        }
+      ]
+    },
+    {
+      "pattern": "(?\u003C2\u003Ea)(?\u003C3\u003Eb)",
+      "subject": "ab",
+      "numbers": [
+        0,
+        2,
+        3
+      ],
+      "names": [
+        "0",
+        "2",
+        "3"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        },
+        {
+          "success": true,
+          "index": 0,
+          "name": "",
+          "value": "a"
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "number": 2,
+          "success": true,
+          "index": 0,
+          "name": "",
+          "value": "a"
+        },
+        {
+          "number": 3,
+          "success": true,
+          "index": 1,
+          "name": "2",
+          "value": "b"
+        }
+      ]
+    },
+    {
+      "pattern": "(?\u003C3\u003Ea)|(?\u003C2\u003Eb)",
+      "subject": "a",
+      "numbers": [
+        0,
+        2,
+        3
+      ],
+      "names": [
+        "0",
+        "2",
+        "3"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        },
+        {
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        },
+        {
+          "number": 2,
+          "success": false,
+          "index": 0,
+          "name": "",
+          "value": ""
+        },
+        {
+          "number": 3,
+          "success": true,
+          "index": 0,
+          "name": "2",
+          "value": "a"
+        }
+      ]
+    },
+    {
+      "pattern": "(?:a)(b)",
+      "subject": "ab",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "1"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "ab"
+        },
+        {
+          "number": 1,
+          "success": true,
+          "index": 1,
+          "name": "1",
+          "value": "b"
+        }
+      ]
+    },
+    {
+      "pattern": "a",
+      "subject": "a",
+      "numbers": [
+        0
+      ],
+      "names": [
+        "0"
+      ],
+      "enumerated": [
+        {
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        }
+      ],
+      "declared": [
+        {
+          "number": 0,
+          "success": true,
+          "index": 0,
+          "name": "0",
+          "value": "a"
+        }
+      ]
+    }
+  ]
+}

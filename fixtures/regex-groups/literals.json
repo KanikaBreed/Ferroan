@@ -1,0 +1,228 @@
+{
+  "cases": [
+    {
+      "pattern": "",
+      "numbers": [
+        0
+      ],
+      "names": [
+        "0"
+      ]
+    },
+    {
+      "pattern": "a|b",
+      "numbers": [
+        0
+      ],
+      "names": [
+        "0"
+      ]
+    },
+    {
+      "pattern": "(a)(b)",
+      "numbers": [
+        0,
+        1,
+        2
+      ],
+      "names": [
+        "0",
+        "1",
+        "2"
+      ]
+    },
+    {
+      "pattern": "(a)*",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "pattern": "(?\u003Cn\u003Ea)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "n"
+      ]
+    },
+    {
+      "pattern": "(?\u0027n\u0027a)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "n"
+      ]
+    },
+    {
+      "pattern": "(?\u003C2\u003Ea)",
+      "numbers": [
+        0,
+        2
+      ],
+      "names": [
+        "0",
+        "2"
+      ]
+    },
+    {
+      "pattern": "(?\u003Cn\u003Ea)(?\u003Cm\u003Eb)",
+      "numbers": [
+        0,
+        1,
+        2
+      ],
+      "names": [
+        "0",
+        "n",
+        "m"
+      ]
+    },
+    {
+      "pattern": "(?\u003Cn\u003Ea)|(?\u003Cn\u003Eb)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "n"
+      ]
+    },
+    {
+      "pattern": "(?\u003Cn\u003Ea)(?\u003Cn\u003Eb)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "n"
+      ]
+    },
+    {
+      "pattern": "()",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "pattern": "(a){0}",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "1"
+      ]
+    },
+    {
+      "pattern": "(?n)(a)b",
+      "numbers": [
+        0
+      ],
+      "names": [
+        "0"
+      ]
+    },
+    {
+      "pattern": "(?n)(a)(?\u003Cb\u003Ec)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "b"
+      ]
+    },
+    {
+      "pattern": "(?n:(?\u003Cb\u003Ea))",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "b"
+      ]
+    },
+    {
+      "pattern": "(?(a)b|c)",
+      "numbers": [
+        0
+      ],
+      "names": [
+        "0"
+      ]
+    },
+    {
+      "pattern": "(?\u003C\u00E9\u003Ea)",
+      "numbers": [
+        0,
+        1
+      ],
+      "names": [
+        "0",
+        "\u00E9"
+      ]
+    },
+    {
+      "pattern": "(?\u003C10\u003Ea)(b)",
+      "numbers": [
+        0,
+        1,
+        10
+      ],
+      "names": [
+        "0",
+        "1",
+        "10"
+      ]
+    },
+    {
+      "pattern": "(?\u003Cb\u003Ex)(?\u003C2\u003Ey)",
+      "numbers": [
+        0,
+        1,
+        2
+      ],
+      "names": [
+        "0",
+        "b",
+        "2"
+      ]
+    },
+    {
+      "pattern": "(a)(?\u003Cname\u003Eb)(c)",
+      "numbers": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "names": [
+        "0",
+        "1",
+        "2",
+        "name"
+      ]
+    }
+  ]
+}
