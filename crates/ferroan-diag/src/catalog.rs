@@ -129,3 +129,4 @@ pub const YENGINE_NAME_CHARS: &str = "yengine.name-chars";
 pub const YENGINE_STRING_CHARS: &str = "yengine.string-chars";
 pub const YENGINE_OBJECT_BYTES: &str = "yengine.object-bytes";
 pub const YENGINE_HEADER_STRING: &str = "yengine.header-string";
+pub const FORMAT_CHARS: &str = "format.chars";
