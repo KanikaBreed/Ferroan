@@ -26,13 +26,8 @@ if (args.Length != 2)
     return 2;
 }
 
-string pin = PinSha();
-const string WantPin = "41f18f983bb2bfc82e033fed410d361ba57d5aa4";
-if (!string.Equals(pin, WantPin, StringComparison.Ordinal))
-{
-    Console.Error.WriteLine("pin is " + pin + ", want " + WantPin);
+if (RequirePin(out string pin) != 0)
     return 1;
-}
 
 if (!EnsureInstanceType())
 {
@@ -266,8 +261,10 @@ static Header ReadHeader(byte[] bytes)
     return new Header(version, hash, sizes, states, globals);
 }
 
-static string PinSha()
+static int RequirePin(out string sha)
 {
+    const string WantPin = "41f18f983bb2bfc82e033fed410d361ba57d5aa4";
+    sha = "";
     string root = Environment.GetEnvironmentVariable("FERROAN_REF");
     if (string.IsNullOrEmpty(root))
     {
@@ -277,7 +274,35 @@ static string PinSha()
         root = home + "/Git/reference";
     }
     string repo = Path.Combine(root, "OpenSim-Tranquillity");
-    var start = new ProcessStartInfo("git", "rev-parse HEAD")
+    if (!Git(repo, "rev-parse HEAD", out sha))
+    {
+        Console.Error.WriteLine("pin is , want " + WantPin);
+        return 1;
+    }
+    sha = sha.Trim();
+    if (!Git(repo, "status --porcelain", out string dirty))
+    {
+        Console.Error.WriteLine("pin status failed");
+        return 1;
+    }
+    if (!string.IsNullOrWhiteSpace(dirty))
+    {
+        Console.Error.WriteLine("pin checkout is dirty:");
+        Console.Error.Write(dirty.EndsWith("\n") ? dirty : dirty + "\n");
+        return 1;
+    }
+    if (!string.Equals(sha, WantPin, StringComparison.Ordinal))
+    {
+        Console.Error.WriteLine("pin is " + sha + ", want " + WantPin);
+        return 1;
+    }
+    return 0;
+}
+
+static bool Git(string repo, string arguments, out string stdout)
+{
+    stdout = "";
+    var start = new ProcessStartInfo("git", arguments)
     {
         WorkingDirectory = repo,
         RedirectStandardOutput = true,
@@ -285,11 +310,12 @@ static string PinSha()
         UseShellExecute = false,
     };
     using Process proc = Process.Start(start);
-    string sha = proc.StandardOutput.ReadToEnd().Trim();
+    if (proc == null)
+        return false;
+    stdout = proc.StandardOutput.ReadToEnd();
+    proc.StandardError.ReadToEnd();
     proc.WaitForExit();
-    if (proc.ExitCode != 0)
-        return "";
-    return sha;
+    return proc.ExitCode == 0;
 }
 
 sealed record Header(int Version, string Hash, int[] Sizes, string[] States, List<Global> Globals);

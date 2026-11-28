@@ -78,6 +78,13 @@ pub fn read_header(bytes: &[u8]) -> Result<Header, Failure> {
         return Err(Failure::Object("bad magic".to_string()));
     }
     let version = cur.i32()?;
+    // The pinned reader rejects a foreign version before ReadString of the hash.
+    if version != VERSION {
+        return Err(Failure::Version {
+            found: version,
+            accepted: VERSION,
+        });
+    }
     let source_hash = cur.string()?;
     let mut sizes = [0; 11];
     for slot in &mut sizes {

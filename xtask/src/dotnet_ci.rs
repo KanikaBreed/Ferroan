@@ -94,6 +94,7 @@ mod tests {
             "live.rs",
             "oracle.rs",
             "schema.rs",
+            "yengine_tokens.rs",
         ] {
             let text = std::fs::read_to_string(src.join(name)).unwrap();
             assert!(

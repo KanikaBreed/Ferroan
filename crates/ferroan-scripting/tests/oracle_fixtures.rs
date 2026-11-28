@@ -180,3 +180,42 @@ fn bounds_refuse_before_a_huge_input() {
     }
     let _ = HEADER_STRING;
 }
+
+#[test]
+fn a_foreign_object_version_is_refused_before_the_hash() {
+    let mut bytes = std::fs::read(fixture("objects/bare.yobj")).unwrap();
+    assert!(
+        bytes.len() > 15,
+        "bare.yobj is shorter than a version field"
+    );
+    assert_eq!(&bytes[..11], b"YObjectCode");
+    bytes[11..15].copy_from_slice(&(-10i32).to_le_bytes());
+    match read_header(&bytes) {
+        Err(Failure::Version { found, accepted }) => {
+            assert_eq!(found, -10);
+            assert_eq!(accepted, -11);
+            assert_eq!(
+                Failure::Version { found, accepted }.to_string(),
+                "Object version is -10 but accept only -11"
+            );
+        }
+        other => panic!("mutated bare.yobj, got {other:?}"),
+    }
+    let mut only = b"YObjectCode".to_vec();
+    only.extend_from_slice(&(-9i32).to_le_bytes());
+    match read_header(&only) {
+        Err(Failure::Version { found, accepted }) => {
+            assert_eq!((found, accepted), (-9, -11));
+        }
+        other => panic!("version with no hash, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_max_line_directive_wraps_through_later_newlines() {
+    let source = "# 2147483647 \"other.lsl\"\n// c\n/* a\nb */\n\"a\nb\"";
+    let parsed = tokenize(source).unwrap_or_else(|error| panic!("{error}"));
+    assert!(parsed.warnings.is_empty());
+    let texts: Vec<String> = parsed.tokens.iter().map(|token| token.text()).collect();
+    assert_eq!(texts, vec!["\"a\\nb".to_string()]);
+}

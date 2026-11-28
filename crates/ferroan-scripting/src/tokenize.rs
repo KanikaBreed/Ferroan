@@ -203,7 +203,7 @@ impl Parser {
                 while self.i < self.units.len() && self.units[self.i] != u16::from(b'\n') {
                     self.i += 1;
                 }
-                self.line += 1;
+                self.bump_line();
                 self.bol = self.i + 1;
                 self.i += 1;
                 continue;
@@ -215,7 +215,7 @@ impl Parser {
                         && self.units[self.i + 1] == u16::from(b'/'))
                 {
                     if self.units[self.i] == u16::from(b'\n') {
-                        self.line += 1;
+                        self.bump_line();
                         self.bol = self.i + 1;
                     }
                     self.i += 1;
@@ -301,8 +301,15 @@ impl Parser {
         }
     }
 
+    /// `lineNo++` in the pinned tokenizer is an unchecked `int`. A `#` line
+    /// directive can store `i32::MAX`, and the next newline, including one
+    /// inside a comment or a string, wraps.
+    fn bump_line(&mut self) {
+        self.line = self.line.wrapping_add(1);
+    }
+
     fn on_newline(&mut self) {
-        self.line += 1;
+        self.bump_line();
         self.bol = self.i + 1;
         let n = self.tokens.len();
         if n >= 3
@@ -333,7 +340,7 @@ impl Parser {
                 continue;
             }
             if c == u16::from(b'\n') {
-                self.line += 1;
+                self.bump_line();
                 self.bol = j + 1;
             } else {
                 if !backslash && c == u16::from(b'"') {
@@ -385,7 +392,7 @@ impl Parser {
                 continue;
             }
             if c == u16::from(b'\n') {
-                self.line += 1;
+                self.bump_line();
                 self.bol = j + 1;
             } else {
                 if !backslash && c == u16::from(b'\'') {
