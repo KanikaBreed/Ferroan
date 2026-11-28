@@ -107,6 +107,130 @@ fn sixty_four_class_subtractions_parse_and_the_next_is_a_limit() {
     }
 }
 
+#[test]
+fn groups_match_dotnet_numbers_and_the_parse_tree() {
+    let patterns: Vec<String> =
+        serde_json::from_str(&fs::read_to_string(fixture_groups("patterns.json")).unwrap())
+            .unwrap();
+    let digest_file: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture_groups("digest.json")).unwrap()).unwrap();
+    assert_eq!(digest_file["runtime"], "10.0.14");
+    assert_eq!(
+        digest_file["pin"],
+        "41f18f983bb2bfc82e033fed410d361ba57d5aa4"
+    );
+    let mut canonical = String::new();
+    for pattern in &patterns {
+        canonical.push_str(&group_canonical(pattern));
+        assert_eq!(
+            parse(pattern).unwrap().tree().structure(),
+            expect_tree(pattern),
+            "{pattern}"
+        );
+    }
+    let digest = format!("{:x}", Sha256::digest(canonical.as_bytes()));
+    assert_eq!(digest, digest_file["digest"].as_str().unwrap());
+
+    let literals: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture_groups("literals.json")).unwrap())
+            .unwrap();
+    let cases = literals["cases"].as_array().unwrap();
+    assert!(cases.len() > 15, "literal sample is too small");
+    for case in cases {
+        let pattern = case["pattern"].as_str().unwrap();
+        let parsed = parse(pattern).unwrap_or_else(|error| panic!("{pattern}: {error}"));
+        let numbers: Vec<i64> = case["numbers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_i64().unwrap())
+            .collect();
+        let actual: Vec<i64> = parsed
+            .group_numbers()
+            .iter()
+            .map(|number| i64::from(*number))
+            .collect();
+        assert_eq!(actual, numbers, "{pattern}");
+        let names: Vec<&str> = case["names"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| value.as_str().unwrap())
+            .collect();
+        assert_eq!(parsed.group_names(), names, "{pattern}");
+    }
+}
+
+fn fixture_groups(name: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("../../fixtures/regex-groups/{name}"))
+}
+
+fn group_canonical(pattern: &str) -> String {
+    let parsed = parse(pattern).unwrap_or_else(|error| panic!("{pattern}: {error}"));
+    let numbers = parsed
+        .group_numbers()
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    let names = parsed.group_names().join("\u{1f}");
+    format!("{pattern}\n{numbers}\n{names}\n")
+}
+
+fn expect_tree(pattern: &str) -> &'static str {
+    match pattern {
+        "" => "cap(0,empty)",
+        "a" | "ab" | "a{1}" | "(?:a)" | "(?#c)a" => "cap(0,unit)",
+        "a|b" | "(?:a|b)" => "cap(0,alt(unit,unit))",
+        "a|b|c" => "cap(0,alt(unit,unit,unit))",
+        "a|" => "cap(0,alt(unit,empty))",
+        "|a" => "cap(0,alt(empty,unit))",
+        "|" => "cap(0,alt(empty,empty))",
+        "(a)" | "(?<n>a)" | "(?'n'a)" | "(?<é>a)" | "(a){1}" | "(?n:(?<b>a))" => {
+            "cap(0,cap(1,unit))"
+        }
+        "(?<2>a)" => "cap(0,cap(2,unit))",
+        "(a)(b)" => "cap(0,concat(cap(1,unit),cap(2,unit)))",
+        "(a|b)" => "cap(0,cap(1,alt(unit,unit)))",
+        "(a)*" => "cap(0,quant(0,2147483647,greedy,cap(1,unit)))",
+        "(a)+" => "cap(0,quant(1,2147483647,greedy,cap(1,unit)))",
+        "(a)?" => "cap(0,quant(0,1,greedy,cap(1,unit)))",
+        "(a){2,4}" => "cap(0,quant(2,4,greedy,cap(1,unit)))",
+        "(a)*?" => "cap(0,quant(0,2147483647,lazy,cap(1,unit)))",
+        "a*" => "cap(0,quant(0,2147483647,greedy,unit))",
+        "a*?" => "cap(0,quant(0,2147483647,lazy,unit))",
+        "a+" => "cap(0,quant(1,2147483647,greedy,unit))",
+        "a?" => "cap(0,quant(0,1,greedy,unit))",
+        "a{2}" => "cap(0,quant(2,2,greedy,unit))",
+        "a{0}" | "(a){0}" => "cap(0,empty)",
+        "a{0}b" => "cap(0,unit)",
+        "(?:a)b" | "a(?#c)b" | "(?n)(a)b" | "(?x)a b" => "cap(0,concat(unit,unit))",
+        "(?<n>a)(?<m>b)" => "cap(0,concat(cap(1,unit),cap(2,unit)))",
+        "(?<n>a)|(?<n>b)" => "cap(0,alt(cap(1,unit),cap(1,unit)))",
+        "(?<n>a)(?<n>b)" => "cap(0,concat(cap(1,unit),cap(1,unit)))",
+        "a(b(c)d)e" => "cap(0,concat(unit,cap(1,concat(unit,cap(2,unit),unit)),unit))",
+        "()" => "cap(0,cap(1,empty))",
+        "ab*" => "cap(0,concat(unit,quant(0,2147483647,greedy,unit)))",
+        "(ab)*" => "cap(0,quant(0,2147483647,greedy,cap(1,unit)))",
+        "(a)(?:b)(c)" => "cap(0,concat(cap(1,unit),unit,cap(2,unit)))",
+        "((a)(b))" => "cap(0,cap(1,concat(cap(2,unit),cap(3,unit))))",
+        "()*" => "cap(0,quant(0,2147483647,greedy,cap(1,empty)))",
+        "(?n)(a)(?<b>c)" => "cap(0,concat(unit,cap(1,unit)))",
+        "(a*)*" => "cap(0,quant(0,2147483647,greedy,cap(1,quant(0,2147483647,greedy,unit))))",
+        "(?=a)" => "cap(0,hold(unit))",
+        "(?=a)b" => "cap(0,concat(hold(unit),unit))",
+        "(?>a*)" => "cap(0,hold(quant(0,2147483647,greedy,unit)))",
+        "(?(a)b|c)" => "cap(0,hold(concat(unit,unit,unit)))",
+        "(?(a)b)" => "cap(0,hold(concat(unit,unit)))",
+        "(?<10>a)(b)" => "cap(0,concat(cap(10,unit),cap(1,unit)))",
+        "(?<b>x)(?<2>y)" => "cap(0,concat(cap(1,unit),cap(2,unit)))",
+        "(a)(?<name>b)(c)" => "cap(0,concat(cap(1,unit),cap(3,unit),cap(2,unit)))",
+        "(a|)b" => "cap(0,concat(cap(1,alt(unit,empty)),unit))",
+        "^a$" | "a\\db" => "cap(0,concat(unit,unit,unit))",
+        _ => panic!("no tree expectation for {pattern}"),
+    }
+}
+
 fn nest(depth: usize) -> String {
     let mut inner = String::from("b");
     for _ in 0..depth {

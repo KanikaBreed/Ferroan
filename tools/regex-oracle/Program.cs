@@ -6,9 +6,15 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+if (args.Length > 0 && args[0] == "--groups")
+{
+    return WriteGroups(args);
+}
+
 if (args.Length < 3)
 {
     Console.Error.WriteLine("usage: RegexOracle patterns.json digest.json literals.json [full.json]");
+    Console.Error.WriteLine("       RegexOracle --groups patterns.json digest.json literals.json");
     return 1;
 }
 
@@ -83,3 +89,74 @@ if (args.Length > 3)
 
 Console.WriteLine(patterns.Length + " patterns " + digest);
 return 0;
+
+static int WriteGroups(string[] args)
+{
+    if (args.Length != 4)
+    {
+        Console.Error.WriteLine("usage: RegexOracle --groups patterns.json digest.json literals.json");
+        return 1;
+    }
+
+    var description = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+    if (!description.Contains("10.0.14", StringComparison.Ordinal))
+    {
+        Console.Error.WriteLine("runtime " + description);
+        return 1;
+    }
+
+    var patterns = JsonSerializer.Deserialize<string[]>(File.ReadAllText(args[1]));
+    if (patterns == null || patterns.Length == 0)
+    {
+        Console.Error.WriteLine("no patterns");
+        return 1;
+    }
+
+    var canonical = new StringBuilder();
+    var literals = new List<object>();
+    foreach (var pattern in patterns)
+    {
+        Regex regex;
+        try
+        {
+            regex = new Regex(pattern);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.GetType().FullName + " " + pattern + " " + ex.Message);
+            return 1;
+        }
+
+        var numbers = string.Join(",", regex.GetGroupNumbers());
+        var names = string.Join("\u001f", regex.GetGroupNames());
+        canonical.Append(pattern).Append('\n').Append(numbers).Append('\n').Append(names).Append('\n');
+        var named = false;
+        var groupNames = regex.GetGroupNames();
+        var groupNumbers = regex.GetGroupNumbers();
+        for (var i = 0; i < groupNames.Length; i++)
+        {
+            if (groupNames[i] != groupNumbers[i].ToString())
+            {
+                named = true;
+                break;
+            }
+        }
+
+        if (named || pattern is "" or "a|b" or "(a)(b)" or "(a)*" or "(a){0}" or "()" or "(?(a)b|c)" or "(?n)(a)b" or "(?<2>a)" or "(?<10>a)(b)")
+        {
+            literals.Add(new { pattern, numbers = groupNumbers, names = groupNames });
+        }
+    }
+
+    var digest = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
+    var options = new JsonSerializerOptions { WriteIndented = true };
+    File.WriteAllText(args[2], JsonSerializer.Serialize(new
+    {
+        runtime = "10.0.14",
+        pin = "41f18f983bb2bfc82e033fed410d361ba57d5aa4",
+        digest,
+    }, options) + "\n");
+    File.WriteAllText(args[3], JsonSerializer.Serialize(new { cases = literals }, options) + "\n");
+    Console.WriteLine(patterns.Length + " patterns " + digest);
+    return 0;
+}

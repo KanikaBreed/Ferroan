@@ -12,14 +12,15 @@
 //! Two-pass pattern walk from `RegexParser`.
 //!
 //! `CountCaptures` notes slots and can throw. `Reset` then `ScanRegex` walks
-//! again. The count pass does not recurse into a subtraction that looked like
-//! a range, and it does not throw for an undefined `\1` through `\9`. Those
+//! again and records concatenation, alternation, quantifiers and captures.
+//! The count pass does not recurse into a subtraction that looked like a
+//! range, and it does not throw for an undefined `\1` through `\9`. Those
 //! differences are part of the offset .NET reports.
 
 use std::collections::HashMap;
 
 use crate::names::{is_boundary_word, known_property};
-use crate::{CLASS_DEPTH_LIMIT, ParseError};
+use crate::{CLASS_DEPTH_LIMIT, Node, ParseError};
 
 const IGNORE_CASE: u32 = 1;
 const MULTILINE: u32 = 2;
@@ -50,10 +51,73 @@ enum Kind {
     BackreferenceConditional,
 }
 
-#[derive(Clone, Copy)]
+impl Level {
+    fn root() -> Self {
+        Self::opened(Opened::Capture(0))
+    }
+
+    fn opened(opened: Opened) -> Self {
+        let (kind, capture, transparent) = match opened {
+            Opened::Capture(number) => (Kind::Group, Some(number), false),
+            Opened::Transparent => (Kind::Group, None, true),
+            Opened::Hold => (Kind::Group, None, false),
+            Opened::Expression => (Kind::ExpressionConditional, None, false),
+            Opened::Backref => (Kind::BackreferenceConditional, None, false),
+        };
+        Self {
+            kind,
+            capture,
+            transparent,
+            children: 0,
+            branches: Vec::new(),
+            parts: Vec::new(),
+        }
+    }
+}
+
+fn reduce_concat(parts: Vec<Node>) -> Node {
+    let mut kept = Vec::with_capacity(parts.len());
+    for node in parts {
+        if !matches!(node, Node::Empty) {
+            kept.push(node);
+        }
+    }
+    join(kept, false)
+}
+
+fn reduce_alt(branches: Vec<Node>) -> Node {
+    join(branches, true)
+}
+
+fn join(mut nodes: Vec<Node>, alternate: bool) -> Node {
+    match nodes.len() {
+        0 => Node::Empty,
+        1 => nodes.pop().unwrap_or(Node::Empty),
+        _ if alternate => Node::Alternate(nodes),
+        _ => Node::Concat(nodes),
+    }
+}
+
 struct Level {
     kind: Kind,
+    /// Set for a capturing group, including the implicit group 0.
+    capture: Option<i32>,
+    /// `(?:...)` and a group that explicit-capture turns into a non-capture.
+    transparent: bool,
     children: u32,
+    /// Completed alternation branches, or the children of a conditional.
+    branches: Vec<Node>,
+    /// The concatenation currently being built.
+    parts: Vec<Node>,
+}
+
+/// What `ScanGroupOpen` pushes. `None` from that scan is an options group.
+enum Opened {
+    Capture(i32),
+    Transparent,
+    Hold,
+    Expression,
+    Backref,
 }
 
 pub(crate) struct Parser<'a> {
@@ -68,10 +132,13 @@ pub(crate) struct Parser<'a> {
     caps: HashMap<i32, i32>,
     capnames: Option<HashMap<String, i32>>,
     capnamelist: Option<Vec<String>>,
+    group_numbers: Vec<i32>,
+    group_names: Vec<String>,
     ignore_next_paren: bool,
     stack: Vec<Level>,
     current: Level,
     has_unit: bool,
+    unit: Option<Node>,
 }
 
 impl<'a> Parser<'a> {
@@ -88,13 +155,13 @@ impl<'a> Parser<'a> {
             caps: HashMap::new(),
             capnames: None,
             capnamelist: None,
+            group_numbers: Vec::new(),
+            group_names: Vec::new(),
             ignore_next_paren: false,
             stack: Vec::new(),
-            current: Level {
-                kind: Kind::Group,
-                children: 0,
-            },
+            current: Level::root(),
             has_unit: false,
+            unit: None,
         }
     }
 
@@ -102,10 +169,19 @@ impl<'a> Parser<'a> {
         self.units.len()
     }
 
-    pub(crate) fn parse(&mut self) -> Result<(), ParseError> {
+    pub(crate) fn parse(&mut self) -> Result<Node, ParseError> {
         self.count_captures()?;
         self.reset();
-        self.scan_regex()
+        self.scan_regex()?;
+        self.unit.take().ok_or(ParseError::Internal)
+    }
+
+    pub(crate) fn group_numbers(&self) -> Vec<i32> {
+        self.group_numbers.clone()
+    }
+
+    pub(crate) fn group_names(&self) -> Vec<String> {
+        self.group_names.clone()
     }
 
     fn reset(&mut self) {
@@ -115,11 +191,9 @@ impl<'a> Parser<'a> {
         self.option_stack.clear();
         self.options = 0;
         self.stack.clear();
-        self.current = Level {
-            kind: Kind::Group,
-            children: 0,
-        };
+        self.current = Level::root();
         self.has_unit = false;
+        self.unit = None;
     }
 
     fn fail(&self, detail: &str) -> ParseError {
@@ -303,9 +377,37 @@ impl<'a> Parser<'a> {
             None
         };
         if self.capnames.is_some() || capnumlist.is_some() {
-            self.merge_names(capnumlist)?;
+            self.merge_names(capnumlist.clone())?;
         }
+        self.store_groups(capnumlist)
+    }
+
+    fn store_groups(&mut self, capnumlist: Option<Vec<i32>>) -> Result<(), ParseError> {
+        let numbers = if let Some(list) = capnumlist {
+            list
+        } else {
+            self.dense_numbers()?
+        };
+        let names = if let Some(list) = self.capnamelist.clone() {
+            list
+        } else {
+            numbers.iter().map(i32::to_string).collect()
+        };
+        if names.len() != numbers.len() {
+            return Err(ParseError::Internal);
+        }
+        self.group_numbers = numbers;
+        self.group_names = names;
         Ok(())
+    }
+
+    fn dense_numbers(&self) -> Result<Vec<i32>, ParseError> {
+        let count = usize::try_from(self.captop).map_err(|_| ParseError::Internal)?;
+        let mut numbers = Vec::with_capacity(count);
+        for index in 0..count {
+            numbers.push(i32::try_from(index).map_err(|_| ParseError::Internal)?);
+        }
+        Ok(numbers)
     }
 
     fn merge_names(&mut self, capnumlist: Option<Vec<i32>>) -> Result<(), ParseError> {
@@ -387,8 +489,11 @@ impl<'a> Parser<'a> {
             if startpos < endpos {
                 let unquantified = endpos - startpos - usize::from(is_quantifier);
                 was_prev = false;
+                if unquantified > 0 {
+                    self.current.parts.push(Node::Unit);
+                }
                 if is_quantifier && unquantified < endpos {
-                    self.has_unit = true;
+                    self.set_unit();
                 }
             }
             match ch {
@@ -396,13 +501,13 @@ impl<'a> Parser<'a> {
                 ch if ch == u16::from(b' ') => continue,
                 ch if ch == u16::from(b'[') => {
                     self.scan_char_class(false, 0)?;
-                    self.has_unit = true;
+                    self.set_unit();
                 }
                 ch if ch == u16::from(b'(') => {
                     self.option_stack.push(self.options);
-                    if let Some(kind) = self.scan_group_open()? {
-                        self.stack.push(self.current);
-                        self.current = Level { kind, children: 0 };
+                    if let Some(opened) = self.scan_group_open()? {
+                        let frame = std::mem::replace(&mut self.current, Level::opened(opened));
+                        self.stack.push(frame);
                     } else {
                         self.option_stack.pop();
                     }
@@ -424,7 +529,7 @@ impl<'a> Parser<'a> {
                     self.scan_backslash(false)?;
                 }
                 ch if ch == u16::from(b'^') || ch == u16::from(b'$') || ch == u16::from(b'.') => {
-                    self.has_unit = true;
+                    self.set_unit();
                 }
                 ch if ch == u16::from(b'{')
                     || ch == u16::from(b'*')
@@ -459,7 +564,7 @@ impl<'a> Parser<'a> {
                 if !self.has_unit {
                     return Err(ParseError::Internal);
                 }
-                self.has_unit = false;
+                self.commit_unit()?;
                 continue;
             }
             let qch = self.bump()?;
@@ -493,16 +598,34 @@ impl<'a> Parser<'a> {
     fn apply_quantifier(&mut self, qch: u16) -> Result<(), ParseError> {
         let (min, max, rewound) = self.quantifier_bounds(qch)?;
         if rewound {
-            self.has_unit = false;
+            // `{` was not a quantifier. The atom is concatenated and `{` is
+            // scanned again as an ordinary character.
+            self.commit_unit()?;
             return Ok(());
         }
         self.scan_blank()?;
+        let mut lazy = false;
         if self.pos < self.units.len() && self.at(self.pos)? == u16::from(b'?') {
             self.pos += 1;
+            lazy = true;
         }
         if min > max {
             return Err(self.fail("Illegal {x,y} with x > y."));
         }
+        let child = self.unit.take().ok_or(ParseError::Internal)?;
+        let node = if min == max && max == 0 {
+            Node::Empty
+        } else if min == max && max == 1 {
+            child
+        } else {
+            Node::Quant {
+                min,
+                max,
+                lazy,
+                child: Box::new(child),
+            }
+        };
+        self.current.parts.push(node);
         self.has_unit = false;
         Ok(())
     }
@@ -544,6 +667,8 @@ impl<'a> Parser<'a> {
     }
 
     fn add_alternate(&mut self) {
+        let parts = std::mem::take(&mut self.current.parts);
+        self.current.branches.push(reduce_concat(parts));
         if self.current.kind == Kind::ExpressionConditional
             || self.current.kind == Kind::BackreferenceConditional
         {
@@ -562,7 +687,45 @@ impl<'a> Parser<'a> {
                 return Err(self.fail("Too many | in (?()|)."));
             }
         }
+        self.unit = Some(self.assemble());
         self.has_unit = true;
+        Ok(())
+    }
+
+    fn assemble(&mut self) -> Node {
+        let kind = self.current.kind;
+        let capture = self.current.capture;
+        let transparent = self.current.transparent;
+        let parts = std::mem::take(&mut self.current.parts);
+        let mut branches = std::mem::take(&mut self.current.branches);
+        let conditional =
+            kind == Kind::ExpressionConditional || kind == Kind::BackreferenceConditional;
+        branches.push(reduce_concat(parts));
+        if conditional {
+            return Node::Hold(Box::new(join(branches, false)));
+        }
+        let body = reduce_alt(branches);
+        if let Some(number) = capture {
+            Node::Capture {
+                number,
+                child: Box::new(body),
+            }
+        } else if transparent {
+            body
+        } else {
+            Node::Hold(Box::new(body))
+        }
+    }
+
+    fn set_unit(&mut self) {
+        self.unit = Some(Node::Unit);
+        self.has_unit = true;
+    }
+
+    fn commit_unit(&mut self) -> Result<(), ParseError> {
+        let node = self.unit.take().ok_or(ParseError::Internal)?;
+        self.current.parts.push(node);
+        self.has_unit = false;
         Ok(())
     }
 
@@ -579,13 +742,15 @@ impl<'a> Parser<'a> {
             if !self.has_unit {
                 return Err(self.fail("Illegal conditional (?(...)) expression."));
             }
+            let condition = self.unit.take().ok_or(ParseError::Internal)?;
+            self.current.branches.push(condition);
             self.current.children += 1;
             self.has_unit = false;
         }
         Ok(self.has_unit)
     }
 
-    fn scan_group_open(&mut self) -> Result<Option<Kind>, ParseError> {
+    fn scan_group_open(&mut self) -> Result<Option<Opened>, ParseError> {
         let len = self.units.len();
         if self.pos == len
             || self.at(self.pos)? != u16::from(b'?')
@@ -593,10 +758,11 @@ impl<'a> Parser<'a> {
         {
             if self.options & EXPLICIT_CAPTURE != 0 || self.ignore_next_paren {
                 self.ignore_next_paren = false;
-                return Ok(Some(Kind::Group));
+                return Ok(Some(Opened::Transparent));
             }
+            let number = self.autocap;
             self.autocap = self.autocap.wrapping_add(1);
-            return Ok(Some(Kind::Group));
+            return Ok(Some(Opened::Capture(number)));
         }
         self.pos += 1;
         if self.pos == len {
@@ -617,7 +783,11 @@ impl<'a> Parser<'a> {
                 if ch == u16::from(b'=') || ch == u16::from(b'!') {
                     self.options &= !RIGHT_TO_LEFT;
                 }
-                Ok(Some(Kind::Group))
+                if ch == u16::from(b':') {
+                    Ok(Some(Opened::Transparent))
+                } else {
+                    Ok(Some(Opened::Hold))
+                }
             }
             ch if ch == u16::from(b'<') => self.scan_angle(close),
             ch if ch == u16::from(b'(') => self.scan_conditional(),
@@ -634,14 +804,14 @@ impl<'a> Parser<'a> {
                     return Ok(None);
                 }
                 if next == u16::from(b':') {
-                    return Ok(Some(Kind::Group));
+                    return Ok(Some(Opened::Transparent));
                 }
                 Err(self.fail("Unrecognized grouping construct."))
             }
         }
     }
 
-    fn scan_angle(&mut self, close: u16) -> Result<Option<Kind>, ParseError> {
+    fn scan_angle(&mut self, close: u16) -> Result<Option<Opened>, ParseError> {
         if self.pos == self.units.len() {
             return Err(self.fail("Unrecognized grouping construct."));
         }
@@ -651,7 +821,7 @@ impl<'a> Parser<'a> {
                 return Err(self.fail("Unrecognized grouping construct."));
             }
             self.options |= RIGHT_TO_LEFT;
-            return Ok(Some(Kind::Group));
+            return Ok(Some(Opened::Hold));
         }
         self.pos -= 1;
         let mut capnum: i32 = -1;
@@ -742,12 +912,16 @@ impl<'a> Parser<'a> {
         }
         if (capnum != -1 || uncapnum != -1) && self.pos < self.units.len() && self.bump()? == close
         {
-            return Ok(Some(Kind::Group));
+            return Ok(Some(if capnum > 0 {
+                Opened::Capture(capnum)
+            } else {
+                Opened::Hold
+            }));
         }
         Err(self.fail("Unrecognized grouping construct."))
     }
 
-    fn scan_conditional(&mut self) -> Result<Option<Kind>, ParseError> {
+    fn scan_conditional(&mut self) -> Result<Option<Opened>, ParseError> {
         let paren_pos = self.pos;
         if self.pos < self.units.len() {
             let ch = self.at(self.pos)?;
@@ -755,7 +929,7 @@ impl<'a> Parser<'a> {
                 let capnum = self.scan_decimal()?;
                 if self.pos < self.units.len() && self.bump()? == u16::from(b')') {
                     if self.is_capture_slot(capnum) {
-                        return Ok(Some(Kind::BackreferenceConditional));
+                        return Ok(Some(Opened::Backref));
                     }
                     return Err(self.fail(&format!(
                         "Conditional alternation refers to an undefined group number {capnum}."
@@ -774,7 +948,7 @@ impl<'a> Parser<'a> {
                     && self.bump()? == u16::from(b')')
                 {
                     let _ = slot;
-                    return Ok(Some(Kind::BackreferenceConditional));
+                    return Ok(Some(Opened::Backref));
                 }
             }
         }
@@ -797,7 +971,7 @@ impl<'a> Parser<'a> {
                 return Err(self.fail("Alternation conditions do not capture and cannot be named."));
             }
         }
-        Ok(Some(Kind::ExpressionConditional))
+        Ok(Some(Opened::Expression))
     }
 
     fn scan_blank(&mut self) -> Result<(), ParseError> {
@@ -861,7 +1035,7 @@ impl<'a> Parser<'a> {
             {
                 self.pos += 1;
                 if !scan_only {
-                    self.has_unit = true;
+                    self.set_unit();
                 }
                 Ok(())
             }
@@ -872,7 +1046,7 @@ impl<'a> Parser<'a> {
                 }
                 let name = self.parse_property()?;
                 self.require_property(&name)?;
-                self.has_unit = true;
+                self.set_unit();
                 Ok(())
             }
             _ => self.scan_basic_backslash(scan_only),
@@ -920,7 +1094,7 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 if self.is_capture_slot(capnum) {
-                    self.has_unit = true;
+                    self.set_unit();
                     return Ok(());
                 }
                 return Err(self.fail(&format!("Reference to undefined group number {capnum}.")));
@@ -932,7 +1106,7 @@ impl<'a> Parser<'a> {
                     return Ok(());
                 }
                 if self.is_capture_slot(capnum) {
-                    self.has_unit = true;
+                    self.set_unit();
                     return Ok(());
                 }
                 if capnum <= 9 {
@@ -953,7 +1127,7 @@ impl<'a> Parser<'a> {
                     .and_then(|map| map.get(&name).copied())
                     .is_some()
                 {
-                    self.has_unit = true;
+                    self.set_unit();
                     return Ok(());
                 }
                 return Err(self.fail(&format!("Reference to undefined group name '{name}'.")));
@@ -962,7 +1136,7 @@ impl<'a> Parser<'a> {
         self.pos = backpos;
         let _escaped = self.scan_char_escape()?;
         if !scan_only {
-            self.has_unit = true;
+            self.set_unit();
         }
         Ok(())
     }
