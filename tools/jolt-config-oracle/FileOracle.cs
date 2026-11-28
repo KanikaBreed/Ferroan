@@ -3,7 +3,8 @@
 
 // Calls pinned JoltScene.NoteDilationSample (JoltScene.cs 2928-2942) and records
 // the private dilation window. The same capture compiles JoltCharacter's capsule,
-// mass, latch, intent and marker descriptor before the final native proof. The
+// mass, latch, intent and marker descriptor, then Simulate's return of 1 and
+// SimStatsReporter's FPS transform, before the final native proof. The physics
 // scene is constructed and never initialised, so JoltNative stays unloaded and
 // Foundation.Init is not called.
 
@@ -11,6 +12,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Reflection;
 using System.Text;
+using OpenSim.Framework;
+using OpenSim.Region.Framework.Scenes;
 using OpenSim.Region.PhysicsModules.Jolt;
 using OpenSim.Region.PhysicsModules.Jolt.Backend;
 
@@ -59,22 +62,26 @@ static class FileOracle
         Captured first = Capture();
         Captured second = Capture();
         if (first.Calls != second.Calls || first.Result != second.Result || first.Native != second.Native
-            || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult)
+            || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult
+            || first.Stats != second.Stats)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
         RejectMachinePaths(first.Native, reference);
         RejectMachinePaths(first.CharacterCalls, reference);
         RejectMachinePaths(first.CharacterResult, reference);
+        RejectMachinePaths(first.Stats, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
         manifest.Append("revision ").Append(revision).Append('\n');
         manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n");
         manifest.Append("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n");
+        manifest.Append("compile OpenSim.Region.Framework/Scenes/SimStatsReporter.cs\n");
         manifest.Append('\n');
         manifest.Append(CaseId).Append('\n');
         manifest.Append("character\n");
+        manifest.Append("stats\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
@@ -85,6 +92,9 @@ static class FileOracle
         Directory.CreateDirectory(characterDir);
         File.WriteAllText(Path.Combine(characterDir, "calls.txt"), first.CharacterCalls);
         File.WriteAllText(Path.Combine(characterDir, "result.txt"), first.CharacterResult);
+        string statsDir = Path.Combine(directory, "stats");
+        Directory.CreateDirectory(statsDir);
+        File.WriteAllText(Path.Combine(statsDir, "transform.txt"), first.Stats);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
@@ -126,10 +136,252 @@ static class FileOracle
         AppendScene(result, "B", sceneB, method, sceneBCalls);
         result.Append("property_matches_field true\n");
         CharacterOracle.Texts character = CharacterOracle.Capture();
+        string stats = StatsText();
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result);
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats);
+    }
+
+    const double HealthyFrameMs = 1000.0;
+    // Inside the healthy side of SimStatsReporter.cs 312. The reporter reads the
+    // clock again, so this setpoint is not the measured residue. A residue past
+    // 1250 ms would take the stall branch and the capture rejects that run.
+    const double HealthyUpdateMs = 500.0;
+    // 2^20 seconds. That float's bin is wider than the clock read at line 276,
+    // so the cast is this exact value and the stall branch is reproducible.
+    const double StallUpdateMs = 1048576000.0;
+    const int StallFrames = 209736;
+
+    static string StatsText()
+    {
+        var text = new StringBuilder();
+        text.Append(FormatLine).Append('\n');
+        text.Append("method NoteDilationSample\n");
+        text.Append("source JoltScene.cs 2928-2942\n");
+        text.Append("source_simulate JoltScene.cs 2786-2833\n");
+        text.Append("source_substeps JoltScene.cs 3107-3156\n");
+        text.Append("factor SimStatsReporter.cs 178-183\n");
+        text.Append("transform SimStatsReporter.cs 319-338\n");
+        text.Append("round SimStatsReporter.cs 368-370\n");
+        text.Append("branch SimStatsReporter.cs 312-317\n");
+        text.Append("clock SimStatsReporter.cs 274-276\n");
+        text.Append("step SimStatsReporter.cs 390\n");
+        text.Append("header SimStatsReporter.cs 1-26\n");
+        text.Append("native not_called\n");
+        text.Append("healthy_frame_ms ").Append(HealthyFrameMs.ToString("0", CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("healthy_update_ms ").Append(HealthyUpdateMs.ToString("0", CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("stall_update_ms ").Append(StallUpdateMs.ToString("0", CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("physics_step_ms ").Append(FloatBits(20f)).Append('\n');
+        AppendSimulate(text, "null");
+        AppendSimulate(text, "once");
+        AppendSimulate(text, "substep_empty");
+        AppendSimulate(text, "substeps");
+
+        var scene = new Scene(new OpenSim.Framework.RegionInfo());
+        scene.RegionInfo.RegionName = "fixture";
+        SetScene(scene, "m_active", true);
+        AppendStats(text, scene, "normalized-11", true, 0.0909f, 11, 1f, 1f, false);
+        AppendStats(text, scene, "raw-11", false, 0.0909f, 11, 1f, 1f, false);
+        AppendStats(text, scene, "constructor-frame", true, 0.0908f, 11, 1f, 1f, false);
+        AppendStats(text, scene, "physics-off", true, 0.0909f, 11, 1f, 0f, false);
+        AppendStats(text, scene, "physics-capped", true, 0.0909f, 11, 1f, 2f, false);
+        AppendStats(text, scene, "no-frames", true, 0.0909f, 0, 1f, 1f, false);
+        AppendStats(text, scene, "nan-dilation", true, 0.0909f, 11, BitConverter.Int32BitsToSingle(0x7FC00001), 1f, false);
+        AppendStats(text, scene, "signed-zero", true, 0.0909f, 1, -0.0004f, 1f, false);
+        AppendStats(text, scene, "stalled", true, 0.0909f, StallFrames, 1f, 1f, true);
+        return text.ToString();
+    }
+
+    static void AppendSimulate(StringBuilder text, string name)
+    {
+        var scene = new JoltScene();
+        typeof(JoltScene).GetProperty("RegionName").SetValue(scene, "fixture");
+        var backend = new RecordingBackend();
+        int steps = 0;
+        float returned;
+        if (name == "null")
+        {
+            returned = scene.Simulate(0.0909f);
+        }
+        else
+        {
+            backend.RecordHeartbeat = true;
+            SetSceneField(scene, "_backend", backend);
+            if (name == "substep_empty")
+            {
+                SetSceneField(scene, "_substeps", Substeps(45f));
+                returned = scene.Simulate(0.0001f);
+            }
+            else if (name == "substeps")
+            {
+                SetSceneField(scene, "_substeps", Substeps(45f));
+                returned = scene.Simulate(0.0909f);
+            }
+            else if (name == "once")
+            {
+                returned = scene.Simulate(0.0909f);
+            }
+            else
+            {
+                throw new InvalidOperationException("unknown simulate " + name);
+            }
+            steps = backend.HeartbeatSteps;
+        }
+        text.Append("simulate ").Append(name).Append(' ').Append(FloatBits(returned)).Append(' ').Append(steps.ToString(CultureInfo.InvariantCulture)).Append('\n');
+    }
+
+    static object Substeps(float rate)
+    {
+        Type type = typeof(JoltScene).Assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.SubstepAccumulator")
+            ?? throw new InvalidOperationException("SubstepAccumulator was not found");
+        return Activator.CreateInstance(type, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, new object[] { rate }, null)
+            ?? throw new InvalidOperationException("SubstepAccumulator was not constructed");
+    }
+
+    static void SetSceneField(JoltScene scene, string name, object value)
+    {
+        FieldInfo field = typeof(JoltScene).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(name + " was not found");
+        field.SetValue(scene, value);
+    }
+
+    static void AppendStats(StringBuilder text, Scene scene, string name, bool normalized, float frameTime, int frames, float dilationEach, float physicsEach, bool stall)
+    {
+        SetScene(scene, "Normalized55FPS", normalized);
+        SetScene(scene, "FrameTime", frameTime);
+        var reporter = new SimStatsReporter(scene);
+        reporter.Close();
+        double frameElapsedMs = HealthyFrameMs;
+        double updateElapsedMs = stall ? StallUpdateMs : HealthyUpdateMs;
+        float frameElapsed = (float)(frameElapsedMs / 1000.0);
+        float expectedUpdate = (float)(updateElapsedMs / 1000.0);
+        bool wantStall = StallBranch(frameElapsed, expectedUpdate);
+        if (wantStall != stall)
+            throw new InvalidOperationException("stats elapsed setpoint is on the wrong branch");
+        for (int attempt = 0; attempt < 8; attempt++)
+        {
+            for (int i = 0; i < frames; i++)
+                reporter.AddFrameStats(dilationEach, physicsEach, 0f, 0f, 0f, 0f, 0f, 0f);
+            int framesRead = (int)ReporterField(reporter, "m_fps");
+            float dilationSum = (float)ReporterField(reporter, "m_timeDilation");
+            float physicsSum = (float)ReporterField(reporter, "m_pfps");
+            float factor = (float)ReporterField(reporter, "m_statisticsFPSfactor");
+            ReporterFieldSet(reporter, "m_prevFrameStatsTS", 0.0d);
+            ReporterFieldSet(reporter, "m_FrameStatsTS", frameElapsedMs);
+            double timeTmp = UpdateTimestamp(expectedUpdate, updateElapsedMs, stall);
+            ReporterFieldSet(reporter, "m_lastUpdateTS", timeTmp);
+            InvokeHeartbeat(reporter);
+            double after = (double)ReporterField(reporter, "m_lastUpdateTS");
+            float actualUpdate = (float)((after - timeTmp) / 1000.0);
+            bool updateOk = stall
+                ? FloatBitsEqual(actualUpdate, expectedUpdate)
+                : StallBranch(frameElapsed, actualUpdate) == wantStall;
+            if (!updateOk)
+                continue;
+            var values = (float[])ReporterField(reporter, "lastReportedSimStats");
+            float timeDilation = values[(int)StatsIndex.TimeDilation];
+            float simFps = values[(int)StatsIndex.SimFPS];
+            float physicsFps = values[(int)StatsIndex.PhysicsFPS];
+            float stepMs = values[(int)StatsIndex.SimPhysicsStepMs];
+            if (stepMs != 20f)
+                throw new InvalidOperationException("SimPhysicsStepMs was not 20");
+            text.Append("\ncase ").Append(name).Append('\n');
+            text.Append("normalized ").Append(normalized ? "1" : "0").Append('\n');
+            text.Append("frame_time ").Append(FloatBits(frameTime)).Append('\n');
+            text.Append("frames ").Append(frames.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("dilation_each ").Append(FloatBits(dilationEach)).Append('\n');
+            text.Append("physics_each ").Append(FloatBits(physicsEach)).Append('\n');
+            text.Append("frame_ms ").Append(frameElapsedMs.ToString("0", CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("update_ms ").Append(updateElapsedMs.ToString("0", CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("frames_read ").Append(framesRead.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("dilation_sum ").Append(SumText(dilationSum)).Append('\n');
+            text.Append("physics_sum ").Append(FloatBits(physicsSum)).Append('\n');
+            text.Append("factor ").Append(FloatBits(factor)).Append('\n');
+            text.Append("time_dilation ").Append(FloatBits(timeDilation)).Append('\n');
+            text.Append("sim_fps ").Append(FloatBits(simFps)).Append('\n');
+            text.Append("physics_fps ").Append(FloatBits(physicsFps)).Append('\n');
+            text.Append("step_ms ").Append(FloatBits(stepMs)).Append('\n');
+            return;
+        }
+        throw new InvalidOperationException("stats elapsed left the controlled branch for " + name);
+    }
+
+    static double UpdateTimestamp(float expectedUpdate, double updateElapsedMs, bool pinUpdate)
+    {
+        double now = Util.GetTimeStampMS();
+        if (!pinUpdate)
+            return now - updateElapsedMs;
+        return now - (FloatBinCenterSeconds(expectedUpdate) * 1000.0);
+    }
+
+    static bool StallBranch(float frameElapsed, float updateElapsed)
+    {
+        return (double)(frameElapsed / updateElapsed) < 0.8;
+    }
+
+    static bool FloatBitsEqual(float left, float right)
+    {
+        return BitConverter.SingleToInt32Bits(left) == BitConverter.SingleToInt32Bits(right);
+    }
+
+    // Center of the doubles that cast to `target`, away from either tie.
+    static double FloatBinCenterSeconds(float target)
+    {
+        float down = MathF.BitDecrement(target);
+        float up = MathF.BitIncrement(target);
+        double low = ((double)down + target) * 0.5;
+        double high = ((double)target + up) * 0.5;
+        return (low + high) * 0.5;
+    }
+
+    static string SumText(float value)
+    {
+        if (float.IsNaN(value))
+            return "nan";
+        return FloatBits(value);
+    }
+
+    static void InvokeHeartbeat(SimStatsReporter reporter)
+    {
+        MethodInfo method = typeof(SimStatsReporter).GetMethod("statsHeartBeat", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("statsHeartBeat was not found");
+        try
+        {
+            method.Invoke(reporter, new object[] { null, EventArgs.Empty });
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw exception.InnerException ?? exception;
+        }
+    }
+
+    static object ReporterField(SimStatsReporter reporter, string name)
+    {
+        FieldInfo field = typeof(SimStatsReporter).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(name + " was not found");
+        return field.GetValue(reporter);
+    }
+
+    static void ReporterFieldSet(SimStatsReporter reporter, string name, object value)
+    {
+        FieldInfo field = typeof(SimStatsReporter).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException(name + " was not found");
+        field.SetValue(reporter, value);
+    }
+
+    static void SetScene(Scene scene, string name, object value)
+    {
+        if (name == "m_active")
+        {
+            FieldInfo field = typeof(Scene).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException(name + " was not found");
+            field.SetValue(scene, value);
+            return;
+        }
+        PropertyInfo property = typeof(Scene).GetProperty(name)
+            ?? throw new InvalidOperationException(name + " was not found");
+        property.SetValue(scene, value);
     }
 
     static void AppendCalls(StringBuilder calls, string scene, Call[] script)
@@ -373,5 +625,5 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats);
 }

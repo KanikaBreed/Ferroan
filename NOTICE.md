@@ -90,6 +90,8 @@ Q109's `crates/ferroan-physics/src/character.rs` ports `Source/OpenSim.Region.Ph
 
 Q328's `crates/ferroan-format/src/lib.rs` and `src/parse.rs` port the item walk of `StringBuilder.AppendFormat` (`IndexLimit`, `WidthLimit`) and the literal and hole segments of `CompositeFormat.TryParseLiterals` from dotnet/runtime tag `v10.0.14` (MIT, Copyright (c) .NET Foundation and Contributors). Those files keep that notice. The C# source is not copied. `tools/format-oracle` calls `string.Format` on .NET 10.0.14 and is new Ferroan code. Numeric and date specifiers are later rows.
 
+Q116's `crates/ferroan-physics/src/dilation.rs` ports `JoltScene.NoteDilationSample` at Tranquillity `41f18f983bb2bfc82e033fed410d361ba57d5aa4` (MPL-2.0, Copyright (c) 2026 Legion Builds) and the FPS transform in `SimStatsReporter.cs` (BSD-3-Clause, OpenSimulator contributors, cite lines 1-26). The file keeps both notices. The C# source is not copied. The oracle calls the pinned methods. No native library.
+
 ## Native libraries
 
 `ferroan-physics` links [Jolt Physics](https://github.com/jrouwe/JoltPhysics) 5.6.0 (commit `e77f175595e64cb44218cc9d9d56fc365ad0e36a`) through [`oxijolt-sys`](https://github.com/pockerhead/oxijolt) 1.6.0 (tag `v1.6.0`). The crate is MIT OR Apache-2.0, copyright Artem Balashow. Jolt is MIT, copyright Jorrit Rouwe. The build uses `JOLTC_PREBUILT=require` and `cross-platform-deterministic`, single precision. The safe `oxijolt` crate is not a dependency. Only `ferroan-physics` depends on `oxijolt-sys`.
