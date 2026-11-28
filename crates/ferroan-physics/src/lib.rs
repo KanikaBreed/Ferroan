@@ -12,6 +12,7 @@
 //! transform. A successful simulate contributes 1, and `SimPhysicsStepMs`
 //! stays 20. P3.4 chooses an analytic box, sphere or cylinder. The dimensions
 //! are the ones `CookPrimShape` passes. A non-uniform sphere is not analytic.
+//! Mass, a ray and free flight before contact use that shape.
 //! Unsafe is allowed in `native`, and in `ferroan-scripting` once that crate
 //! exists. The workspace forbids it everywhere else.
 
@@ -27,7 +28,10 @@ mod native;
 mod substep;
 mod thread;
 
-pub use analytic::{AnalyticShape, PrimCuts, analytic_shape};
+pub use analytic::{
+    AnalyticShape, Flight, PrimCuts, RayHit, analytic_mass, analytic_ray, analytic_shape,
+    free_flight,
+};
 pub use character::{
     Capsule, DEFAULT_AVATAR_MASS, DEFAULT_AVATAR_SIZE, EDGE_MARGIN, GroundFlags, Intent,
     MarkerDesc, MarkerRequest, RegionClamp, ShapeState, SpeedFactors, capsule_from_size,

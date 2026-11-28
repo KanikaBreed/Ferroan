@@ -4,7 +4,8 @@
 // In-process Harness.Run for the pinned `drop` scenario, on the deterministic linux-x64 joltc
 // the pin records (origin Rebuilt, joltc 886e0886, Jolt e77f1755).
 // Samples keep the harness floats. ToCsv is not the trace.
-// The same run writes analytic-envelope.txt: mass and one ray for the analytic shapes.
+// The same run writes analytic-envelope.txt: mass, one ray, and the dynamic
+// free-flight position and velocity after each of the first two heartbeats.
 // The pinned checkout is not modified.
 
 using System.Globalization;
@@ -143,8 +144,11 @@ static partial class RecordOracle
     // Mass and one horizontal ray for each analytic shape, on the stock rate-0 harness.
     // Mass is read in Setup, as MassReadoutTests.cs 78-82. The ray is the second input,
     // after one Simulate, through JoltScene.RaycastWorld (JoltScene.cs 2274-2280).
+    // A third heartbeat exists so the second post-step pose can be read on the next
+    // input, before that heartbeat's Simulate. The compared flight is the first two.
     // Two reads must match. The drop files are written before this and are not changed.
-    const float EnvelopeDuration = 1.5f / 11f;
+    const float EnvelopeDuration = 2.5f / 11f;
+    const int FlightSteps = 2;
 
     static string EnvelopeText()
     {
@@ -169,12 +173,26 @@ static partial class RecordOracle
         var shapes = new List<string>();
         var placed = new List<(string Name, bool Physical, uint Local, PhysicsActor Actor)>();
         var rays = new List<string>();
+        var flights = new List<string>();
+        float gravityX = float.NaN, gravityY = float.NaN, gravityZ = float.NaN;
+        float linearDamping = float.NaN, heartbeat = float.NaN;
+        int collisionSteps = -1;
         var scenario = new Scenario
         {
             Name = "analytic-envelope",
             DefaultDuration = _ => EnvelopeDuration,
             Setup = run =>
             {
+                object scene = run.PhysicsScene;
+                object gravity = Member(scene, "DefaultGravity");
+                gravityX = Component(gravity, "X");
+                gravityY = Component(gravity, "Y");
+                gravityZ = Component(gravity, "Z");
+                linearDamping = (float)Member(scene, "PrimLinearDamping");
+                collisionSteps = (int)Member(scene, "CollisionSteps");
+                heartbeat = (float)run.Dt;
+                if (collisionSteps < 1 || !float.IsFinite(gravityZ) || !float.IsFinite(linearDamping) || heartbeat <= 0f)
+                    throw new InvalidOperationException("analytic envelope is missing gravity, damping or the solver step");
                 foreach (var spec in specs)
                 {
                     PhysicsActor actor = run.AddPart(spec.Shape, spec.Size, spec.Position, Quaternion.Identity, spec.Physical, spec.Local);
@@ -192,6 +210,21 @@ static partial class RecordOracle
             },
             Input = run =>
             {
+                if (run.Heartbeats >= 1 && run.Heartbeats <= FlightSteps)
+                {
+                    foreach (var spec in placed)
+                    {
+                        if (!spec.Physical)
+                            continue;
+                        Vector3 position = spec.Actor.Position;
+                        Vector3 velocity = spec.Actor.Velocity;
+                        flights.Add(string.Join(' ',
+                            "flight", spec.Name,
+                            "step", run.Heartbeats.ToString(CultureInfo.InvariantCulture),
+                            "pos", F(position.X), F(position.Y), F(position.Z),
+                            "vel", F(velocity.X), F(velocity.Y), F(velocity.Z)));
+                    }
+                }
                 if (run.Heartbeats != 1)
                     return;
                 foreach (var spec in placed)
@@ -223,10 +256,10 @@ static partial class RecordOracle
         RunResult result = Harness.Run(scenario, options);
         if (result.PhysicsRateHz != 0)
             throw new InvalidOperationException("analytic envelope physics rate was " + result.PhysicsRateHz.ToString("R", CultureInfo.InvariantCulture));
-        if (result.Samples.Count != 2)
+        if (result.Samples.Count != 3)
             throw new InvalidOperationException("analytic envelope samples were " + result.Samples.Count.ToString(CultureInfo.InvariantCulture));
-        if (shapes.Count != 6 || rays.Count != 3)
-            throw new InvalidOperationException("analytic envelope recorded " + shapes.Count + " shapes and " + rays.Count + " rays");
+        if (shapes.Count != 6 || rays.Count != 3 || flights.Count != FlightSteps * 3)
+            throw new InvalidOperationException("analytic envelope recorded " + shapes.Count + " shapes, " + rays.Count + " rays and " + flights.Count + " flights");
         var text = new StringBuilder();
         text.Append("format 1\n");
         text.Append("channel harness\n");
@@ -242,12 +275,39 @@ static partial class RecordOracle
         text.Append("physics_rate_hz 0\n");
         text.Append("samples ").Append(result.Samples.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
         text.Append("reads 2\n");
+        text.Append("flight_steps ").Append(FlightSteps.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("collision_steps ").Append(collisionSteps.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("gravity ").Append(F(gravityX)).Append(' ').Append(F(gravityY)).Append(' ').Append(F(gravityZ)).Append('\n');
+        text.Append("linear_damping ").Append(F(linearDamping)).Append('\n');
+        text.Append("heartbeat ").Append(F(heartbeat)).Append('\n');
+        text.Append("position_tolerance_m 0.001\n");
+        text.Append("velocity_tolerance_m_s 0.01\n");
+        text.Append("mass_decimals 3\n");
         text.Append('\n');
         foreach (string line in shapes)
             text.Append(line).Append('\n');
         foreach (string line in rays)
             text.Append(line).Append('\n');
+        foreach (string line in flights)
+            text.Append(line).Append('\n');
         return text.ToString();
+    }
+
+    static object Member(object target, string name)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        Type type = target.GetType();
+        PropertyInfo property = type.GetProperty(name, flags);
+        if (property != null)
+            return property.GetValue(target) ?? throw new InvalidOperationException(name + " is null");
+        FieldInfo field = type.GetField(name, flags) ?? throw new InvalidOperationException(name + " is missing");
+        return field.GetValue(target) ?? throw new InvalidOperationException(name + " is null");
+    }
+
+    static float Component(object vector, string name)
+    {
+        object value = Member(vector, name);
+        return value is float number ? number : throw new InvalidOperationException(name + " is not a float");
     }
 
     static PrimitiveBaseShape CircleStraight()

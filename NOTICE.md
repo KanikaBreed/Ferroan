@@ -92,6 +92,8 @@ Q328's `crates/ferroan-format/src/lib.rs` and `src/parse.rs` port the item walk 
 
 Q116's `crates/ferroan-physics/src/dilation.rs` ports `JoltScene.NoteDilationSample` at Tranquillity `41f18f983bb2bfc82e033fed410d361ba57d5aa4` (MPL-2.0, Copyright (c) 2026 Legion Builds) and the FPS transform in `SimStatsReporter.cs` (BSD-3-Clause, OpenSimulator contributors, cite lines 1-26). The file keeps both notices. The C# source is not copied. The oracle calls the pinned methods. No native library.
 
+Q117's `crates/ferroan-physics/src/analytic.rs` ports `CookPrimShape` and `PrimHasNoCuts` from `JoltScene.cs` and the lone-body mass from `JoltPrim.cs` at Tranquillity `41f18f983bb2bfc82e033fed410d361ba57d5aa4` (MPL-2.0, Copyright (c) 2026 Legion Builds). The file keeps that notice and remains available under MPL-2.0. The C# source is not copied. Free flight and the analytic ray are Ferroan calculations compared with the pinned harness recording. The constructor capture does not map joltc. The envelope recording uses the deterministic linux-x64 joltc the pin already records.
+
 ## Native libraries
 
 `ferroan-physics` links [Jolt Physics](https://github.com/jrouwe/JoltPhysics) 5.6.0 (commit `e77f175595e64cb44218cc9d9d56fc365ad0e36a`) through [`oxijolt-sys`](https://github.com/pockerhead/oxijolt) 1.6.0 (tag `v1.6.0`). The crate is MIT OR Apache-2.0, copyright Artem Balashow. Jolt is MIT, copyright Jorrit Rouwe. The build uses `JOLTC_PREBUILT=require` and `cross-platform-deterministic`, single precision. The safe `oxijolt` crate is not a dependency. Only `ferroan-physics` depends on `oxijolt-sys`.

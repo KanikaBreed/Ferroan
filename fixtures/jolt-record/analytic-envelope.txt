@@ -10,8 +10,16 @@ ray_source JoltScene.cs 2274-2280
 extent PhysicsActor.Size
 rate_hz 11
 physics_rate_hz 0
-samples 2
+samples 3
 reads 2
+flight_steps 2
+collision_steps 6
+gravity 00000000 00000000 C11CE80A
+linear_damping 3CA3D70A
+heartbeat 3DBA2E8C
+position_tolerance_m 0.001
+velocity_tolerance_m_s 0.01
+mass_decimals 3
 
 shape box-static physical 0 local 4101 pos 42800000 42800000 42340000 size 3F800000 3F800000 3F800000 mass 41200000
 shape box-dynamic physical 1 local 4102 pos 42A00000 42A00000 42340000 size 3F800000 3F800000 3F800000 mass 41200000
@@ -22,3 +30,9 @@ shape cylinder-dynamic physical 1 local 4106 pos 43100000 42400000 42340000 size
 ray box-static heartbeats 1 start 426C0000 42800000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4101 pos 427E0000 42800000 42340000 normal BF800000 00000000 00000000 depth 40900000
 ray sphere-static heartbeats 1 start 42B60000 42C00000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4103 pos 42BE0000 42C00000 42340000 normal BF800000 00000000 00000000 depth 40800000
 ray cylinder-static heartbeats 1 start 42F60000 42400000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4105 pos 42FF0000 42400000 42340000 normal BF800000 00000000 00000000 depth 40900000
+flight box-dynamic step 1 pos 42A00000 42A00000 4233CFA1 vel 00000000 00000000 BF63FC4E
+flight sphere-dynamic step 1 pos 42E00000 42E00000 4233CFA1 vel 00000000 00000000 BF63FC4E
+flight cylinder-dynamic step 1 pos 43100000 42400000 4233CFA1 vel 00000000 00000000 BF63FC4E
+flight box-dynamic step 2 pos 42A00000 42A00000 42334C71 vel 00000000 00000000 BFE3C749
+flight sphere-dynamic step 2 pos 42E00000 42E00000 42334C71 vel 00000000 00000000 BFE3C749
+flight cylinder-dynamic step 2 pos 43100000 42400000 42334C71 vel 00000000 00000000 BFE3C749

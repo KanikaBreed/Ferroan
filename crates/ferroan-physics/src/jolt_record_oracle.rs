@@ -206,7 +206,13 @@ fn drop_recording_keeps_the_pinned_structure() {
     assert_eq!(value(&envelope, "extent "), "PhysicsActor.Size");
     assert_eq!(value(&envelope, "rate_hz "), "11");
     assert_eq!(value(&envelope, "physics_rate_hz "), "0");
-    assert_eq!(value(&envelope, "samples "), "2");
+    assert_eq!(value(&envelope, "samples "), "3");
+    assert_eq!(value(&envelope, "flight_steps "), "2");
+    assert_eq!(value(&envelope, "collision_steps "), "6");
+    assert!(envelope.contains("flight box-dynamic step 1 "));
+    assert!(envelope.contains("flight box-dynamic step 2 "));
+    assert!(envelope.contains("flight sphere-dynamic step 2 "));
+    assert!(envelope.contains("flight cylinder-dynamic step 2 "));
     assert_eq!(value(&envelope, "reads "), "2");
     assert_eq!(
         line_after(&envelope, "shape box-static "),
