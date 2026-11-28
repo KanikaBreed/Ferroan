@@ -36,7 +36,36 @@ the machine clock; the producer checks the stored double against
 `1/Stopwatch.Frequency` and records the dilation float from `_timeDilation`.
 Exact stored ratios are 1, 0.75, 0.625 at sample 3 and 0.5625 at sample 7.
 The Rust test checks the fixture's structure and pins all twelve scene A
-dilation values. The dilation window port that replays it is P3.3b.
+dilation values. `DilationWindow` replays the ratio. The same command calls
+`Simulate` and the reporter's FPS transform for both `Normalized55FPS`
+settings and writes `fixtures/jolt-file/stats`. A successful simulate
+contributes 1. Eleven frames in one second show about 55 when the scale is
+on. `SimPhysicsStepMs` stays 20. Ordinary check does not call the reporter.
+
+The same file command calls internal `CookPrimShape` (`JoltScene.cs`
+1229-1259) by reflection on `new JoltScene()` and records the constructor
+the fast path chooses. A box, a sphere and a cylinder are each cooked once
+static and once dynamic. The cylinder case is circle profile and straight
+extrusion; `PrimitiveBaseShape.CreateCylinder()` is not that shape. The
+recording backend stores the half extents, the sphere radius, or the
+cylinder half height and radius. It does not call the native constructors.
+A non-uniform sphere is `bbox(fallback)` with one box constructor, because
+the mesher is null. `analytic_shape` replays the fast path and returns
+nothing for that ellipsoid. The stock drop asset kind stays `analytic-box`.
+Mass and a ray are on the stock harness recording, in
+`fixtures/jolt-record/analytic-envelope.txt`, not in this no-native fixture.
+
+The same file command calls public `SetTerrain` (`JoltScene.cs` 3552-3613)
+on `new JoltScene()` and records the `(N+1)` field that method stores. The
+backend records the span, the sample counts and the scale, and does not cook.
+A 256 by 256 map becomes 257 by 257. The fixture stores a SHA-256 of those
+little-endian output floats, the dimensions, and the edge and corner bits.
+Smaller maps stay literal. The far edge repeats the last real sample.
+Non-square maps pad to `max(width, height) + 1` by that same repeat. A side
+past 4096 m reports `terrain.edge` and does not reserve the square.
+A short map, a null map and a zero region size leave the field unset. Gravity,
+prim damping and the `1/11` s step are the stock drop recording's bits.
+`pad_heightfield` replays the fixture. This row does not compare a cooked ray.
 
 The same file command calls `JoltCharacter` capsule, mass and stand-half,
 `DesiredVelocity`, the jump latch and the ground flags through
@@ -46,8 +75,10 @@ radius of at least 0.2 m. A constructor size that is NaN or infinite is
 recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
 The replay compares NaN as NaN because the default NaN's bits are
 platform-defined. Only `fixtures/jolt-file/character/result.txt` has NaN
-results (capsule rows 21-24, size row 50, buoyancy row 57). The
-note-dilation, config and drop replays stay bit-exact.
+results (capsule rows 21-24, size row 50, buoyancy row 57). The heightfield
+fixture stores a NaN payload as hex bits.
+`fixtures/jolt-file/gravity/matrix.txt` records a passed NaN payload by
+bits. The note-dilation, config and drop replays stay bit-exact.
 The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
 unscaled. Flight ignores always-run, for both signs of Z. The latch clears
 when vertical velocity is above 0.5 or the avatar is not supported.
@@ -59,6 +90,30 @@ for the bind. The matched-native trace waits for the upgrade. The gravity
 scale inside `StepCharacter` is not invoked; that multiply is P3.13b.
 Default speed-factor and jump bits are the same bits as
 `fixtures/jolt-record/drop/config.txt`. The capture still does not load joltc.
+
+The same file command calls `HalcyonBasicForces.LegacyBuoyancy`
+(`HalcyonBasicForces.cs` 103-104; cite lines 1-33) and `JoltPrim.Buoyancy`
+and `VehicleType` (`JoltPrim.cs` 1784-1819, 2303-2332, 2755-2767 and
+2794-2810). The prim is uninitialised, so its constructor does not cook a
+shape. A recording backend stores `SetBodyGravityFactor` and ignores the
+vehicle body's friction, damping, sleep, CCD and step-provider calls. The
+0.977 boundary, a Second Life value that stays 0.98, the multiplier and its
+clamp, a rejected non-finite value, a child write on the root and a vehicle
+factor of 0 restored to the script factor are in
+`fixtures/jolt-file/gravity/matrix.txt`. Water is not used. The Rust replay
+compares every write by bits. Ordinary tests do not run this command.
+The same file command calls `DispatchContacts` (`JoltScene.cs` 3253-3416)
+and the collision sound gate, and writes `fixtures/jolt-file/collision`.
+Prim actors are uninitialized. `IsBodyAwake` is the only backend call those
+frames make. A merged substep scores 1 and keeps the first speed. An
+unmerged pair scores 2 and keeps the faster speed on the first point. Held
+terrain is sent again. A sleeping pair stays. Overflow sends a partial set
+and ends nobody. Current nonempty callbacks are recorded before ends.
+The same object pair is held inside 0.13 s and sent at
+`0.13 - 1e-9`. A sound plays for `abs(speed) > 0.2` and `abs(speed) >= 0.2f`.
+Bits `3E4CCCCD` play and `3E4CCCCC` do not. A second touch does not play.
+Script events stay unsubscribed. Ordinary check does not dispatch. The
+capture still does not load joltc.
 
 No native code is started. The fixture records the same proof at
 `before_construct`, after construction and after the calls:

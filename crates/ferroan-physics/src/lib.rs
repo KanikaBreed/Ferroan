@@ -6,22 +6,41 @@
 //! P3.0b ports the Jolt module's substep accumulator. A heartbeat past 16
 //! steps drops the extra time and reports `physics.steps-per-frame`. P3.2c
 //! reads `[Jolt]` and warns once when `[Startup] physics` is not `Jolt`.
-//! P3.1 binds Jolt through `oxijolt-sys` from this crate only. P3.3 runs the
-//! heartbeat on a physics thread. The frame posts one heartbeat and reads the
-//! pose after the reply. Unsafe is allowed in `native`, and in
+//! P3.1 binds Jolt through `oxijolt-sys` from this crate only. P3.2a pads the
+//! heightfield samples the way `SetTerrain` does, before the native cook.
+//! P3.3 runs the heartbeat on a physics thread. The frame posts one heartbeat
+//! and reads the pose after the reply. P3.3b replays the dilation window and
+//! the stats
+//! transform. A successful simulate contributes 1, and `SimPhysicsStepMs`
+//! stays 20. P3.4 chooses an analytic box, sphere or cylinder. The dimensions
+//! are the ones `CookPrimShape` passes. A non-uniform sphere is not analytic.
+//! Mass, a ray and free flight before contact use that shape.
+//! P3.6 replays the buoyancy boundary, the gravity factor, the vehicle
+//! override and the child forward. P3.18a replays one frame of actor sets.
+//! A successful contact is delivered or held, and a sound is the absolute
+//! speed past 0.2 m/s. Unsafe is allowed in `native`, and in
 //! `ferroan-scripting` once that crate exists. The workspace forbids it
 //! everywhere else.
 
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+mod analytic;
 mod character;
+mod collision;
+mod dilation;
+mod gravity;
 mod jolt_config;
 #[allow(unsafe_code)]
 mod native;
 mod substep;
+mod terrain;
 mod thread;
 
+pub use analytic::{
+    AnalyticShape, Flight, PrimCuts, RayHit, analytic_mass, analytic_ray, analytic_shape,
+    free_flight,
+};
 pub use character::{
     Capsule, DEFAULT_AVATAR_MASS, DEFAULT_AVATAR_SIZE, EDGE_MARGIN, GroundFlags, Intent,
     MarkerDesc, MarkerRequest, RegionClamp, ShapeState, SpeedFactors, capsule_from_size,
@@ -29,6 +48,18 @@ pub use character::{
     ground_flags, jump_latch_after_drain, jump_latch_on_press, keep_in_region,
     marker_body_user_data, marker_descriptor, mass_for, movement_sends_latch, stand_half_for,
     store_buoyancy, store_target,
+};
+pub use collision::{
+    Actor, ActorSets, ContactPhase, ContactReport, Delivery, FrameInput, FrameOutput, KeptContact,
+    MIN_REPEAT_EPSILON, MIN_REPEAT_SECONDS, collision_sound,
+};
+pub use dilation::{
+    DILATION_WINDOW, DilationWindow, PHYSICS_STEP_MS, StatsInputs, StatsReport, accumulate_frame,
+    report_stats, statistics_fps_factor,
+};
+pub use gravity::{
+    GravityActor, GravityScale, GravityWrite, legacy_buoyancy, script_gravity_factor, set_buoyancy,
+    set_linked_buoyancy, set_vehicle_type,
 };
 pub use jolt_config::{
     BasicForces, JoltConfig, JoltLoad, MaterialCombine, VehicleBehaviour, VehiclePresetSet, load,
@@ -38,6 +69,7 @@ pub use native::{
     JOLT_COMMIT, JOLT_VERSION, JOLTC_COMMIT, JOLTC_EXT_REVISION, NativeError, PhysicsSystem,
 };
 pub use substep::{MAX_STEPS_PER_FRAME, RateError, SubstepAccumulator};
+pub use terrain::pad_heightfield;
 pub use thread::{BodyReply, Physics, Pose, REQUEST_QUEUE, RayReply, Refusal, SpawnError, Step};
 
 #[cfg(test)]

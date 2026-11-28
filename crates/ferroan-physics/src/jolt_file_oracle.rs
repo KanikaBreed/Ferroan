@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Checks the structure of `fixtures/jolt-file`, the pinned
-//! `JoltScene.NoteDilationSample` record. The Rust test checks the fixture's
-//! structure; the dilation window port that replays it is P3.3b. All twelve
-//! scene A dilation values are pinned here, so a hand edit of the fixture
-//! fails ordinary CI. This test does not recompute the ratio. The manifest
-//! also names the `JoltCharacter` compile; `character_oracle` replays that
-//! fixture.
+//! `JoltScene.NoteDilationSample` record. [`crate::DilationWindow`] replays
+//! the ratio. All twelve scene A dilation values are pinned here, so a hand
+//! edit of the fixture fails ordinary CI. The manifest also names the
+//! `JoltCharacter` compile; `character_oracle` replays that fixture. The
+//! `stats` line is the reporter transform. It names the analytic cook;
+//! `analytic` replays that fixture. The `heightfield` line is the padded
+//! field `SetTerrain` stores; `pad_heightfield` replays it. It names the
+//! gravity matrix; `gravity` replays that fixture. The manifest also names
+//! the collision compile; `collision` replays that fixture.
 
 use std::path::PathBuf;
 
@@ -44,8 +47,19 @@ fn note_dilation_fixture_keeps_the_pinned_structure() {
     assert_eq!(revision, value(&config, "revision "));
     assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltScene.cs\n"));
     assert!(manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/JoltCharacter.cs\n"));
+    assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/SimStatsReporter.cs\n"));
+    assert!(
+        manifest.contains("compile OpenSim.Region.PhysicsModules.Jolt/CollisionFrameTracker.cs\n")
+    );
+    assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/SceneObjectPart.cs\n"));
+    assert!(manifest.contains("compile OpenSim.Region.Framework/Scenes/CollisionSounds.cs\n"));
     assert!(manifest.lines().any(|line| line == "note-dilation"));
     assert!(manifest.lines().any(|line| line == "character"));
+    assert!(manifest.lines().any(|line| line == "stats"));
+    assert!(manifest.lines().any(|line| line == "analytic"));
+    assert!(manifest.lines().any(|line| line == "heightfield"));
+    assert!(manifest.lines().any(|line| line == "gravity"));
+    assert!(manifest.lines().any(|line| line == "collision"));
 
     let calls = std::fs::read_to_string(root.join("note-dilation/calls.txt")).expect("calls");
     assert_eq!(calls, expected_calls());
@@ -121,9 +135,26 @@ fn assert_result(text: &str) {
 fn assert_scene(samples: &[Sample], steps: &[&str], gap: &str) {
     assert_eq!(samples.len(), steps.len() + 1);
     assert_before(&samples[0]);
+    // Any frequency above 1 makes a one-tick gap shorter than a 1 second
+    // step, so scene B stays at dilation 1. Scene A's gap ticks equal that
+    // frequency, which is the fixture's one-second gap.
+    const FREQUENCY: i64 = 10_000_000;
+    let mut window = crate::DilationWindow::default();
+    assert_eq!(window.time_dilation().to_bits(), 1f32.to_bits());
+    assert_eq!(window.count(), 0);
+    assert_eq!(window.next_slot(), 0);
     for (index, sample) in samples.iter().enumerate().skip(1) {
         let call = index - 1;
         let calls = u32::try_from(index).unwrap();
+        let time_step = f32::from_bits(u32::from_str_radix(steps[call], 16).unwrap());
+        let gap_ticks = if gap == "frequency" { FREQUENCY } else { 1 };
+        window.note_sample(time_step, gap_ticks, FREQUENCY);
+        assert_eq!(window.count(), calls.min(WINDOW) as usize);
+        assert_eq!(window.next_slot(), (calls % WINDOW) as usize);
+        assert_eq!(
+            format!("{:08X}", window.time_dilation().to_bits()),
+            sample.dilation
+        );
         assert_eq!(sample.label, call.to_string());
         assert_eq!(sample.time_step.as_deref(), Some(steps[call]));
         assert_eq!(sample.gap.as_deref(), Some(gap));
@@ -155,6 +186,16 @@ fn assert_scene(samples: &[Sample], steps: &[&str], gap: &str) {
                         assert_eq!(stored_gap, "frequency_divisor");
                     }
                 }
+            }
+            assert_eq!(
+                format!("{:016X}", window.step_seconds(slot as usize).to_bits()),
+                step
+            );
+            if gap == "frequency" {
+                assert_eq!(
+                    format!("{:016X}", window.gap_seconds(slot as usize).to_bits()),
+                    stored_gap
+                );
             }
         }
     }

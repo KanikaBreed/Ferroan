@@ -1,0 +1,174 @@
+format 1
+method NoteDilationSample
+source JoltScene.cs 2928-2942
+source_simulate JoltScene.cs 2786-2833
+source_substeps JoltScene.cs 3107-3156
+factor SimStatsReporter.cs 178-183
+transform SimStatsReporter.cs 319-338
+round SimStatsReporter.cs 368-370
+branch SimStatsReporter.cs 312-317
+clock SimStatsReporter.cs 274-276
+step SimStatsReporter.cs 390
+header SimStatsReporter.cs 1-26
+native not_called
+healthy_frame_ms 1000
+healthy_update_ms 500
+stall_update_ms 1048576000
+physics_step_ms 41A00000
+simulate null 3F800000 0
+simulate once 3F800000 1
+simulate substep_empty 3F800000 0
+simulate substeps 3F800000 4
+
+case normalized-11
+normalized 1
+frame_time 3DBA29C7
+frames 11
+dilation_each 3F800000
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum 41300000
+physics_sum 41300000
+factor 409FFBE7
+time_dilation 3F800000
+sim_fps 425C0000
+physics_fps 425C0000
+step_ms 41A00000
+
+case raw-11
+normalized 0
+frame_time 3DBA29C7
+frames 11
+dilation_each 3F800000
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum 41300000
+physics_sum 41300000
+factor 3F800000
+time_dilation 3F800000
+sim_fps 41300000
+physics_fps 41300000
+step_ms 41A00000
+
+case constructor-frame
+normalized 1
+frame_time 3DB9F55A
+frames 11
+dilation_each 3F800000
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum 41300000
+physics_sum 41300000
+factor 409FCED9
+time_dilation 3F800000
+sim_fps 425B999A
+physics_fps 425B999A
+step_ms 41A00000
+
+case physics-off
+normalized 1
+frame_time 3DBA29C7
+frames 11
+dilation_each 3F800000
+physics_each 00000000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum 41300000
+physics_sum 00000000
+factor 409FFBE7
+time_dilation 3F800000
+sim_fps 425C0000
+physics_fps 00000000
+step_ms 41A00000
+
+case physics-capped
+normalized 1
+frame_time 3DBA29C7
+frames 11
+dilation_each 3F800000
+physics_each 40000000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum 41300000
+physics_sum 41B00000
+factor 409FFBE7
+time_dilation 3F800000
+sim_fps 425C0000
+physics_fps 425C0000
+step_ms 41A00000
+
+case no-frames
+normalized 1
+frame_time 3DBA29C7
+frames 0
+dilation_each 3F800000
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 0
+dilation_sum 00000000
+physics_sum 00000000
+factor 409FFBE7
+time_dilation 00000000
+sim_fps 00000000
+physics_fps 00000000
+step_ms 41A00000
+
+case nan-dilation
+normalized 1
+frame_time 3DBA29C7
+frames 11
+dilation_each 7FC00001
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 11
+dilation_sum nan
+physics_sum 41300000
+factor 409FFBE7
+time_dilation 00000000
+sim_fps 425C0000
+physics_fps 425C0000
+step_ms 41A00000
+
+case signed-zero
+normalized 1
+frame_time 3DBA29C7
+frames 1
+dilation_each B9D1B717
+physics_each 3F800000
+frame_ms 1000
+update_ms 500
+frames_read 1
+dilation_sum B9D1B717
+physics_sum 3F800000
+factor 409FFBE7
+time_dilation 80000000
+sim_fps 40A00000
+physics_fps 40A00000
+step_ms 41A00000
+
+case stalled
+normalized 1
+frame_time 3DBA29C7
+frames 209736
+dilation_each 3F800000
+physics_each 3F800000
+frame_ms 1000
+update_ms 1048576000
+frames_read 209736
+dilation_sum 484CD200
+physics_sum 484CD200
+factor 409FFBE7
+time_dilation 3F800000
+sim_fps 3F800000
+physics_fps 3F800000
+step_ms 41A00000

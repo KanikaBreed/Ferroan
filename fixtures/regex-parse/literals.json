@@ -1,0 +1,333 @@
+{
+  "cases": [
+    {
+      "pattern": "[a-z-[b]c]",
+      "ok": false,
+      "message": "Invalid pattern \u0027[a-z-[b]c]\u0027 at offset 8. A subtraction must be the last element in a character class."
+    },
+    {
+      "pattern": "(?(?#c)a|b)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(?#c)a|b)\u0027 at offset 2. Alternation conditions cannot be comments."
+    },
+    {
+      "pattern": "(?\u003C0\u003Ea)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003C0\u003Ea)\u0027 at offset 4. Capture number cannot be zero."
+    },
+    {
+      "pattern": "\\k",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\k\u0027 at offset 1. Malformed \\k\u003C...\u003E named back reference."
+    },
+    {
+      "pattern": "\\p",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p\u0027 at offset 2. Incomplete \\p{X} character escape."
+    },
+    {
+      "pattern": "(?(?\u003Cn\u003Ea)b)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(?\u003Cn\u003Ea)b)\u0027 at offset 2. Alternation conditions do not capture and cannot be named."
+    },
+    {
+      "pattern": "(?(?i)a|b)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(?i)a|b)\u0027 at offset 5. Unrecognized grouping construct."
+    },
+    {
+      "pattern": "{2}",
+      "ok": false,
+      "message": "Invalid pattern \u0027{2}\u0027 at offset 1. Quantifier \u0027{\u0027 following nothing."
+    },
+    {
+      "pattern": "\uD83D\uDE00(",
+      "ok": false,
+      "message": "Invalid pattern \u0027\uD83D\uDE00(\u0027 at offset 3. Not enough )\u0027s."
+    },
+    {
+      "pattern": "*\uD83D\uDE00",
+      "ok": false,
+      "message": "Invalid pattern \u0027*\uD83D\uDE00\u0027 at offset 1. Quantifier \u0027*\u0027 following nothing."
+    },
+    {
+      "pattern": "\\p{__InternalRegexIgnoreCase__}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{__InternalRegexIgnoreCase__}\u0027 at offset 31. Unknown property \u0027__InternalRegexIgnoreCase__\u0027."
+    },
+    {
+      "pattern": "(?n)(a)\\1",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?n)(a)\\1\u0027 at offset 9. Reference to undefined group number 1."
+    },
+    {
+      "pattern": "a{2147483648}",
+      "ok": false,
+      "message": "Invalid pattern \u0027a{2147483648}\u0027 at offset 12. Quantifier and capture group numbers must be less than or equal to Int32.MaxValue."
+    },
+    {
+      "pattern": "(?#",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?#\u0027 at offset 3. Unterminated (?#...) comment."
+    },
+    {
+      "pattern": "[z-a]",
+      "ok": false,
+      "message": "Invalid pattern \u0027[z-a]\u0027 at offset 4. [x-y] range in reverse order."
+    },
+    {
+      "pattern": "[a-\\d]",
+      "ok": false,
+      "message": "Invalid pattern \u0027[a-\\d]\u0027 at offset 5. Cannot include class \\d in character range."
+    },
+    {
+      "pattern": "(?i)(?\u003CName\u003Ea)\\k\u003Cname\u003E",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?i)(?\u003CName\u003Ea)\\k\u003Cname\u003E\u0027 at offset 22. Reference to undefined group name \u0027name\u0027."
+    },
+    {
+      "pattern": "(?\u003Cname\u003Ea)\\k\u003CName\u003E",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003Cname\u003Ea)\\k\u003CName\u003E\u0027 at offset 18. Reference to undefined group name \u0027Name\u0027."
+    },
+    {
+      "pattern": "\\c ",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\c \u0027 at offset 3. Unrecognized control character."
+    },
+    {
+      "pattern": "\\k\u003C\u003E",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\k\u003C\u003E\u0027 at offset 2. Unrecognized escape sequence \\k."
+    },
+    {
+      "pattern": "(a)\\2",
+      "ok": false,
+      "message": "Invalid pattern \u0027(a)\\2\u0027 at offset 5. Reference to undefined group number 2."
+    },
+    {
+      "pattern": "\\8",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\8\u0027 at offset 2. Reference to undefined group number 8."
+    },
+    {
+      "pattern": "(?(1)a|b)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(1)a|b)\u0027 at offset 5. Conditional alternation refers to an undefined group number 1."
+    },
+    {
+      "pattern": "(a)(?(1)b|c|d)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(a)(?(1)b|c|d)\u0027 at offset 14. Too many | in (?()|)."
+    },
+    {
+      "pattern": "(?(?)a)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(?)a)\u0027 at offset 4. Quantifier \u0027?\u0027 following nothing."
+    },
+    {
+      "pattern": "(?\u003Cn-m\u003Ea)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003Cn-m\u003Ea)\u0027 at offset 6. Reference to undefined group name \u0027m\u0027."
+    },
+    {
+      "pattern": "(?\u003C-n\u003Ea)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003C-n\u003Ea)\u0027 at offset 5. Reference to undefined group name \u0027n\u0027."
+    },
+    {
+      "pattern": "\\7",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\7\u0027 at offset 2. Reference to undefined group number 7."
+    },
+    {
+      "pattern": "(?\u003C=a{2,1})",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003C=a{2,1})\u0027 at offset 10. Illegal {x,y} with x \u003E y."
+    },
+    {
+      "pattern": "a**",
+      "ok": false,
+      "message": "Invalid pattern \u0027a**\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "a*\u002B",
+      "ok": false,
+      "message": "Invalid pattern \u0027a*\u002B\u0027 at offset 3. Nested quantifier \u0027\u002B\u0027."
+    },
+    {
+      "pattern": "a{2}{3}",
+      "ok": false,
+      "message": "Invalid pattern \u0027a{2}{3}\u0027 at offset 5. Nested quantifier \u0027{\u0027."
+    },
+    {
+      "pattern": "(\u002B)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(\u002B)\u0027 at offset 2. Quantifier \u0027\u002B\u0027 following nothing."
+    },
+    {
+      "pattern": "(?(1",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(1\u0027 at offset 4. Conditional alternation is missing a closing parenthesis after the group number 1."
+    },
+    {
+      "pattern": "(a))",
+      "ok": false,
+      "message": "Invalid pattern \u0027(a))\u0027 at offset 4. Too many )\u0027s."
+    },
+    {
+      "pattern": "[",
+      "ok": false,
+      "message": "Invalid pattern \u0027[\u0027 at offset 1. Unterminated [] set."
+    },
+    {
+      "pattern": "\\",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\\u0027 at offset 1. Illegal \\ at end of pattern."
+    },
+    {
+      "pattern": "\\q",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\q\u0027 at offset 2. Unrecognized escape sequence \\q."
+    },
+    {
+      "pattern": "\\Qabc\\E",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\Qabc\\E\u0027 at offset 2. Unrecognized escape sequence \\Q."
+    },
+    {
+      "pattern": "\\g\u003C1\u003E",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\g\u003C1\u003E\u0027 at offset 2. Unrecognized escape sequence \\g."
+    },
+    {
+      "pattern": "\\p{Nope}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{Nope}\u0027 at offset 8. Unknown property \u0027Nope\u0027."
+    },
+    {
+      "pattern": "\\p{Lu-IsBasicLatin}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{Lu-IsBasicLatin}\u0027 at offset 19. Unknown property \u0027Lu-IsBasicLatin\u0027."
+    },
+    {
+      "pattern": "\\p{IsNotReal}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{IsNotReal}\u0027 at offset 13. Unknown property \u0027IsNotReal\u0027."
+    },
+    {
+      "pattern": "\\p{IsBasicLatin-IsLatin-1Supplement}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{IsBasicLatin-IsLatin-1Supplement}\u0027 at offset 36. Unknown property \u0027IsBasicLatin-IsLatin-1Supplement\u0027."
+    },
+    {
+      "pattern": "\\x",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\x\u0027 at offset 2. Insufficient or invalid hexadecimal digits."
+    },
+    {
+      "pattern": "(?x)(?\u003C name \u003Ea)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?x)(?\u003C name \u003Ea)\u0027 at offset 7. Invalid group name: Group names must begin with a word character."
+    },
+    {
+      "pattern": "\\c",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\c\u0027 at offset 2. Missing control character."
+    },
+    {
+      "pattern": "(?(2)a)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?(2)a)\u0027 at offset 5. Conditional alternation refers to an undefined group number 2."
+    },
+    {
+      "pattern": "\\k\u003Cmissing\u003E",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\k\u003Cmissing\u003E\u0027 at offset 11. Reference to undefined group name \u0027missing\u0027."
+    },
+    {
+      "pattern": "(?\u003Ca-b\u003Ec)",
+      "ok": false,
+      "message": "Invalid pattern \u0027(?\u003Ca-b\u003Ec)\u0027 at offset 6. Reference to undefined group name \u0027b\u0027."
+    },
+    {
+      "pattern": "\\p{IsBasicLatin-IsBasicLatin}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{IsBasicLatin-IsBasicLatin}\u0027 at offset 29. Unknown property \u0027IsBasicLatin-IsBasicLatin\u0027."
+    },
+    {
+      "pattern": "\\p{Lu-Lu}",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{Lu-Lu}\u0027 at offset 9. Unknown property \u0027Lu-Lu\u0027."
+    },
+    {
+      "pattern": "\\pxxx",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\pxxx\u0027 at offset 3. Malformed \\p{X} character escape."
+    },
+    {
+      "pattern": "^?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027^?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "$?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027$?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": ".?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027.?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "[a]?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027[a]?*\u0027 at offset 5. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "(a)?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027(a)?*\u0027 at offset 5. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "\\p{L}?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{L}?*\u0027 at offset 7. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "\\w?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\w?*\u0027 at offset 4. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027?*\u0027 at offset 1. Quantifier \u0027?\u0027 following nothing."
+    },
+    {
+      "pattern": "",
+      "ok": true
+    },
+    {
+      "pattern": "a",
+      "ok": true
+    },
+    {
+      "pattern": "(?\u003C\u00E9\u003Ea)",
+      "ok": true
+    },
+    {
+      "pattern": "\uD83D\uDE00*",
+      "ok": true
+    },
+    {
+      "pattern": "[a-z-[b]]",
+      "ok": true
+    },
+    {
+      "pattern": "\\p{Lu}",
+      "ok": true
+    }
+  ]
+}

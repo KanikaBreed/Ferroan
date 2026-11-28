@@ -2,9 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // Records the character descriptor and the calls JoltCharacter makes while the
-// file oracle compiles it. Every other backend method is unexpected: this
-// process must not reach JoltPhysicsBackend, and it must not load joltc.
-
+// file oracle compiles it. Analytic box, sphere and cylinder constructors are
+// recorded only when RecordAnalytic is set. SetTerrain's heightfield cook is
+// recorded only when RecordTerrain is set. Gravity-factor writes, and the
+// vehicle body's friction, damping, sleep, CCD and step-provider calls that
+// surround them, are recorded only when RecordGravity is set. IsBodyAwake
+// answers the collision capture. Every other backend method is unexpected:
+// this process must not reach JoltPhysicsBackend, and it must not load
+// joltc. RecordHeartbeat lets Simulate return without a native step. It
+// stays off for the character compile.
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -25,7 +31,42 @@ sealed class RecordingBackend : IPhysicsBackend
     internal readonly List<float> Buoyancies = new();
     internal readonly List<bool> Contacts = new();
     internal readonly List<Vector3> Transforms = new();
+    // Simulate's budget, step and capacity reads. Off unless the dilation
+    // capture is proving that a successful Simulate returns 1.
+    internal bool RecordHeartbeat;
+    internal int HeartbeatSteps;
 
+    // Off for the character compile. An analytic case sets this and records the
+    // dimensions CookPrimShape passes. A vertex array is still unexpected.
+    internal bool RecordAnalytic;
+    internal int BoxCalls;
+    internal int SphereCalls;
+    internal int CylinderCalls;
+    internal Vector3 BoxHalf;
+    internal float SphereRadius;
+    internal float CylinderHalfHeight;
+    internal float CylinderRadius;
+
+    // Off for the character compile. A heightfield case sets this, then
+    // SetTerrain copies the span it was given and returns without cooking.
+    internal bool RecordTerrain;
+    internal int HeightFieldCalls;
+    internal float[] LastHeights = Array.Empty<float>();
+    internal int LastSampleCountX;
+    internal int LastSampleCountY;
+    internal Vector3 LastScale;
+    internal int TerrainSets;
+    internal ShapeId LastTerrainShape;
+    internal Vector3 LastTerrainPosition;
+
+    // Off for the character compile. A gravity case sets this and records
+    // SetBodyGravityFactor. The vehicle path's other body calls are ignored
+    // only while this is set, so a character compile still fails closed.
+    internal bool RecordGravity;
+    internal int Activates;
+    internal readonly List<GravityWrite> GravityWrites = new();
+
+    internal readonly record struct GravityWrite(uint Body, float Factor);
     internal readonly record struct Movement(Vector3 Velocity, bool Jump, bool Flying);
     internal readonly record struct ShapeCall(float HalfHeight, float Radius);
 
@@ -79,11 +120,19 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateBoxShape(Vector3 halfExtents)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        BoxCalls++;
+        BoxHalf = halfExtents;
+        return new ShapeId((uint)BoxCalls);
     }
     public ShapeId CreateSphereShape(float radius)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        SphereCalls++;
+        SphereRadius = radius;
+        return new ShapeId((uint)SphereCalls);
     }
     public ShapeId CreateCapsuleShape(float halfHeight, float radius)
     {
@@ -91,7 +140,12 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateCylinderShape(float halfHeight, float radius)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordAnalytic)
+            return Unexpected<ShapeId>();
+        CylinderCalls++;
+        CylinderHalfHeight = halfHeight;
+        CylinderRadius = radius;
+        return new ShapeId((uint)CylinderCalls);
     }
     public ShapeId CreateConvexHullShape(ReadOnlySpan<Vector3> points)
     {
@@ -111,7 +165,15 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateHeightFieldShape(ReadOnlySpan<float> heights, int sampleCountX, int sampleCountY, Vector3 scale)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordTerrain)
+            return Unexpected<ShapeId>();
+        HeightFieldCalls++;
+        LastHeights = heights.ToArray();
+        LastSampleCountX = sampleCountX;
+        LastSampleCountY = sampleCountY;
+        LastScale = scale;
+        LastTerrainShape = new ShapeId((uint)HeightFieldCalls);
+        return LastTerrainShape;
     }
     public ShapeId CreateScaledShape(ShapeId baseShape, Vector3 scale)
     {
@@ -143,7 +205,9 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public IDisposable AttachStepForceProvider(BodyId body, IStepForceProvider provider)
     {
-        return Unexpected<IDisposable>();
+        if (!RecordGravity)
+            return Unexpected<IDisposable>();
+        return new GravityAttachment();
     }
     public void SetBodyShape(BodyId body, ShapeId shape, bool recomputeMass)
     {
@@ -211,11 +275,13 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyFriction(BodyId body, float friction)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyRestitution(BodyId body, float restitution)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyPartMaterial(BodyId body, uint partUserData, float friction, float restitution)
     {
@@ -223,7 +289,8 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyFrictionMin(BodyId body, bool min)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public float GetShapeVolume(ShapeId shape)
     {
@@ -243,11 +310,14 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyDamping(BodyId body, float linear, float angular)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyGravityFactor(BodyId body, float factor)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
+        GravityWrites.Add(new GravityWrite(body.Value, factor));
     }
     public void SetBodyRotationLocks(BodyId body, bool lockX, bool lockY, bool lockZ)
     {
@@ -279,7 +349,9 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void ActivateBody(BodyId body)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
+        Activates++;
     }
     public void DeactivateBody(BodyId body)
     {
@@ -287,11 +359,13 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetBodyAllowSleeping(BodyId body, bool allow)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyContinuousCollision(BodyId body, ContinuousCollision mode)
     {
-        Unexpected();
+        if (!RecordGravity)
+            Unexpected();
     }
     public void SetBodyWantsContactEvents(BodyId body, bool wants)
     {
@@ -301,9 +375,14 @@ sealed class RecordingBackend : IPhysicsBackend
     {
         return Unexpected<bool>();
     }
+    // DispatchContacts reads this for StillTouchingAsleep. A body is awake only
+    // when the collision capture put its id here. An id that was not recorded
+    // is asleep. Character and note-dilation do not call this method.
+    internal readonly Dictionary<uint, bool> AwakeBodies = new();
+
     public bool IsBodyAwake(BodyId body)
     {
-        return Unexpected<bool>();
+        return AwakeBodies.TryGetValue(body.Value, out bool awake) && awake;
     }
     public bool TryGetBodyUserData(BodyId body, out uint userData)
     {
@@ -350,7 +429,11 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetTerrain(ShapeId heightFieldShape, Vector3 position)
     {
-        Unexpected();
+        if (!RecordTerrain)
+            Unexpected();
+        TerrainSets++;
+        LastTerrainShape = heightFieldShape;
+        LastTerrainPosition = position;
     }
     public void SetWaterHeight(float height)
     {
@@ -377,10 +460,14 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void BeginRayCastBudget()
     {
+        if (RecordHeartbeat)
+            return;
         Unexpected();
     }
     public long RayCastsRefused(RayCastBudget budget)
     {
+        if (RecordHeartbeat)
+            return 0;
         return Unexpected<long>();
     }
     public int OverlapSphere(Vector3 center, float radius, QueryFilter filter, Span<BodyId> results)
@@ -402,11 +489,23 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public PhysicsCapacityStats GetCapacityStats()
     {
+        if (RecordHeartbeat || RecordTerrain)
+            return default;
         return Unexpected<PhysicsCapacityStats>();
     }
     public StepResult Step(float deltaTime, Span<BodyState> bodyUpdates, Span<CharacterState> characterUpdates, Span<ContactReport> contacts)
     {
+        if (RecordHeartbeat)
+        {
+            HeartbeatSteps++;
+            return default;
+        }
         return Unexpected<StepResult>();
+    }
+
+    sealed class GravityAttachment : IDisposable
+    {
+        public void Dispose() { }
     }
 
     static void Unexpected()

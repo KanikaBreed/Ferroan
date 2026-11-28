@@ -1,7 +1,8 @@
 // Copyright (c) 2026 Ferroan contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Structure of `fixtures/jolt-record`, the in-process harness `drop`.
+//! Structure of `fixtures/jolt-record`, the in-process harness `drop`
+//! and the analytic-shape mass and ray recording.
 //! Ordinary tests replay the committed files. They do not run the native.
 
 use std::path::{Path, PathBuf};
@@ -187,6 +188,65 @@ fn drop_recording_keeps_the_pinned_structure() {
         &read(&case_dir, "negative-collider.txt"),
         "collider=",
     );
+
+    assert!(manifest.lines().any(|line| line == "analytic-envelope"));
+    let envelope = std::fs::read_to_string(root.join("analytic-envelope.txt")).unwrap();
+    for banned in ["/home/", "/mnt/", "/tmp/"] {
+        assert!(!envelope.contains(banned), "{banned}");
+    }
+    assert_eq!(value(&envelope, "format "), "1");
+    assert_eq!(value(&envelope, "channel "), "harness");
+    assert_eq!(value(&envelope, "scenario "), "analytic-envelope");
+    assert_eq!(value(&envelope, "baseline "), "det-886e0886-linux-x64");
+    assert_eq!(value(&envelope, "mass "), "JoltPrim.Mass");
+    assert_eq!(value(&envelope, "mass_source "), "JoltPrim.cs 1228-1236");
+    assert_eq!(value(&envelope, "mass_read "), "MassReadoutTests.cs 78-82");
+    assert_eq!(value(&envelope, "ray "), "JoltScene.RaycastWorld");
+    assert_eq!(value(&envelope, "ray_source "), "JoltScene.cs 2274-2280");
+    assert_eq!(value(&envelope, "extent "), "PhysicsActor.Size");
+    assert_eq!(value(&envelope, "rate_hz "), "11");
+    assert_eq!(value(&envelope, "physics_rate_hz "), "0");
+    assert_eq!(value(&envelope, "samples "), "3");
+    assert_eq!(value(&envelope, "flight_steps "), "2");
+    assert_eq!(value(&envelope, "collision_steps "), "6");
+    assert!(envelope.contains("flight box-dynamic step 1 "));
+    assert!(envelope.contains("flight box-dynamic step 2 "));
+    assert!(envelope.contains("flight sphere-dynamic step 2 "));
+    assert!(envelope.contains("flight cylinder-dynamic step 2 "));
+    assert_eq!(value(&envelope, "reads "), "2");
+    assert_eq!(
+        line_after(&envelope, "shape box-static "),
+        "physical 0 local 4101 pos 42800000 42800000 42340000 size 3F800000 3F800000 3F800000 mass 41200000"
+    );
+    assert_eq!(
+        line_after(&envelope, "shape box-dynamic "),
+        "physical 1 local 4102 pos 42A00000 42A00000 42340000 size 3F800000 3F800000 3F800000 mass 41200000"
+    );
+    assert_eq!(
+        line_after(&envelope, "shape sphere-static "),
+        "physical 0 local 4103 pos 42C00000 42C00000 42340000 size 40000000 40000000 40000000 mass 42278D36"
+    );
+    assert_eq!(
+        line_after(&envelope, "shape sphere-dynamic "),
+        "physical 1 local 4104 pos 42E00000 42E00000 42340000 size 40000000 40000000 40000000 mass 42278D36"
+    );
+    assert_eq!(
+        line_after(&envelope, "shape cylinder-static "),
+        "physical 0 local 4105 pos 43000000 42400000 42340000 size 3F800000 3F800000 40000000 mass 417B53D2"
+    );
+    assert_eq!(
+        line_after(&envelope, "shape cylinder-dynamic "),
+        "physical 1 local 4106 pos 43100000 42400000 42340000 size 3F800000 3F800000 40000000 mass 417B53D2"
+    );
+    assert!(line_after(&envelope, "ray box-static ").contains(
+        "heartbeats 1 start 426C0000 42800000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4101 pos 427E0000 42800000 42340000 normal BF800000 00000000 00000000 depth 40900000"
+    ));
+    assert!(line_after(&envelope, "ray sphere-static ").contains(
+        "heartbeats 1 start 42B60000 42C00000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4103 pos 42BE0000 42C00000 42340000 normal BF800000 00000000 00000000 depth 40800000"
+    ));
+    assert!(line_after(&envelope, "ray cylinder-static ").contains(
+        "heartbeats 1 start 42F60000 42400000 42340000 dir 3F800000 00000000 00000000 length 41200000 hits 1 consumer 4105 pos 42FF0000 42400000 42340000 normal BF800000 00000000 00000000 depth 40900000"
+    ));
 }
 
 fn read(dir: &Path, name: &str) -> String {
@@ -197,6 +257,10 @@ fn value<'a>(text: &'a str, key: &str) -> &'a str {
     text.lines()
         .find_map(|line| line.strip_prefix(key))
         .unwrap_or_else(|| panic!("missing {key}"))
+}
+
+fn line_after<'a>(text: &'a str, key: &str) -> &'a str {
+    value(text, key)
 }
 
 fn sha256(bytes: &[u8]) -> String {
