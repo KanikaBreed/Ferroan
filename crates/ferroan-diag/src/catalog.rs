@@ -126,3 +126,4 @@ pub const OAR_PARCEL_BITMAP_BYTES: &str = "oar.parcel-bitmap-bytes";
 pub const OAR_PARCEL_BITMAPS: &str = "oar.parcel-bitmaps";
 pub const REGEX_PATTERN_CHARS: &str = "regex.pattern-chars";
 pub const REGEX_CLASS_DEPTH: &str = "regex.class-depth";
+pub const FORMAT_CHARS: &str = "format.chars";

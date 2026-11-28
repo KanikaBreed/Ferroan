@@ -16,6 +16,7 @@ members = [
     "crates/ferroan-client",
     "crates/ferroan-physics",
     "crates/ferroan-regex",
+    "crates/ferroan-format",
     "tools/bot",
     "xtask",
 ]

@@ -446,6 +446,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferroan-format"
+version = "0.1.0"
+dependencies = [
+ "ferroan-diag",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
 name = "ferroan-http"
 version = "0.1.0"
 dependencies = [

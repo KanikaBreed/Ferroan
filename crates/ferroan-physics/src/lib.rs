@@ -8,14 +8,16 @@
 //! reads `[Jolt]` and warns once when `[Startup] physics` is not `Jolt`.
 //! P3.1 binds Jolt through `oxijolt-sys` from this crate only. P3.3 runs the
 //! heartbeat on a physics thread. The frame posts one heartbeat and reads the
-//! pose after the reply. Unsafe is allowed in `native`, and in
-//! `ferroan-scripting` once that crate exists. The workspace forbids it
-//! everywhere else.
+//! pose after the reply. P3.3b replays the dilation window and the stats
+//! transform. A successful simulate contributes 1, and `SimPhysicsStepMs`
+//! stays 20. Unsafe is allowed in `native`, and in `ferroan-scripting` once
+//! that crate exists. The workspace forbids it everywhere else.
 
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod character;
+mod dilation;
 mod jolt_config;
 #[allow(unsafe_code)]
 mod native;
@@ -29,6 +31,10 @@ pub use character::{
     ground_flags, jump_latch_after_drain, jump_latch_on_press, keep_in_region,
     marker_body_user_data, marker_descriptor, mass_for, movement_sends_latch, stand_half_for,
     store_buoyancy, store_target,
+};
+pub use dilation::{
+    DILATION_WINDOW, DilationWindow, PHYSICS_STEP_MS, StatsInputs, StatsReport, accumulate_frame,
+    report_stats, statistics_fps_factor,
 };
 pub use jolt_config::{
     BasicForces, JoltConfig, JoltLoad, MaterialCombine, VehicleBehaviour, VehiclePresetSet, load,
@@ -46,5 +52,7 @@ mod character_oracle;
 mod jolt_config_oracle;
 #[cfg(test)]
 mod jolt_file_oracle;
+#[cfg(test)]
+mod jolt_matched_oracle;
 #[cfg(test)]
 mod jolt_record_oracle;

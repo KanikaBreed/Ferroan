@@ -319,7 +319,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q37 | P1.14: hypergrid (split first) | READY after Q36 |
 | Q38 | P1.15: money server | READY after Q37 |
 | Q39 | P1.16: all-Rust Robust in the harness | READY after Q38 |
-| Q100 | P3.0: Jolt oracle | READY |
+| Q100 | P3.0: Jolt oracle | DONE (this PR) |
 | Q100a | P3.0f: Engine-independent file oracle | DONE (this PR) |
 | Q177 | P3.57: Stock Pin8 integrated recordings (since Pin9, Q103: recorded on the deterministic 5.6 native, not stock 5.4) | DONE (this PR) |
 | Q101 | P3.0b: `SubstepAccumulator` | DONE (this PR) |
@@ -344,7 +344,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q114 | P3.2e: Runtime terrain and water | READY after Q112 |
 | Q115 | P3.3: Physics thread and the request queue | DONE (this PR) |
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
-| Q116 | P3.3b: Dilation window and stats transform | READY after Q100a |
+| Q116 | P3.3b: Dilation window and stats transform | DONE (this PR) |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
 | Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
@@ -579,7 +579,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q375 | P4.F3.11: async notecard reads | READY after Q232, Q234, Q256 and Q271 |
 | Q376 | P4.F3.12: synchronous and `os` notecard reads | READY after Q232, Q253, Q256, Q270, Q273 and Q327 |
 
-Q100 to Q205 are the Phase 3 rows, with Q381. The maintainer deferred the C# module move (Q102) on 26 November 2026 and reversed the deferral the same day. Q102 landed as `dev-build` `41f18f983b` (OpenSim-NGC #550), Q103 moved the pin to it (Pin9) and Q104 recorded D144, so Q100 is READY. Q176 no longer waits on Q104. Q381, a deterministic win-x64 joltc built and recorded the way the linux-x64 one is, is C# work on `dev-build` (the maintainer approved it as a follow-up on 26 November 2026); until it lands, the C# side of the matched-native compare is linux-x64 only. Q108 stays blocked because it is split into Q108a and Q108b. Q109 stays blocked because it is split into Q109a and Q109b. Q109a is done. Q109b waits on the character bind (Q145). Q100a, Q101, Q105, Q106, Q107, Q108a and Q109a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
+Q100 to Q205 are the Phase 3 rows, with Q381. The maintainer deferred the C# module move (Q102) on 26 November 2026 and reversed the deferral the same day. Q102 landed as `dev-build` `41f18f983b` (OpenSim-NGC #550), Q103 moved the pin to it (Pin9) and Q104 recorded D144. Q100's linux-x64 wrapper is done. Q176 no longer waits on Q104. Q381, a deterministic win-x64 joltc built and recorded the way the linux-x64 one is, is C# work on `dev-build` (the maintainer approved it as a follow-up on 26 November 2026); until it lands, the C# side of the matched-native compare is linux-x64 only. Q108 stays blocked because it is split into Q108a and Q108b. Q109 stays blocked because it is split into Q109a and Q109b. Q109a is done. Q109b waits on the character bind (Q145). Q100a, Q101, Q105, Q106, Q107, Q108a and Q109a are done. Q177 records stock Pin8 output and is done. Q183 to Q205 are the review splits, each about a day, and each is READY or READY after the items named in its status. The other rows are READY, or READY after the items named in their status. The plan is [docs/plans/PHASE3-PHYSICS.md](docs/plans/PHASE3-PHYSICS.md).
 
 Q206 to Q228 are the Phase 2 rows from the gate map: the P2.5b, P2.5c, P2.8b2 and P2.8d splits, the P2.0e4 load and its four store writers, and the Ferrobot harness. Q66, Q67, Q70 and Q72 are blocked on those splits. Q68 waits on Q208, so rez-and-select starts after properties and does not wait for culling. Q71 and Q74 wait on Q211, the flags part. Q73 waits on Q212, the take part, and does not wait for delete. Q230 to Q294 are Phase 4 stage 1, from [the Phase 4 plan](docs/plans/PHASE4-SCRIPTING.md). Q295 to Q321 are the stage 2 placeholders. The pure-function plan and the communication plan replace P4.S1, P4.S2, P4.S3, P4.S13, P4.S24 and P4.S25, and they narrow P4.S4, P4.S5, P4.S6, P4.S19 and P4.S27. A replaced placeholder does not start. Q322 to Q376 are those rows. A row is READY only when every dependency is already DONE. The others are READY after the items named in the status.
 
