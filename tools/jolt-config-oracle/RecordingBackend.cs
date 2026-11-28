@@ -3,11 +3,11 @@
 
 // Records the character descriptor and the calls JoltCharacter makes while the
 // file oracle compiles it. Analytic box, sphere and cylinder constructors are
-// recorded only when RecordAnalytic is set. Every other backend method is
+// recorded only when RecordAnalytic is set. SetTerrain's heightfield cook is
+// recorded only when RecordTerrain is set. Every other backend method is
 // unexpected: this process must not reach JoltPhysicsBackend, and it must not
 // load joltc. RecordHeartbeat lets Simulate return without a native step. It
 // stays off for the character compile.
-
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -43,6 +43,18 @@ sealed class RecordingBackend : IPhysicsBackend
     internal float SphereRadius;
     internal float CylinderHalfHeight;
     internal float CylinderRadius;
+
+    // Off for the character compile. A heightfield case sets this, then
+    // SetTerrain copies the span it was given and returns without cooking.
+    internal bool RecordTerrain;
+    internal int HeightFieldCalls;
+    internal float[] LastHeights = Array.Empty<float>();
+    internal int LastSampleCountX;
+    internal int LastSampleCountY;
+    internal Vector3 LastScale;
+    internal int TerrainSets;
+    internal ShapeId LastTerrainShape;
+    internal Vector3 LastTerrainPosition;
 
     internal readonly record struct Movement(Vector3 Velocity, bool Jump, bool Flying);
     internal readonly record struct ShapeCall(float HalfHeight, float Radius);
@@ -142,7 +154,15 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public ShapeId CreateHeightFieldShape(ReadOnlySpan<float> heights, int sampleCountX, int sampleCountY, Vector3 scale)
     {
-        return Unexpected<ShapeId>();
+        if (!RecordTerrain)
+            return Unexpected<ShapeId>();
+        HeightFieldCalls++;
+        LastHeights = heights.ToArray();
+        LastSampleCountX = sampleCountX;
+        LastSampleCountY = sampleCountY;
+        LastScale = scale;
+        LastTerrainShape = new ShapeId((uint)HeightFieldCalls);
+        return LastTerrainShape;
     }
     public ShapeId CreateScaledShape(ShapeId baseShape, Vector3 scale)
     {
@@ -381,7 +401,11 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public void SetTerrain(ShapeId heightFieldShape, Vector3 position)
     {
-        Unexpected();
+        if (!RecordTerrain)
+            Unexpected();
+        TerrainSets++;
+        LastTerrainShape = heightFieldShape;
+        LastTerrainPosition = position;
     }
     public void SetWaterHeight(float height)
     {
@@ -437,7 +461,7 @@ sealed class RecordingBackend : IPhysicsBackend
     }
     public PhysicsCapacityStats GetCapacityStats()
     {
-        if (RecordHeartbeat)
+        if (RecordHeartbeat || RecordTerrain)
             return default;
         return Unexpected<PhysicsCapacityStats>();
     }

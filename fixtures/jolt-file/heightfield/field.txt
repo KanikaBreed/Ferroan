@@ -1,0 +1,326 @@
+format 1
+method SetTerrain
+source JoltScene.cs 3552-3613
+access public
+initialise not_called
+layout y*m+x
+native_proof after_calls
+stock_source jolt-record/drop
+stock_gravity C11CE80A
+stock_prim_linear_damping 3CA3D70A
+stock_prim_angular_damping 3D4CCCCD
+stock_dt_f64 3FB745D1745D1746
+stock_simulate_dt_f32 3DBA2E8C
+compiled_gravity C11CE80A
+compiled_prim_linear_damping 3CA3D70A
+compiled_prim_angular_damping 3D4CCCCD
+compiled_dt_f64 3FB745D1745D1746
+compiled_simulate_dt_f32 3DBA2E8C
+stock_match true
+
+case square-1
+region 1 1
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 2 2
+field_m 2
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 1
+input
+40490FDB
+field_count 4
+field
+40490FDB
+40490FDB
+40490FDB
+40490FDB
+
+case square-3
+region 3 3
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 4 4
+field_m 4
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 9
+input
+40000000
+40000001
+40000002
+40000003
+40000004
+40000005
+40000006
+40000007
+40000008
+field_count 16
+field
+40000000
+40000001
+40000002
+40000002
+40000003
+40000004
+40000005
+40000005
+40000006
+40000007
+40000008
+40000008
+40000006
+40000007
+40000008
+40000008
+
+case rect-5x3
+region 5 3
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 6 6
+field_m 6
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 15
+input
+40000000
+40000001
+40000002
+40000003
+40000004
+40000005
+40000006
+40000007
+40000008
+40000009
+4000000A
+4000000B
+4000000C
+4000000D
+4000000E
+field_count 36
+field
+40000000
+40000001
+40000002
+40000003
+40000004
+40000004
+40000005
+40000006
+40000007
+40000008
+40000009
+40000009
+4000000A
+4000000B
+4000000C
+4000000D
+4000000E
+4000000E
+4000000A
+4000000B
+4000000C
+4000000D
+4000000E
+4000000E
+4000000A
+4000000B
+4000000C
+4000000D
+4000000E
+4000000E
+4000000A
+4000000B
+4000000C
+4000000D
+4000000E
+4000000E
+
+case rect-2x4
+region 2 4
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 5 5
+field_m 5
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 8
+input
+40000000
+40000001
+40000002
+40000003
+40000004
+40000005
+40000006
+40000007
+field_count 25
+field
+40000000
+40000001
+40000001
+40000001
+40000001
+40000002
+40000003
+40000003
+40000003
+40000003
+40000004
+40000005
+40000005
+40000005
+40000005
+40000006
+40000007
+40000007
+40000007
+40000007
+40000006
+40000007
+40000007
+40000007
+40000007
+
+case square-256
+region 256 256
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 257 257
+field_m 257
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_formula origin-plus-index
+input_origin 40000000
+input_count 65536
+field_encoding digest
+byte_order little-endian-float32
+field_count 66049
+field_sha256 B6E483DCECB21A94698318219FF7395DC282182FAC0C041E1D8B0506C4B7F4A8
+corner 0 0 40000000
+edge 256 0 400000FF
+edge 0 256 4000FF00
+corner 256 256 4000FFFF
+
+case extra-tail
+region 2 2
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 3 3
+field_m 3
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 6
+input
+40000000
+40000001
+40000002
+40000003
+42F60000
+C2F60000
+field_count 9
+field
+40000000
+40000001
+40000001
+40000002
+40000003
+40000003
+40000002
+40000003
+40000003
+
+case special-bits
+region 2 2
+cooked true
+heightfield_calls 1
+terrain_sets 1
+sample_count 3 3
+field_m 3
+shape 1
+scale 3F800000 3F800000 3F800000
+position 00000000 00000000 00000000
+stored_matches_span true
+input_count 4
+input
+80000000
+7F800000
+FF800000
+7FC00001
+field_count 9
+field
+80000000
+7F800000
+7F800000
+FF800000
+7FC00001
+7FC00001
+FF800000
+7FC00001
+7FC00001
+
+case reject-short
+region 4 3
+cooked false
+heightfield_calls 0
+terrain_sets 0
+input_count 11
+input
+40000000
+40000001
+40000002
+40000003
+40000004
+40000005
+40000006
+40000007
+40000008
+40000009
+4000000A
+field null
+
+case reject-null
+region 4 3
+cooked false
+heightfield_calls 0
+terrain_sets 0
+input null
+field null
+
+case reject-zero-x
+region 0 4
+cooked false
+heightfield_calls 0
+terrain_sets 0
+input_count 0
+input
+field null
+
+case reject-zero-y
+region 5 0
+cooked false
+heightfield_calls 0
+terrain_sets 0
+input_count 0
+input
+field null

@@ -55,6 +55,18 @@ nothing for that ellipsoid. The stock drop asset kind stays `analytic-box`.
 Mass and a ray are on the stock harness recording, in
 `fixtures/jolt-record/analytic-envelope.txt`, not in this no-native fixture.
 
+The same file command calls public `SetTerrain` (`JoltScene.cs` 3552-3613)
+on `new JoltScene()` and records the `(N+1)` field that method stores. The
+backend records the span, the sample counts and the scale, and does not cook.
+A 256 by 256 map becomes 257 by 257. The fixture stores a SHA-256 of those
+little-endian output floats, the dimensions, and the edge and corner bits.
+Smaller maps stay literal. The far edge repeats the last real sample.
+Non-square maps pad to `max(width, height) + 1` by that same repeat. A side
+past 4096 m reports `terrain.edge` and does not reserve the square.
+A short map, a null map and a zero region size leave the field unset. Gravity,
+prim damping and the `1/11` s step are the stock drop recording's bits.
+`pad_heightfield` replays the fixture. This row does not compare a cooked ray.
+
 The same file command calls `JoltCharacter` capsule, mass and stand-half,
 `DesiredVelocity`, the jump latch and the ground flags through
 `ApplyCharacterState`, and records the `CharacterDesc` a stub backend
@@ -63,8 +75,9 @@ radius of at least 0.2 m. A constructor size that is NaN or infinite is
 recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
 The replay compares NaN as NaN because the default NaN's bits are
 platform-defined. Only `fixtures/jolt-file/character/result.txt` has NaN
-results (capsule rows 21-24, size row 50, buoyancy row 57). The
-note-dilation, config and drop replays stay bit-exact.
+results (capsule rows 21-24, size row 50, buoyancy row 57). The heightfield
+fixture stores a NaN payload as hex bits. The note-dilation, config and drop
+replays stay bit-exact.
 The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
 unscaled. Flight ignores always-run, for both signs of Z. The latch clears
 when vertical velocity is above 0.5 or the avatar is not supported.
