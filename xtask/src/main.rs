@@ -62,9 +62,10 @@
 //! `fixtures/oar-raw32`. It starts the in-process scene that oracle uses and
 //! does not start the live harness.
 //!
-//! `yengine-tokens verify` rebuilds the YEngine token oracle at the pin and
-//! diffs `fixtures/yengine-tokens`. It does not start the live harness and it
-//! is not part of `cargo xtask check`.
+//! `yengine-tokens verify` rebuilds the YEngine token oracle at the pin once
+//! and diffs `fixtures/yengine-tokens` and `fixtures/yengine-slots`. The slot
+//! digest is the global name, type and index. It does not start the live
+//! harness and it is not part of `cargo xtask check`.
 //!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
@@ -212,7 +213,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore read
        cargo xtask regionstore verify
        cargo xtask raw32 verify
-       cargo xtask yengine-tokens verify
+       cargo xtask yengine-tokens verify   (token headers and the slot digest)
        cargo xtask regionstore scales
        cargo xtask regionstore scales-verify
        cargo xtask regionstore cross

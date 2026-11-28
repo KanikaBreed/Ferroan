@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Rebuild `tools/yengine-tokens-oracle` against a task-owned clone of the pin
-//! and diff a fresh run with `fixtures/yengine-tokens`. The shared reference
-//! checkout is only read. This command is not part of `cargo xtask check`.
+//! and diff a fresh run with `fixtures/yengine-tokens` and `fixtures/yengine-slots`.
+//! The slot run asks for the name, type and index digest. The shared reference
+//! checkout is only read. One build serves both fixtures. This command is not
+//! part of `cargo xtask check`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -22,15 +24,59 @@ const LOGGING: &str = "tools/yengine-tokens-oracle/Logging.props";
 const FIXTURE: &str = "fixtures/yengine-tokens";
 const FRESH: &str = ".scratch/yengine-tokens/fresh";
 const CASES: &str = "fixtures/yengine-tokens/cases.json";
+const SLOT_FIXTURE: &str = "fixtures/yengine-slots";
+const SLOT_FRESH: &str = ".scratch/yengine-tokens/slots-fresh";
+const SLOT_CASES: &str = "fixtures/yengine-slots/cases.json";
 const DLL_NAME: &str = "YEngineTokensOracle.dll";
 
+struct FixtureCheck {
+    fixture: &'static str,
+    fresh: &'static str,
+    cases: &'static str,
+    slots: bool,
+    published: &'static [&'static str],
+    scratch: &'static [&'static str],
+}
+
 pub fn verify() -> ExitCode {
-    let root = crate::repo_root();
     let (dll, reference) = match build_oracle() {
         Ok(built) => built,
         Err(code) => return code,
     };
-    let fresh = root.join(FRESH);
+    let tokens = check_fixture(
+        &dll,
+        &reference,
+        &FixtureCheck {
+            fixture: FIXTURE,
+            fresh: FRESH,
+            cases: CASES,
+            slots: false,
+            published: &["digest.json", "manifest.json"],
+            scratch: &["canonical.txt"],
+        },
+    );
+    let slots = check_fixture(
+        &dll,
+        &reference,
+        &FixtureCheck {
+            fixture: SLOT_FIXTURE,
+            fresh: SLOT_FRESH,
+            cases: SLOT_CASES,
+            slots: true,
+            published: &["digest.json"],
+            scratch: &[],
+        },
+    );
+    if tokens == ExitCode::SUCCESS && slots == ExitCode::SUCCESS {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+fn check_fixture(dll: &Path, reference: &Path, check: &FixtureCheck) -> ExitCode {
+    let root = crate::repo_root();
+    let fresh = root.join(check.fresh);
     if fresh.exists()
         && let Err(error) = fs::remove_dir_all(&fresh)
     {
@@ -41,19 +87,23 @@ pub fn verify() -> ExitCode {
         eprintln!("{LABEL}: could not create {}: {error}", fresh.display());
         return ExitCode::FAILURE;
     }
-    let cases = root.join(CASES);
+    let cases = root.join(check.cases);
     let mut command = crate::dotnet_ci::command("dotnet");
     command
         .current_dir(&root)
-        .env("FERROAN_REF", &reference)
-        .arg(&dll)
-        .arg(&cases)
-        .arg(&fresh);
+        .env("FERROAN_REF", reference)
+        .arg(dll);
+    let mut shown = vec![display(&root, dll)];
+    if check.slots {
+        command.arg("--slots");
+        shown.push("--slots".to_string());
+    }
+    command.arg(&cases).arg(&fresh);
+    shown.push(display(&root, &cases));
+    shown.push(display(&root, &fresh));
     println!(
-        "$ FERROAN_REF=.scratch/oracle-sources dotnet {} {} {}",
-        display(&root, &dll),
-        display(&root, &cases),
-        display(&root, &fresh)
+        "$ FERROAN_REF=.scratch/oracle-sources dotnet {}",
+        shown.join(" ")
     );
     let output = match command.output() {
         Ok(output) => output,
@@ -78,9 +128,15 @@ pub fn verify() -> ExitCode {
     if !stdout.trim().is_empty() {
         println!("{}", stdout.trim());
     }
-    match diff(&root.join(FIXTURE), &fresh) {
+    match diff(
+        &root.join(check.fixture),
+        &fresh,
+        check.fixture,
+        check.published,
+        check.scratch,
+    ) {
         Ok(()) => {
-            println!("{LABEL}: {FIXTURE} matches the pin");
+            println!("{LABEL}: {} matches the pin", check.fixture);
             ExitCode::SUCCESS
         }
         Err(error) => {
@@ -329,10 +385,16 @@ fn source_unchanged(source: &Path, head: &str) -> bool {
     }
 }
 
-fn diff(committed: &Path, fresh: &Path) -> Result<(), String> {
+fn diff(
+    committed: &Path,
+    fresh: &Path,
+    fixture: &str,
+    published: &[&str],
+    scratch: &[&str],
+) -> Result<(), String> {
     let mut problems = Vec::new();
-    for name in ["digest.json", "manifest.json"] {
-        compare_file(committed, fresh, name, &mut problems);
+    for name in published {
+        compare_file(committed, fresh, fixture, name, &mut problems);
     }
     let left = yobj_names(&committed.join("objects"), &mut problems, "committed");
     let right = yobj_names(&fresh.join("objects"), &mut problems, "fresh");
@@ -349,7 +411,7 @@ fn diff(committed: &Path, fresh: &Path) -> Result<(), String> {
             problems.push(format!("oracle did not write {relative}"));
             continue;
         }
-        compare_file(committed, fresh, &relative, &mut problems);
+        compare_file(committed, fresh, fixture, &relative, &mut problems);
     }
     match fs::read_dir(fresh) {
         Ok(entries) => {
@@ -359,9 +421,8 @@ fn diff(committed: &Path, fresh: &Path) -> Result<(), String> {
                     continue;
                 };
                 let name = entry.file_name().to_string_lossy().into_owned();
-                if name == "digest.json"
-                    || name == "manifest.json"
-                    || name == "canonical.txt"
+                if published.contains(&name.as_str())
+                    || scratch.contains(&name.as_str())
                     || name == "objects"
                 {
                     continue;
@@ -403,11 +464,17 @@ fn yobj_names(dir: &Path, problems: &mut Vec<String>, which: &str) -> Vec<String
     names
 }
 
-fn compare_file(committed: &Path, fresh: &Path, name: &str, problems: &mut Vec<String>) {
+fn compare_file(
+    committed: &Path,
+    fresh: &Path,
+    fixture: &str,
+    name: &str,
+    problems: &mut Vec<String>,
+) {
     let left = match fs::read(committed.join(name)) {
         Ok(bytes) => bytes,
         Err(error) => {
-            problems.push(format!("could not read {FIXTURE}/{name}: {error}"));
+            problems.push(format!("could not read {fixture}/{name}: {error}"));
             return;
         }
     };
@@ -420,7 +487,7 @@ fn compare_file(committed: &Path, fresh: &Path, name: &str, problems: &mut Vec<S
     };
     if left != right {
         problems.push(format!(
-            "{FIXTURE}/{name} differs from the pin (committed {}, fresh {})",
+            "{fixture}/{name} differs from the pin (committed {}, fresh {})",
             left.len(),
             right.len()
         ));
