@@ -129,4 +129,6 @@ pub const YENGINE_NAME_CHARS: &str = "yengine.name-chars";
 pub const YENGINE_STRING_CHARS: &str = "yengine.string-chars";
 pub const YENGINE_OBJECT_BYTES: &str = "yengine.object-bytes";
 pub const YENGINE_HEADER_STRING: &str = "yengine.header-string";
+pub const REGEX_PATTERN_CHARS: &str = "regex.pattern-chars";
+pub const REGEX_CLASS_DEPTH: &str = "regex.class-depth";
 pub const FORMAT_CHARS: &str = "format.chars";

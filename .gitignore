@@ -27,5 +27,7 @@ tools/raw32-oracle/bin/
 tools/raw32-oracle/obj/
 tools/yengine-tokens-oracle/bin/
 tools/yengine-tokens-oracle/obj/
+tools/regex-oracle/bin/
+tools/regex-oracle/obj/
 tools/format-oracle/bin/
 tools/format-oracle/obj/

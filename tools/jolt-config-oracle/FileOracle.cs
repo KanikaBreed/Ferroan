@@ -4,13 +4,18 @@
 // Calls pinned JoltScene.NoteDilationSample (JoltScene.cs 2928-2942) and records
 // the private dilation window. The same capture compiles JoltCharacter's capsule,
 // mass, latch, intent and marker descriptor, then Simulate's return of 1 and
-// SimStatsReporter's FPS transform, before the final native proof. The physics
-// scene is constructed and never initialised, so JoltNative stays unloaded and
-// Foundation.Init is not called.
+// SimStatsReporter's FPS transform, then calls CookPrimShape
+// (JoltScene.cs 1229-1259) and records the analytic constructor it chooses,
+// then calls public SetTerrain (JoltScene.cs 3552-3613) through a recording
+// backend and stores the padded field that method keeps, before the final
+// native proof. The physics scene is constructed and never initialised, so
+// JoltNative stays unloaded and Foundation.Init is not called.
 
 using System.Diagnostics;
 using System.Globalization;
+using System.Numerics;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using OpenSim.Framework;
 using OpenSim.Region.Framework.Scenes;
@@ -59,11 +64,13 @@ static class FileOracle
     static void WriteTree(string directory, string revision, string reference)
     {
         RequirePortableClock();
-        Captured first = Capture();
-        Captured second = Capture();
+        Captured first = Capture(directory);
+        Captured second = Capture(directory);
         if (first.Calls != second.Calls || first.Result != second.Result || first.Native != second.Native
             || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult
-            || first.Stats != second.Stats)
+            || first.Stats != second.Stats
+            || first.Analytic != second.Analytic
+            || first.Heightfield != second.Heightfield)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
@@ -71,6 +78,8 @@ static class FileOracle
         RejectMachinePaths(first.CharacterCalls, reference);
         RejectMachinePaths(first.CharacterResult, reference);
         RejectMachinePaths(first.Stats, reference);
+        RejectMachinePaths(first.Analytic, reference);
+        RejectMachinePaths(first.Heightfield, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
@@ -82,6 +91,8 @@ static class FileOracle
         manifest.Append(CaseId).Append('\n');
         manifest.Append("character\n");
         manifest.Append("stats\n");
+        manifest.Append("analytic\n");
+        manifest.Append("heightfield\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
@@ -95,10 +106,16 @@ static class FileOracle
         string statsDir = Path.Combine(directory, "stats");
         Directory.CreateDirectory(statsDir);
         File.WriteAllText(Path.Combine(statsDir, "transform.txt"), first.Stats);
+        string analyticDir = Path.Combine(directory, "analytic");
+        Directory.CreateDirectory(analyticDir);
+        File.WriteAllText(Path.Combine(analyticDir, "shape.txt"), first.Analytic);
+        string heightDir = Path.Combine(directory, "heightfield");
+        Directory.CreateDirectory(heightDir);
+        File.WriteAllText(Path.Combine(heightDir, "field.txt"), first.Heightfield);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
-    static Captured Capture()
+    static Captured Capture(string directory)
     {
         MethodInfo method = SampleMethod();
         var native = new StringBuilder();
@@ -137,10 +154,12 @@ static class FileOracle
         result.Append("property_matches_field true\n");
         CharacterOracle.Texts character = CharacterOracle.Capture();
         string stats = StatsText();
+        string analytic = AnalyticText(directory);
+        string heightfield = HeightfieldText(directory);
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats);
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic, heightfield);
     }
 
     const double HealthyFrameMs = 1000.0;
@@ -625,5 +644,469 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic, string Heightfield);
+
+    static string AnalyticText(string directory)
+    {
+        string assets = File.ReadAllText(StockAssetPath(directory));
+        string kind = LineValue(assets, "kind");
+        if (kind != "analytic-box")
+            throw new InvalidOperationException("stock drop asset kind is " + kind);
+        var text = new StringBuilder();
+        text.Append(FormatLine).Append('\n');
+        text.Append("method CookPrimShape\n");
+        text.Append("source JoltScene.cs 1229-1259\n");
+        text.Append("cuts JoltScene.cs 2224-2228\n");
+        text.Append("box JoltPhysicsBackend.cs 1712-1718\n");
+        text.Append("sphere JoltPhysicsBackend.cs 1720-1723\n");
+        text.Append("cylinder JoltPhysicsBackend.cs 1731-1741\n");
+        text.Append("access internal\n");
+        text.Append("initialise not_called\n");
+        text.Append("native_proof after_calls\n");
+        text.Append("mesher null\n");
+        text.Append("stock_source jolt-record/drop\n");
+        text.Append("stock_asset_kind ").Append(kind).Append('\n');
+        // The drop releases a 1 m cube. CreateCylinder() is Square+Curve1, a tube,
+        // so the cylinder case is Circle + Straight, which is what the fast path cooks.
+        AppendShape(text, "box-static", false, PrimitiveBaseShape.CreateBox(), Om(1f, 1f, 1f), "box");
+        AppendShape(text, "box-dynamic", true, PrimitiveBaseShape.CreateBox(), Om(1f, 1f, 1f), "box");
+        AppendShape(text, "sphere-static", false, PrimitiveBaseShape.CreateSphere(), Om(2f, 2f, 2f), "sphere");
+        AppendShape(text, "sphere-dynamic", true, PrimitiveBaseShape.CreateSphere(), Om(2f, 2f, 2f), "sphere");
+        AppendShape(text, "cylinder-static", false, CircleStraight(), Om(1f, 1f, 2f), "cylinder");
+        AppendShape(text, "cylinder-dynamic", true, CircleStraight(), Om(1f, 1f, 2f), "cylinder");
+        AppendShape(text, "ellipsoid-static", false, PrimitiveBaseShape.CreateSphere(), Om(1f, 2f, 3f), "bbox(fallback)");
+        AppendShape(text, "ellipsoid-dynamic", true, PrimitiveBaseShape.CreateSphere(), Om(1f, 2f, 3f), "bbox(fallback)");
+        return text.ToString();
+    }
+
+    static PrimitiveBaseShape CircleStraight()
+    {
+        PrimitiveBaseShape shape = PrimitiveBaseShape.CreateBox();
+        shape.ProfileShape = ProfileShape.Circle;
+        shape.PathCurve = (byte)Extrusion.Straight;
+        return shape;
+    }
+
+    static OpenMetaverse.Vector3 Om(float x, float y, float z) => new OpenMetaverse.Vector3(x, y, z);
+
+    static string StockAssetPath(string directory)
+    {
+        DirectoryInfo parent = Directory.GetParent(directory)
+            ?? throw new InvalidOperationException("fixture directory has no parent");
+        return Path.Combine(parent.FullName, "jolt-record", "drop", "assets.txt");
+    }
+
+    static string LineValue(string text, string key)
+    {
+        string prefix = key + " ";
+        foreach (string raw in text.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            if (line.StartsWith(prefix, StringComparison.Ordinal))
+                return line.Substring(prefix.Length);
+        }
+        throw new InvalidOperationException("stock fixture missing " + key);
+    }
+
+    static void AppendShape(StringBuilder text, string name, bool physical, PrimitiveBaseShape shape,
+        OpenMetaverse.Vector3 size, string expectKind)
+    {
+        var backend = new RecordingBackend { RecordAnalytic = true };
+        var scene = new JoltScene();
+        MethodInfo method = CookMethod();
+        object[] args =
+        {
+            backend, shape, size, physical,
+            default(Quaternion), null, 0, 0d,
+            null, false, false,
+        };
+        ShapeId cooked;
+        try
+        {
+            cooked = (ShapeId)method.Invoke(scene, args);
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw new InvalidOperationException(name + " CookPrimShape threw: " + (exception.InnerException ?? exception).Message, exception);
+        }
+        var axis = (Quaternion)args[4];
+        string kind = (string)args[5];
+        int hulls = (int)args[6];
+        double massVolume = (double)args[7];
+        if (kind != expectKind)
+            throw new InvalidOperationException(name + " kind " + kind + " != " + expectKind);
+        if (!cooked.IsValid || cooked.Value != 1)
+            throw new InvalidOperationException(name + " shape id is " + cooked.Value);
+        int calls = backend.BoxCalls + backend.SphereCalls + backend.CylinderCalls;
+        if (calls != 1)
+            throw new InvalidOperationException(name + " made " + calls + " analytic constructors");
+        bool analytic = kind == "box" || kind == "sphere" || kind == "cylinder";
+        if (kind == "box" && backend.BoxCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a box");
+        if (kind == "sphere" && backend.SphereCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a sphere");
+        if (kind == "cylinder" && backend.CylinderCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a cylinder");
+        if (!analytic && (backend.SphereCalls != 0 || backend.CylinderCalls != 0 || backend.BoxCalls != 1))
+            throw new InvalidOperationException(name + " rejected shape took an analytic constructor");
+
+        text.Append('\n');
+        text.Append("case ").Append(name).Append('\n');
+        text.Append("physical ").Append(physical ? "true" : "false").Append('\n');
+        text.Append("profile ").Append(((byte)shape.ProfileShape).ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("path ").Append(shape.PathCurve.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cuts ")
+            .Append(shape.ProfileBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.ProfileEnd.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.ProfileHollow.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTwist.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTwistBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathEnd.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTaperX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTaperY.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathScaleX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathScaleY.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathShearX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathShearY.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("size ").Append(FloatBits(size.X)).Append(' ').Append(FloatBits(size.Y)).Append(' ')
+            .Append(FloatBits(size.Z)).Append('\n');
+        text.Append("kind ").Append(kind).Append('\n');
+        text.Append("analytic ").Append(analytic ? "true" : "false").Append('\n');
+        text.Append("box_calls ").Append(backend.BoxCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("sphere_calls ").Append(backend.SphereCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cylinder_calls ").Append(backend.CylinderCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("half ");
+        if (backend.BoxCalls == 1)
+            text.Append(FloatBits(backend.BoxHalf.X)).Append(' ').Append(FloatBits(backend.BoxHalf.Y)).Append(' ')
+                .Append(FloatBits(backend.BoxHalf.Z)).Append('\n');
+        else
+            text.Append("none\n");
+        text.Append("radius ").Append(backend.SphereCalls == 1 ? FloatBits(backend.SphereRadius) : "none").Append('\n');
+        text.Append("cylinder_half ").Append(backend.CylinderCalls == 1 ? FloatBits(backend.CylinderHalfHeight) : "none").Append('\n');
+        text.Append("cylinder_radius ").Append(backend.CylinderCalls == 1 ? FloatBits(backend.CylinderRadius) : "none").Append('\n');
+        text.Append("axis ").Append(FloatBits(axis.X)).Append(' ').Append(FloatBits(axis.Y)).Append(' ')
+            .Append(FloatBits(axis.Z)).Append(' ').Append(FloatBits(axis.W)).Append('\n');
+        text.Append("hulls ").Append(hulls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("mass_volume ").Append(DoubleBits(massVolume)).Append('\n');
+        text.Append("shape ").Append(cooked.Value.ToString(CultureInfo.InvariantCulture)).Append('\n');
+    }
+
+    static MethodInfo CookMethod()
+    {
+        MethodInfo found = null;
+        foreach (MethodInfo method in typeof(JoltScene).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic))
+        {
+            if (method.Name != "CookPrimShape" || method.GetParameters().Length != 11)
+                continue;
+            if (found != null)
+                throw new InvalidOperationException("more than one CookPrimShape with 11 parameters");
+            found = method;
+        }
+        if (found == null)
+            throw new InvalidOperationException("CookPrimShape was not found");
+        return found;
+    }
+
+    static string HeightfieldText(string directory)
+    {
+        var text = new StringBuilder();
+        text.Append(FormatLine).Append('\n');
+        text.Append("method SetTerrain\n");
+        text.Append("source JoltScene.cs 3552-3613\n");
+        text.Append("access public\n");
+        text.Append("initialise not_called\n");
+        text.Append("layout y*m+x\n");
+        text.Append("native_proof after_calls\n");
+        AppendStock(text, directory);
+        AppendCooked(text, "square-1", 1, 1, Map(1, 0x40490FDB));
+        AppendCooked(text, "square-3", 3, 3, Sequence(3, 3, 0x40000000));
+        AppendCooked(text, "rect-5x3", 5, 3, Sequence(5, 3, 0x40000000));
+        AppendCooked(text, "rect-2x4", 2, 4, Sequence(2, 4, 0x40000000));
+        AppendCooked(text, "square-256", 256, 256, Sequence(256, 256, 0x40000000));
+        AppendCooked(text, "extra-tail", 2, 2, ExtraTail());
+        AppendCooked(text, "special-bits", 2, 2, SpecialBits());
+        AppendRejected(text, "reject-short", 4, 3, Sequence(4, 3, 0x40000000).Take(11).ToArray());
+        AppendRejected(text, "reject-null", 4, 3, null);
+        AppendRejected(text, "reject-zero-x", 0, 4, Array.Empty<float>());
+        AppendRejected(text, "reject-zero-y", 5, 0, Array.Empty<float>());
+        return text.ToString();
+    }
+
+    static void AppendStock(StringBuilder text, string directory)
+    {
+        string config = File.ReadAllText(StockPath(directory, "config.txt"));
+        string provenance = File.ReadAllText(StockPath(directory, "provenance.txt"));
+        string gravity = LineValue(config, "Gravity");
+        string linear = LineValue(config, "PrimLinearDamping");
+        string angular = LineValue(config, "PrimAngularDamping");
+        string dt64 = LineValue(provenance, "dt_f64");
+        string dt32 = LineValue(provenance, "simulate_dt_f32");
+
+        Type configType = typeof(JoltScene).Assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.JoltConfig")
+            ?? throw new InvalidOperationException("JoltConfig was not found");
+        object instance = Activator.CreateInstance(configType, true)
+            ?? throw new InvalidOperationException("JoltConfig could not be constructed");
+        string compiledGravity = FloatBits((float)ConfigField(configType, "Gravity").GetValue(instance));
+        string compiledLinear = FloatBits((float)ConfigField(configType, "PrimLinearDamping").GetValue(instance));
+        string compiledAngular = FloatBits((float)ConfigField(configType, "PrimAngularDamping").GetValue(instance));
+        double heartbeat = 1.0 / 11.0;
+        string compiledDt64 = DoubleBits(heartbeat);
+        string compiledDt32 = FloatBits((float)heartbeat);
+        RequireEqual("gravity", compiledGravity, gravity);
+        RequireEqual("prim linear damping", compiledLinear, linear);
+        RequireEqual("prim angular damping", compiledAngular, angular);
+        RequireEqual("dt_f64", compiledDt64, dt64);
+        RequireEqual("simulate_dt_f32", compiledDt32, dt32);
+
+        text.Append("stock_source jolt-record/drop\n");
+        text.Append("stock_gravity ").Append(gravity).Append('\n');
+        text.Append("stock_prim_linear_damping ").Append(linear).Append('\n');
+        text.Append("stock_prim_angular_damping ").Append(angular).Append('\n');
+        text.Append("stock_dt_f64 ").Append(dt64).Append('\n');
+        text.Append("stock_simulate_dt_f32 ").Append(dt32).Append('\n');
+        text.Append("compiled_gravity ").Append(compiledGravity).Append('\n');
+        text.Append("compiled_prim_linear_damping ").Append(compiledLinear).Append('\n');
+        text.Append("compiled_prim_angular_damping ").Append(compiledAngular).Append('\n');
+        text.Append("compiled_dt_f64 ").Append(compiledDt64).Append('\n');
+        text.Append("compiled_simulate_dt_f32 ").Append(compiledDt32).Append('\n');
+        text.Append("stock_match true\n");
+    }
+
+    static string StockPath(string directory, string name)
+    {
+        DirectoryInfo parent = Directory.GetParent(directory)
+            ?? throw new InvalidOperationException("fixture directory has no parent");
+        return Path.Combine(parent.FullName, "jolt-record", "drop", name);
+    }
+
+    static FieldInfo ConfigField(Type type, string name)
+    {
+        return type.GetField(name, BindingFlags.Instance | BindingFlags.Public)
+            ?? throw new InvalidOperationException("JoltConfig." + name + " was not found");
+    }
+
+    static void RequireEqual(string label, string compiled, string stock)
+    {
+        if (compiled != stock)
+            throw new InvalidOperationException(label + " " + compiled + " != stock " + stock);
+    }
+
+    static float[] Map(int count, int bits)
+    {
+        var map = new float[count];
+        float value = BitConverter.Int32BitsToSingle(bits);
+        for (int i = 0; i < count; i++)
+            map[i] = value;
+        return map;
+    }
+
+    static float[] Sequence(int width, int height, int origin)
+    {
+        var map = new float[width * height];
+        for (int i = 0; i < map.Length; i++)
+            map[i] = BitConverter.Int32BitsToSingle(origin + i);
+        return map;
+    }
+
+    static float[] ExtraTail()
+    {
+        float[] map = Sequence(2, 2, 0x40000000);
+        return map.Concat(new[]
+        {
+            BitConverter.Int32BitsToSingle(0x42F60000),
+            BitConverter.Int32BitsToSingle(unchecked((int)0xC2F60000)),
+        }).ToArray();
+    }
+
+    static float[] SpecialBits()
+    {
+        return new[]
+        {
+            BitConverter.Int32BitsToSingle(unchecked((int)0x80000000)),
+            BitConverter.Int32BitsToSingle(0x7F800000),
+            BitConverter.Int32BitsToSingle(unchecked((int)0xFF800000)),
+            BitConverter.Int32BitsToSingle(0x7FC00001),
+        };
+    }
+
+    static void AppendCooked(StringBuilder text, string name, int sx, int sy, float[] map)
+    {
+        RecordingBackend backend = Run(name, sx, sy, map);
+        float[] stored = StoredField(name);
+        int storedM = StoredM();
+        if (backend.HeightFieldCalls != 1 || backend.TerrainSets != 1)
+            throw new InvalidOperationException(name + " did not cook exactly once");
+        if (stored == null || storedM < 2)
+            throw new InvalidOperationException(name + " stored no field");
+        if (backend.LastSampleCountX != storedM || backend.LastSampleCountY != storedM)
+            throw new InvalidOperationException(name + " sample counts are not the stored square");
+        if (!BitsEqual(stored, backend.LastHeights))
+            throw new InvalidOperationException(name + " stored field is not the span passed in");
+        if (backend.LastTerrainShape.Value != 1)
+            throw new InvalidOperationException(name + " shape is not the id CreateHeightFieldShape returned");
+        RequireScale(name, backend.LastScale);
+        RequireZero(name, backend.LastTerrainPosition);
+        if (backend.GetCapacityStats().TerrainBodyMissing)
+            throw new InvalidOperationException(name + " reports a missing terrain body");
+
+        text.Append('\n');
+        text.Append("case ").Append(name).Append('\n');
+        text.Append("region ").Append(sx.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(sy.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cooked true\n");
+        text.Append("heightfield_calls 1\n");
+        text.Append("terrain_sets 1\n");
+        text.Append("sample_count ").Append(storedM.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(storedM.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("field_m ").Append(storedM.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("shape 1\n");
+        text.Append("scale ").Append(FloatBits(backend.LastScale.X)).Append(' ')
+            .Append(FloatBits(backend.LastScale.Y)).Append(' ')
+            .Append(FloatBits(backend.LastScale.Z)).Append('\n');
+        text.Append("position ").Append(FloatBits(backend.LastTerrainPosition.X)).Append(' ')
+            .Append(FloatBits(backend.LastTerrainPosition.Y)).Append(' ')
+            .Append(FloatBits(backend.LastTerrainPosition.Z)).Append('\n');
+        text.Append("stored_matches_span true\n");
+        if (name == "square-256")
+        {
+            AppendDigest(text, map, stored, storedM);
+            return;
+        }
+        text.Append("input_count ").Append(map.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("input\n");
+        AppendFloats(text, map);
+        text.Append("field_count ").Append(stored.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("field\n");
+        AppendFloats(text, stored);
+    }
+
+    // SHA-256 of every stored float, little-endian IEEE bits, in y*m+x order.
+    static void AppendDigest(StringBuilder text, float[] map, float[] stored, int storedM)
+    {
+        text.Append("input_formula origin-plus-index\n");
+        text.Append("input_origin 40000000\n");
+        text.Append("input_count ").Append(map.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("field_encoding digest\n");
+        text.Append("byte_order little-endian-float32\n");
+        text.Append("field_count ").Append(stored.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("field_sha256 ").Append(FieldDigest(stored)).Append('\n');
+        AppendPoint(text, "corner", 0, 0, stored, storedM);
+        AppendPoint(text, "edge", storedM - 1, 0, stored, storedM);
+        AppendPoint(text, "edge", 0, storedM - 1, stored, storedM);
+        AppendPoint(text, "corner", storedM - 1, storedM - 1, stored, storedM);
+    }
+
+    static string FieldDigest(float[] stored)
+    {
+        var bytes = new byte[stored.Length * 4];
+        for (int i = 0; i < stored.Length; i++)
+        {
+            int bits = BitConverter.SingleToInt32Bits(stored[i]);
+            bytes[i * 4] = (byte)bits;
+            bytes[i * 4 + 1] = (byte)(bits >> 8);
+            bytes[i * 4 + 2] = (byte)(bits >> 16);
+            bytes[i * 4 + 3] = (byte)(bits >> 24);
+        }
+        return Convert.ToHexString(SHA256.HashData(bytes));
+    }
+
+    static void AppendPoint(StringBuilder text, string label, int x, int y, float[] stored, int m)
+    {
+        text.Append(label).Append(' ')
+            .Append(x.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(y.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(FloatBits(stored[y * m + x])).Append('\n');
+    }
+
+    static void AppendRejected(StringBuilder text, string name, int sx, int sy, float[] map)
+    {
+        RecordingBackend backend = Run(name, sx, sy, map);
+        float[] stored = StoredField(name);
+        int storedM = StoredM();
+        if (backend.HeightFieldCalls != 0 || backend.TerrainSets != 0 || stored != null || storedM != 0)
+            throw new InvalidOperationException(name + " cooked or stored a field");
+        text.Append('\n');
+        text.Append("case ").Append(name).Append('\n');
+        text.Append("region ").Append(sx.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(sy.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cooked false\n");
+        text.Append("heightfield_calls 0\n");
+        text.Append("terrain_sets 0\n");
+        if (map == null)
+            text.Append("input null\n");
+        else
+        {
+            text.Append("input_count ").Append(map.Length.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("input\n");
+            AppendFloats(text, map);
+        }
+        text.Append("field null\n");
+    }
+
+    static JoltScene HeightfieldScene;
+
+    static RecordingBackend Run(string name, int sx, int sy, float[] map)
+    {
+        var backend = new RecordingBackend { RecordTerrain = true };
+        var scene = new JoltScene();
+        PrivateField("_backend").SetValue(scene, backend);
+        PrivateField("_regionSizeX").SetValue(scene, sx);
+        PrivateField("_regionSizeY").SetValue(scene, sy);
+        try
+        {
+            scene.SetTerrain(map);
+        }
+        catch (Exception exception)
+        {
+            throw new InvalidOperationException(name + " SetTerrain threw: " + exception.Message, exception);
+        }
+        HeightfieldScene = scene;
+        return backend;
+    }
+
+    static float[] StoredField(string name)
+    {
+        object value = PrivateField("_terrainField").GetValue(HeightfieldScene);
+        if (value == null)
+            return null;
+        if (value is float[] field)
+            return field;
+        throw new InvalidOperationException(name + " stored a field that is not a float array");
+    }
+
+    static int StoredM()
+    {
+        return (int)PrivateField("_terrainFieldM").GetValue(HeightfieldScene);
+    }
+
+    static void RequireScale(string name, Vector3 scale)
+    {
+        if (FloatBits(scale.X) != "3F800000" || FloatBits(scale.Y) != "3F800000" || FloatBits(scale.Z) != "3F800000")
+            throw new InvalidOperationException(name + " scale is not 1,1,1");
+    }
+
+    static void RequireZero(string name, Vector3 position)
+    {
+        if (FloatBits(position.X) != "00000000" || FloatBits(position.Y) != "00000000" || FloatBits(position.Z) != "00000000")
+            throw new InvalidOperationException(name + " position is not zero");
+    }
+
+    static bool BitsEqual(float[] left, float[] right)
+    {
+        if (left == null || right == null || left.Length != right.Length)
+            return false;
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (BitConverter.SingleToInt32Bits(left[i]) != BitConverter.SingleToInt32Bits(right[i]))
+                return false;
+        }
+        return true;
+    }
+
+    static void AppendFloats(StringBuilder text, float[] values)
+    {
+        for (int i = 0; i < values.Length; i++)
+            text.Append(FloatBits(values[i])).Append('\n');
+    }
 }

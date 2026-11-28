@@ -337,7 +337,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q109a | P3.13a1: Capsule, mass, latch, intent and descriptor | DONE (this PR) |
 | Q109b | P3.13a2: Marker after the bind | READY after Q145 |
 | Q110 | P3.11a: Mesh-asset decode | READY after Q100a |
-| Q111 | P3.2a: Padded heightfield samples | READY after Q100a |
+| Q111 | P3.2a: Padded heightfield samples | DONE (this PR) |
 | Q183 | P3.63: Free fall until first contact | READY after Q111 and Q177 |
 | Q112 | P3.2b: Box at rest on terrain | READY after Q183 |
 | Q113 | P3.2d: Slope and hill | READY after Q111 and Q183 |
@@ -346,7 +346,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
 | Q116 | P3.3b: Dilation window and stats transform | DONE (this PR) |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
-| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
+| Q117 | P3.4: Analytic box, sphere and cylinder | DONE (this PR) |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
 | Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
 | Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
