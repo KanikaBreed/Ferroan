@@ -139,7 +139,9 @@ impl AppearanceHttp {
     ///
     /// An empty `AvatarService` or `AssetService` uses the grid section's
     /// `LocalServiceModule`. A different asset module is logged. The same
-    /// module string reuses the service this process already opened. A stock
+    /// module string reuses the service this process already opened, unless it
+    /// is a stock asset class that names another section. That section is
+    /// opened even when appearance inherits the grid module unchanged. A stock
     /// asset module may name another section as
     /// `Section@OpenSim.Services.AssetService.dll:AssetService`. Any other
     /// module, and an `@` avatar module, is refused.
@@ -254,6 +256,18 @@ async fn asset_for_appearance(
         tracing::warn!("{message}");
     }
     if !grid.is_empty() && module == grid {
+        // The grid opener always reads `[AssetService]`. A stock class that
+        // names another section still has to open that section, including
+        // when appearance inherits the grid module unchanged.
+        if let Some((store_section, class)) = named_plugin(module)
+            && !store_section.is_empty()
+            && store_section != "AssetService"
+            && stock_asset(class)
+        {
+            return AssetHttp::open_stock_from(config, store_section)
+                .await
+                .map_err(|error| AppearanceError::Message(error.to_string()));
+        }
         return Ok(opened);
     }
     let (store_section, class) = named_plugin(module).ok_or_else(|| {

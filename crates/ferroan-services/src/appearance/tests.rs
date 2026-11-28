@@ -354,7 +354,7 @@ async fn appearance_modules_read_the_named_asset_store() {
     assert_eq!(status, 404);
     assert_ne!(body, grid_bytes);
     let (status, body) = bake_reply(&other, &texture_path(agent, "upper", bake_id)).await;
-    assert_eq!((status, body), (200, bake_bytes));
+    assert_eq!((status, body), (200, bake_bytes.clone()));
 
     config.set(
         "AppearanceService",
@@ -379,12 +379,35 @@ async fn appearance_modules_read_the_named_asset_store() {
     config.set("AppearanceService", "AvatarService", stock_avatar);
     config.set("AppearanceService", "AssetService", shared);
     config.set("AssetService", "LocalServiceModule", shared);
-    let reused = AppearanceHttp::open(&config, "AppearanceService", &avatars, grid_assets)
+    let reused = AppearanceHttp::open(&config, "AppearanceService", &avatars, grid_assets.clone())
         .await
         .unwrap()
         .into_router();
     let (status, body) = bake_reply(&reused, &texture_path(agent, "head", grid_id)).await;
-    assert_eq!((status, body), (200, grid_bytes));
+    assert_eq!((status, body), (200, grid_bytes.clone()));
+
+    let named = format!("BakeAssets@{stock_asset}");
+    config.set("AssetService", "LocalServiceModule", &named);
+    config.set("AppearanceService", "AvatarService", stock_avatar);
+    config.set("AppearanceService", "AssetService", "");
+    let inherited =
+        AppearanceHttp::open(&config, "AppearanceService", &avatars, grid_assets.clone())
+            .await
+            .unwrap()
+            .into_router();
+    let (status, body) = bake_reply(&inherited, &texture_path(agent, "head", grid_id)).await;
+    assert_eq!(status, 404);
+    assert_ne!(body, grid_bytes);
+    let (status, body) = bake_reply(&inherited, &texture_path(agent, "upper", bake_id)).await;
+    assert_eq!((status, body), (200, bake_bytes.clone()));
+
+    config.set("AppearanceService", "AssetService", &named);
+    let equal = AppearanceHttp::open(&config, "AppearanceService", &avatars, grid_assets)
+        .await
+        .unwrap()
+        .into_router();
+    let (status, body) = bake_reply(&equal, &texture_path(agent, "upper", bake_id)).await;
+    assert_eq!((status, body), (200, bake_bytes));
 }
 
 #[tokio::test]
