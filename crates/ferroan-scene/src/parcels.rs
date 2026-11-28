@@ -36,7 +36,7 @@
 pub mod oar;
 mod overlay;
 mod properties;
-mod vector_text;
+pub(crate) mod vector_text;
 
 pub use oar::{OarParcel, OarParcelError, ParcelLoad, ParcelOptions, load_parcels};
 pub use overlay::OverlayPacket;

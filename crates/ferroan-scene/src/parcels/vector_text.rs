@@ -38,6 +38,12 @@ pub(super) enum Components {
     Rotation,
 }
 
+/// One `NumberStyles.Float` component in the en-US culture. `∞` and `NaN` are
+/// accepted. The word `Infinity` is not the en-US infinity symbol.
+pub(crate) fn parse_f32(component: &str) -> Option<f32> {
+    number(component)
+}
+
 pub(super) fn number(component: &str) -> Option<f32> {
     // NumberStyles.Float uses the en-US infinity symbol and NaN. The special
     // symbols accept Unicode whitespace, ordinary numbers use ASCII space.

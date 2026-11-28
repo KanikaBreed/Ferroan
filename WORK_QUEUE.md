@@ -235,7 +235,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q74 | P2.9a: SQLite persistence. Periodic backup and the shutdown forced save are proved separately. The storage test is a dirty save, a remove and a reopen of a seeded linkset, with a distinguishable child-inventory item. May split into forced save and periodic backup | READY after Q211 |
 | Q75 | P2.9b: persistence on MySQL and PostgreSQL | READY after Q74 and Q55 |
 | Q383 | P2.9c: reopen a C#-written store on SQLite, MySQL and PostgreSQL. Compare the parcel overlay and properties, handshake settings, effective estate and environment. Budget the per-backend split, about three days | READY |
-| Q214 | P2.0e4.1: OAR control file and region path. The path lookup is `ArchiveReadRequest.cs` 460, the skip is 461, and `LoadControlFile` begins at 1298 | READY |
+| Q214 | P2.0e4.1: OAR control file and region path. The path lookup is `ArchiveReadRequest.cs` 460, the skip is 461, and `LoadControlFile` begins at 1298 | DONE (this PR) |
 | Q215 | P2.0e4.2: OAR RAW32 terrain loader | DONE (this PR) |
 | Q378 | P2.0e4.0: `load oar` console options. An invalid vector keeps its default and continues. An unresolved `--default-user` aborts the load | READY after Q214 |
 | Q216 | P2.0e4.3: OAR terrain merge | BLOCKED (split into Q216a and Q216b) |

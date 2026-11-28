@@ -89,6 +89,7 @@ jobs:
           cargo xtask presence verify
           cargo xtask access verify
           cargo xtask permissions verify
+          cargo xtask oar verify
           cargo xtask oar-owners verify
           cargo xtask oar-parcels verify
           cargo xtask raw32 verify

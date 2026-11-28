@@ -48,6 +48,9 @@
 //! `session-zone` checks MySQL and PostgreSQL session zones against Pin8 on
 //! throwaway servers.
 //!
+//! `oar generate` builds the OAR oracle and writes the control-file fixture.
+//! `oar verify` rebuilds it and compares that fixture. Neither starts a region.
+//!
 //! `regionstore generate` builds the region-store oracle and writes the SQLite
 //! object fixture. `regionstore settings` writes the region-settings fixture.
 //! `regionstore serialize` writes XML2 and original XML for that object fixture.
@@ -126,6 +129,7 @@ mod live_proxy;
 mod login_gate;
 mod memory;
 mod nodelay;
+mod oar;
 mod oracle;
 mod oracle_reference;
 mod personal_paths;
@@ -210,6 +214,8 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
        cargo xtask regionstore bulk <db> <region-uuid> <count>
+       cargo xtask oar generate
+       cargo xtask oar verify
        cargo xtask pin3 generate|verify
        cargo xtask access generate|verify
        cargo xtask permissions generate|verify
@@ -372,6 +378,8 @@ fn main() -> ExitCode {
         ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),
         ["regionstore", "bulk", db, region, count] => regionstore::bulk(db, region, count),
+        ["oar", "generate"] => oar::generate(),
+        ["oar", "verify"] => oar::verify(),
         ["docker", "build"] => docker::build(),
         ["docker", "smoke"] => docker::smoke(),
         ["console-client"] => console_client::run(),
