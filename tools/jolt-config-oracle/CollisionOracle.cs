@@ -220,6 +220,18 @@ static class CollisionOracle
         foreach (Contact contact in frame.Contacts)
             contact.Write(text);
 
+        // Pin9 sends every current callback before any end (`JoltScene.cs` 3384-3406).
+        // Partitioning below would hide a reversal, so the raw handler order is checked first.
+        int firstEnd = sends.FindIndex(sent => sent.Colliders.Count == 0);
+        if (firstEnd >= 0)
+        {
+            for (int n = firstEnd + 1; n < sends.Count; n++)
+            {
+                if (sends[n].Colliders.Count > 0)
+                    throw new InvalidOperationException("a current collision callback followed an end callback");
+            }
+        }
+
         text.Append("phase current\n");
         WriteSends(text, sends.Where(sent => sent.Colliders.Count > 0));
         text.Append("phase end\n");

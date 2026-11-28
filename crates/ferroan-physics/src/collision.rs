@@ -60,6 +60,7 @@
 //! lower id that ends stays after a higher id that acquires a contact.
 //! Actors or contacts past the contact-buffer cap are dropped, that frame is
 //! treated as overflow, and actor ids kept across overflow stay inside the cap.
+//! Repeat timestamps are kept only for those retained ids.
 //! A sound is `abs(speed) > 0.2` on a new contact, for either sign, and the
 //! play path also requires `abs(speed) >= 0.2f`.
 
@@ -408,6 +409,7 @@ impl ActorSets {
                 self.collided_last.insert(id);
                 left -= 1;
             }
+            self.retain_timestamps();
             return Vec::new();
         }
         let mut ended = Vec::new();
@@ -422,8 +424,17 @@ impl ActorSets {
         for id in self.current.keys() {
             self.collided_last.insert(*id);
         }
+        self.retain_timestamps();
         ended.sort_unstable();
         ended
+    }
+
+    /// A refused id can be sent and still stay out of [`Self::collided_last`].
+    /// Its timestamp would otherwise survive until a later frame that happens
+    /// to retain it. Both stores stay on the ids the overflow rule kept.
+    fn retain_timestamps(&mut self) {
+        self.last_sent
+            .retain(|id, _| self.collided_last.contains(id));
     }
 }
 
@@ -720,6 +731,67 @@ mod tests {
         assert_eq!(limit_hits(), before + 5);
         assert!(second.sends.iter().all(|send| !send.colliders.is_empty()));
         assert_eq!(second.tracked, vec![1, 2]);
+    }
+
+    #[test]
+    fn repeat_timestamps_follow_the_retained_ids() {
+        let _guard = limits_lock();
+        let mut replay = ActorSets::new();
+        let settled = replay.dispatch(&FrameInput {
+            time: 0.0,
+            merge_substeps: false,
+            overflow: false,
+            capacity: 2,
+            actors: vec![actor(1), actor(2)],
+            contacts: vec![persist(1, 2)],
+        });
+        assert_eq!(settled.tracked, vec![1, 2]);
+        assert_eq!(replay.last_sent.len(), 2);
+
+        for (step, base) in [(1.0, 3u32), (2.0, 7u32), (3.0, 11u32)] {
+            let _ = replay.dispatch(&FrameInput {
+                time: step,
+                merge_substeps: false,
+                overflow: true,
+                capacity: 2,
+                actors: vec![
+                    actor(base),
+                    actor(base + 1),
+                    actor(base + 2),
+                    actor(base + 3),
+                ],
+                contacts: vec![persist(base, base + 1)],
+            });
+            assert_eq!(
+                replay.collided_last.iter().copied().collect::<Vec<_>>(),
+                vec![1, 2]
+            );
+            assert!(
+                replay.last_sent.len() <= 2,
+                "step {step} kept {} timestamps",
+                replay.last_sent.len()
+            );
+            assert!(
+                replay
+                    .last_sent
+                    .keys()
+                    .all(|id| replay.collided_last.contains(id))
+            );
+            assert!(!replay.last_sent.contains_key(&base));
+            assert!(!replay.last_sent.contains_key(&(base + 1)));
+        }
+
+        let recovered = replay.dispatch(&FrameInput {
+            time: 4.0,
+            merge_substeps: false,
+            overflow: false,
+            capacity: 2,
+            actors: vec![actor(11), actor(12)],
+            contacts: vec![persist(11, 12)],
+        });
+        assert_eq!(recovered.tracked, vec![11, 12]);
+        let stamps: Vec<u32> = replay.last_sent.keys().copied().collect();
+        assert_eq!(stamps, vec![11, 12]);
     }
 
     fn actor(id: u32) -> Actor {
