@@ -1,0 +1,9 @@
+<Project>
+  <!-- YEngine uses Microsoft.Extensions.Logging and does not reference the package.
+       OpenSim.Framework does. That reference does not flow into YEngine's compilation.
+       The build copies this file into an MSBuild user-extensions ImportBefore directory
+       and sets ImportUserLocationsByWildcardBeforeMicrosoftCommonProps, so the pin stays unchanged. -->
+  <ItemGroup Condition="'$(MSBuildProjectName)' == 'OpenSim.Region.ScriptEngine.YEngine'">
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.13" />
+  </ItemGroup>
+</Project>

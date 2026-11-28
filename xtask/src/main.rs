@@ -62,6 +62,10 @@
 //! `fixtures/oar-raw32`. It starts the in-process scene that oracle uses and
 //! does not start the live harness.
 //!
+//! `yengine-tokens verify` rebuilds the YEngine token oracle at the pin and
+//! diffs `fixtures/yengine-tokens`. It does not start the live harness and it
+//! is not part of `cargo xtask check`.
+//!
 //! `asset` builds the C# asset oracle and generates or verifies `AssetBase`
 //! XML fixtures. It needs the .NET SDK and the reference checkouts. The Linux
 //! live workflow runs `verify`. `asset xasset-cross` runs the XAsset plugins
@@ -140,6 +144,7 @@ mod signal;
 mod trailing_fixtures;
 mod twice;
 mod xasset_live;
+mod yengine_tokens;
 
 use std::env;
 use std::ffi::OsString;
@@ -206,6 +211,7 @@ usage: cargo xtask check [--docs-only]
        cargo xtask regionstore read
        cargo xtask regionstore verify
        cargo xtask raw32 verify
+       cargo xtask yengine-tokens verify
        cargo xtask regionstore scales
        cargo xtask regionstore scales-verify
        cargo xtask regionstore cross
@@ -368,6 +374,7 @@ fn main() -> ExitCode {
         ["regionstore", "read"] => regionstore::read(),
         ["regionstore", "verify"] => regionstore::verify(),
         ["raw32", "verify"] => raw32::verify(),
+        ["yengine-tokens", "verify"] => yengine_tokens::verify(),
         ["regionstore", "scales"] => regionstore::scales(true),
         ["regionstore", "scales-verify"] => regionstore::scales(false),
         ["regionstore", "cross"] => regionstore::cross(),

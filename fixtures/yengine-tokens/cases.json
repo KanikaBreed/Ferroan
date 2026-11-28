@@ -1,0 +1,102 @@
+{
+  "compile": [
+    {
+      "name": "bare",
+      "source": "default{state_entry(){}}"
+    },
+    {
+      "name": "spaced",
+      "source": "default { state_entry() { } }"
+    },
+    {
+      "name": "comment",
+      "source": "// lead\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "block-comment",
+      "source": "default{state_entry(){/* hidden */}}"
+    },
+    {
+      "name": "globals",
+      "source": "integer count;\nfloat scale;\nstring label;\nkey id;\nvector pos;\nquaternion spin;\nlist items;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "rotation-word",
+      "source": "rotation spin;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "quaternion-word",
+      "source": "quaternion spin;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "local",
+      "source": "default{state_entry(){integer local;}}"
+    },
+    {
+      "name": "function",
+      "source": "integer g;\ninteger f()\n{\n    return g;\n}\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "states",
+      "source": "integer g;\ndefault{state_entry(){}}\nstate other{state_entry(){g=1;}}"
+    },
+    {
+      "name": "literals",
+      "source": "string s;\ninteger n;\nfloat f;\ndefault{state_entry(){s=\"hi\";n=0x10;f=1.5;}}"
+    },
+    {
+      "name": "yoption",
+      "source": "yoption arrays;\ninteger g;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "plain-g",
+      "source": "integer g;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "unknown-option",
+      "source": "yoption nope;\ninteger g;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "ops",
+      "source": "integer g;\ndefault{state_entry(){g=1+2*3;if(g<=4)jump done;@done;}}"
+    },
+    {
+      "name": "floats",
+      "source": "default{state_entry(){float a=0.00001;float b=1.0e20;float c=1.;float d=0.1;float e=10.25;}}"
+    },
+    {
+      "name": "line",
+      "source": "integer g;\n# 10 \"other.lsl\"\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "escapes",
+      "source": "default{state_entry(){string s=\"a\\nb\\t\";string q=\"say \\\"hi\\\"\";}}"
+    },
+    {
+      "name": "hex",
+      "source": "default{state_entry(){integer n=0x10;integer z=0XFF;integer w=00x10;}}"
+    }
+  ],
+  "errors": [
+    {
+      "name": "backtick",
+      "source": "`"
+    },
+    {
+      "name": "two-dots",
+      "source": "1.2.3"
+    },
+    {
+      "name": "long-name",
+      "source": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    {
+      "name": "float-overflow",
+      "source": "1.2e9999999999"
+    },
+    {
+      "name": "bare-exponent",
+      "source": "1e9999999999"
+    }
+  ]
+}
