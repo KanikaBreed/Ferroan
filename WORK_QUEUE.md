@@ -348,7 +348,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
 | Q117 | P3.4: Analytic box, sphere and cylinder | DONE (this PR) |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
-| Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
+| Q119 | P3.18a: Actor-set collision replay | DONE (this PR) |
 | Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
 | Q120 | P3.6: Gravity command matrix | DONE (this PR) |
 | Q185 | P3.65: Three falling boxes | READY after Q120 and Q118 |

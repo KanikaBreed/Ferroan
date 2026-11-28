@@ -6,11 +6,11 @@
 // recorded only when RecordAnalytic is set. SetTerrain's heightfield cook is
 // recorded only when RecordTerrain is set. Gravity-factor writes, and the
 // vehicle body's friction, damping, sleep, CCD and step-provider calls that
-// surround them, are recorded only when RecordGravity is set. Every other
-// backend method is unexpected: this process must not reach
-// JoltPhysicsBackend, and it must not load joltc. RecordHeartbeat lets
-// Simulate return without a native step. It stays off for the character
-// compile.
+// surround them, are recorded only when RecordGravity is set. IsBodyAwake
+// answers the collision capture. Every other backend method is unexpected:
+// this process must not reach JoltPhysicsBackend, and it must not load
+// joltc. RecordHeartbeat lets Simulate return without a native step. It
+// stays off for the character compile.
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -375,9 +375,14 @@ sealed class RecordingBackend : IPhysicsBackend
     {
         return Unexpected<bool>();
     }
+    // DispatchContacts reads this for StillTouchingAsleep. A body is awake only
+    // when the collision capture put its id here. An id that was not recorded
+    // is asleep. Character and note-dilation do not call this method.
+    internal readonly Dictionary<uint, bool> AwakeBodies = new();
+
     public bool IsBodyAwake(BodyId body)
     {
-        return Unexpected<bool>();
+        return AwakeBodies.TryGetValue(body.Value, out bool awake) && awake;
     }
     public bool TryGetBodyUserData(BodyId body, out uint userData)
     {
