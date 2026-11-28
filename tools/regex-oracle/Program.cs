@@ -46,7 +46,8 @@ foreach (var pattern in patterns)
         var detail = ex.Message.StartsWith(prefix, StringComparison.Ordinal)
             ? ex.Message.Substring(prefix.Length)
             : ex.Message;
-        if (seen.Add(detail))
+        var pinned = pattern is "^?*" or "$?*" or ".?*" or "[a]?*" or "(a)?*" or "\\p{L}?*" or "\\w?*" or "?*";
+        if (seen.Add(detail) || pinned)
         {
             literals.Add(new { pattern, ok = false, message = ex.Message });
         }

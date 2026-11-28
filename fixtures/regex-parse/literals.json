@@ -266,6 +266,46 @@
       "message": "Invalid pattern \u0027\\pxxx\u0027 at offset 3. Malformed \\p{X} character escape."
     },
     {
+      "pattern": "^?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027^?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "$?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027$?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": ".?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027.?*\u0027 at offset 3. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "[a]?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027[a]?*\u0027 at offset 5. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "(a)?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027(a)?*\u0027 at offset 5. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "\\p{L}?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\p{L}?*\u0027 at offset 7. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "\\w?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027\\w?*\u0027 at offset 4. Nested quantifier \u0027*\u0027."
+    },
+    {
+      "pattern": "?*",
+      "ok": false,
+      "message": "Invalid pattern \u0027?*\u0027 at offset 1. Quantifier \u0027?\u0027 following nothing."
+    },
+    {
       "pattern": "",
       "ok": true
     },

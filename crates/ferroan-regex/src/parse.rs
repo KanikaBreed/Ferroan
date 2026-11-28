@@ -444,8 +444,18 @@ impl<'a> Parser<'a> {
                 }
                 _ => return Err(ParseError::Internal),
             }
+            // .NET assigns isQuantifier = IsTrueQuantifier() here, and that
+            // value is wasPrevQuantifier on the next atom. The end-of-pattern
+            // test short-circuits, so a quantifier character that ends the
+            // pattern keeps the flag set by IsQuantifier. A brace that only
+            // looks like a quantifier and is later rewound stays true, which
+            // is what makes ^?* and \p{L}?* report a nested quantifier.
             self.scan_blank()?;
-            if self.pos == self.units.len() || !self.is_true_quantifier() {
+            let at_end = self.pos == self.units.len();
+            if !at_end {
+                is_quantifier = self.is_true_quantifier();
+            }
+            if at_end || !is_quantifier {
                 if !self.has_unit {
                     return Err(ParseError::Internal);
                 }
