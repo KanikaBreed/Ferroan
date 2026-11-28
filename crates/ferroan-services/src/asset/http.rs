@@ -114,6 +114,48 @@ impl AssetHttp {
         self.inner.backend.pool_occupancy()
     }
 
+    /// Non-empty asset bytes. A missing row, an empty body and a plugin error
+    /// are `None`, which is what `AppearanceService.GetBake` returns for those
+    /// cases. A stored body above `http.asset-body` is refused and is `None`.
+    pub(crate) async fn bake_bytes(&self, id: &str) -> Option<Vec<u8>> {
+        let Read::Found(data) = self.inner.backend.read_data(id).await else {
+            return None;
+        };
+        if data.is_empty() {
+            return None;
+        }
+        if data.len() > MAX_XML_CHARS {
+            ferroan_diag::refuse(
+                HTTP_ASSET_BODY,
+                Kind::Hard,
+                MAX_XML_CHARS as u64,
+                data.len() as u64,
+                "appearance",
+            );
+            return None;
+        }
+        Some(data)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn stored_bytes(&self, id: &str) -> Option<Vec<u8>> {
+        match self.inner.backend.read_data(id).await {
+            Read::Found(data) => Some(data),
+            Read::Missing | Read::Failed => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn remove_stored(&self, id: &str) -> bool {
+        let Some(uuid) = super::model::parse_id(id) else {
+            return false;
+        };
+        match &self.inner.backend {
+            AssetBackend::Stock(store) => store.delete(uuid).await.is_ok(),
+            AssetBackend::XAsset(_) | AssetBackend::FsAsset(_) => false,
+        }
+    }
+
     pub fn into_router(self) -> Router {
         let limit = self.inner.body_limit;
         self.into_router_limited(limit)
