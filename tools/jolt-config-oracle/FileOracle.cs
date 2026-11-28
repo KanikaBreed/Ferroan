@@ -4,12 +4,14 @@
 // Calls pinned JoltScene.NoteDilationSample (JoltScene.cs 2928-2942) and records
 // the private dilation window. The same capture compiles JoltCharacter's capsule,
 // mass, latch, intent and marker descriptor, then Simulate's return of 1 and
-// SimStatsReporter's FPS transform, before the final native proof. The physics
-// scene is constructed and never initialised, so JoltNative stays unloaded and
-// Foundation.Init is not called.
+// SimStatsReporter's FPS transform, then calls CookPrimShape
+// (JoltScene.cs 1229-1259) and records the analytic constructor it chooses,
+// before the final native proof. The physics scene is constructed and never
+// initialised, so JoltNative stays unloaded and Foundation.Init is not called.
 
 using System.Diagnostics;
 using System.Globalization;
+using System.Numerics;
 using System.Reflection;
 using System.Text;
 using OpenSim.Framework;
@@ -59,11 +61,12 @@ static class FileOracle
     static void WriteTree(string directory, string revision, string reference)
     {
         RequirePortableClock();
-        Captured first = Capture();
-        Captured second = Capture();
+        Captured first = Capture(directory);
+        Captured second = Capture(directory);
         if (first.Calls != second.Calls || first.Result != second.Result || first.Native != second.Native
             || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult
-            || first.Stats != second.Stats)
+            || first.Stats != second.Stats
+            || first.Analytic != second.Analytic)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
@@ -71,6 +74,7 @@ static class FileOracle
         RejectMachinePaths(first.CharacterCalls, reference);
         RejectMachinePaths(first.CharacterResult, reference);
         RejectMachinePaths(first.Stats, reference);
+        RejectMachinePaths(first.Analytic, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
@@ -82,6 +86,7 @@ static class FileOracle
         manifest.Append(CaseId).Append('\n');
         manifest.Append("character\n");
         manifest.Append("stats\n");
+        manifest.Append("analytic\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
@@ -95,10 +100,13 @@ static class FileOracle
         string statsDir = Path.Combine(directory, "stats");
         Directory.CreateDirectory(statsDir);
         File.WriteAllText(Path.Combine(statsDir, "transform.txt"), first.Stats);
+        string analyticDir = Path.Combine(directory, "analytic");
+        Directory.CreateDirectory(analyticDir);
+        File.WriteAllText(Path.Combine(analyticDir, "shape.txt"), first.Analytic);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
-    static Captured Capture()
+    static Captured Capture(string directory)
     {
         MethodInfo method = SampleMethod();
         var native = new StringBuilder();
@@ -137,10 +145,11 @@ static class FileOracle
         result.Append("property_matches_field true\n");
         CharacterOracle.Texts character = CharacterOracle.Capture();
         string stats = StatsText();
+        string analytic = AnalyticText(directory);
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats);
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic);
     }
 
     const double HealthyFrameMs = 1000.0;
@@ -625,5 +634,168 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic);
+
+    static string AnalyticText(string directory)
+    {
+        string assets = File.ReadAllText(StockAssetPath(directory));
+        string kind = LineValue(assets, "kind");
+        if (kind != "analytic-box")
+            throw new InvalidOperationException("stock drop asset kind is " + kind);
+        var text = new StringBuilder();
+        text.Append(FormatLine).Append('\n');
+        text.Append("method CookPrimShape\n");
+        text.Append("source JoltScene.cs 1229-1259\n");
+        text.Append("cuts JoltScene.cs 2224-2228\n");
+        text.Append("box JoltPhysicsBackend.cs 1712-1718\n");
+        text.Append("sphere JoltPhysicsBackend.cs 1720-1723\n");
+        text.Append("cylinder JoltPhysicsBackend.cs 1731-1741\n");
+        text.Append("access internal\n");
+        text.Append("initialise not_called\n");
+        text.Append("native_proof after_calls\n");
+        text.Append("mesher null\n");
+        text.Append("stock_source jolt-record/drop\n");
+        text.Append("stock_asset_kind ").Append(kind).Append('\n');
+        // The drop releases a 1 m cube. CreateCylinder() is Square+Curve1, a tube,
+        // so the cylinder case is Circle + Straight, which is what the fast path cooks.
+        AppendShape(text, "box-static", false, PrimitiveBaseShape.CreateBox(), Om(1f, 1f, 1f), "box");
+        AppendShape(text, "box-dynamic", true, PrimitiveBaseShape.CreateBox(), Om(1f, 1f, 1f), "box");
+        AppendShape(text, "sphere-static", false, PrimitiveBaseShape.CreateSphere(), Om(2f, 2f, 2f), "sphere");
+        AppendShape(text, "sphere-dynamic", true, PrimitiveBaseShape.CreateSphere(), Om(2f, 2f, 2f), "sphere");
+        AppendShape(text, "cylinder-static", false, CircleStraight(), Om(1f, 1f, 2f), "cylinder");
+        AppendShape(text, "cylinder-dynamic", true, CircleStraight(), Om(1f, 1f, 2f), "cylinder");
+        AppendShape(text, "ellipsoid-static", false, PrimitiveBaseShape.CreateSphere(), Om(1f, 2f, 3f), "bbox(fallback)");
+        AppendShape(text, "ellipsoid-dynamic", true, PrimitiveBaseShape.CreateSphere(), Om(1f, 2f, 3f), "bbox(fallback)");
+        return text.ToString();
+    }
+
+    static PrimitiveBaseShape CircleStraight()
+    {
+        PrimitiveBaseShape shape = PrimitiveBaseShape.CreateBox();
+        shape.ProfileShape = ProfileShape.Circle;
+        shape.PathCurve = (byte)Extrusion.Straight;
+        return shape;
+    }
+
+    static OpenMetaverse.Vector3 Om(float x, float y, float z) => new OpenMetaverse.Vector3(x, y, z);
+
+    static string StockAssetPath(string directory)
+    {
+        DirectoryInfo parent = Directory.GetParent(directory)
+            ?? throw new InvalidOperationException("fixture directory has no parent");
+        return Path.Combine(parent.FullName, "jolt-record", "drop", "assets.txt");
+    }
+
+    static string LineValue(string text, string key)
+    {
+        string prefix = key + " ";
+        foreach (string raw in text.Split('\n'))
+        {
+            string line = raw.TrimEnd('\r');
+            if (line.StartsWith(prefix, StringComparison.Ordinal))
+                return line.Substring(prefix.Length);
+        }
+        throw new InvalidOperationException("stock fixture missing " + key);
+    }
+
+    static void AppendShape(StringBuilder text, string name, bool physical, PrimitiveBaseShape shape,
+        OpenMetaverse.Vector3 size, string expectKind)
+    {
+        var backend = new RecordingBackend { RecordAnalytic = true };
+        var scene = new JoltScene();
+        MethodInfo method = CookMethod();
+        object[] args =
+        {
+            backend, shape, size, physical,
+            default(Quaternion), null, 0, 0d,
+            null, false, false,
+        };
+        ShapeId cooked;
+        try
+        {
+            cooked = (ShapeId)method.Invoke(scene, args);
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw new InvalidOperationException(name + " CookPrimShape threw: " + (exception.InnerException ?? exception).Message, exception);
+        }
+        var axis = (Quaternion)args[4];
+        string kind = (string)args[5];
+        int hulls = (int)args[6];
+        double massVolume = (double)args[7];
+        if (kind != expectKind)
+            throw new InvalidOperationException(name + " kind " + kind + " != " + expectKind);
+        if (!cooked.IsValid || cooked.Value != 1)
+            throw new InvalidOperationException(name + " shape id is " + cooked.Value);
+        int calls = backend.BoxCalls + backend.SphereCalls + backend.CylinderCalls;
+        if (calls != 1)
+            throw new InvalidOperationException(name + " made " + calls + " analytic constructors");
+        bool analytic = kind == "box" || kind == "sphere" || kind == "cylinder";
+        if (kind == "box" && backend.BoxCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a box");
+        if (kind == "sphere" && backend.SphereCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a sphere");
+        if (kind == "cylinder" && backend.CylinderCalls != 1)
+            throw new InvalidOperationException(name + " did not construct a cylinder");
+        if (!analytic && (backend.SphereCalls != 0 || backend.CylinderCalls != 0 || backend.BoxCalls != 1))
+            throw new InvalidOperationException(name + " rejected shape took an analytic constructor");
+
+        text.Append('\n');
+        text.Append("case ").Append(name).Append('\n');
+        text.Append("physical ").Append(physical ? "true" : "false").Append('\n');
+        text.Append("profile ").Append(((byte)shape.ProfileShape).ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("path ").Append(shape.PathCurve.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cuts ")
+            .Append(shape.ProfileBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.ProfileEnd.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.ProfileHollow.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTwist.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTwistBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathBegin.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathEnd.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTaperX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathTaperY.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathScaleX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathScaleY.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathShearX.ToString(CultureInfo.InvariantCulture)).Append(' ')
+            .Append(shape.PathShearY.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("size ").Append(FloatBits(size.X)).Append(' ').Append(FloatBits(size.Y)).Append(' ')
+            .Append(FloatBits(size.Z)).Append('\n');
+        text.Append("kind ").Append(kind).Append('\n');
+        text.Append("analytic ").Append(analytic ? "true" : "false").Append('\n');
+        text.Append("box_calls ").Append(backend.BoxCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("sphere_calls ").Append(backend.SphereCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("cylinder_calls ").Append(backend.CylinderCalls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("half ");
+        if (backend.BoxCalls == 1)
+            text.Append(FloatBits(backend.BoxHalf.X)).Append(' ').Append(FloatBits(backend.BoxHalf.Y)).Append(' ')
+                .Append(FloatBits(backend.BoxHalf.Z)).Append('\n');
+        else
+            text.Append("none\n");
+        text.Append("radius ").Append(backend.SphereCalls == 1 ? FloatBits(backend.SphereRadius) : "none").Append('\n');
+        text.Append("cylinder_half ").Append(backend.CylinderCalls == 1 ? FloatBits(backend.CylinderHalfHeight) : "none").Append('\n');
+        text.Append("cylinder_radius ").Append(backend.CylinderCalls == 1 ? FloatBits(backend.CylinderRadius) : "none").Append('\n');
+        text.Append("axis ").Append(FloatBits(axis.X)).Append(' ').Append(FloatBits(axis.Y)).Append(' ')
+            .Append(FloatBits(axis.Z)).Append(' ').Append(FloatBits(axis.W)).Append('\n');
+        text.Append("hulls ").Append(hulls.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("mass_volume ").Append(DoubleBits(massVolume)).Append('\n');
+        text.Append("shape ").Append(cooked.Value.ToString(CultureInfo.InvariantCulture)).Append('\n');
+    }
+
+    static MethodInfo CookMethod()
+    {
+        MethodInfo found = null;
+        foreach (MethodInfo method in typeof(JoltScene).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic))
+        {
+            if (method.Name != "CookPrimShape" || method.GetParameters().Length != 11)
+                continue;
+            if (found != null)
+                throw new InvalidOperationException("more than one CookPrimShape with 11 parameters");
+            found = method;
+        }
+        if (found == null)
+            throw new InvalidOperationException("CookPrimShape was not found");
+        return found;
+    }
+
 }

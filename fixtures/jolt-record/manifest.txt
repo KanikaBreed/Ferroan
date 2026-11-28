@@ -4,3 +4,4 @@ baseline det-886e0886-linux-x64
 scenario drop
 
 drop
+analytic-envelope

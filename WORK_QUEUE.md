@@ -346,7 +346,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q184 | P3.64: Stock stepped frame reads the box pose | READY after Q115 and Q183 |
 | Q116 | P3.3b: Dilation window and stats transform | DONE (this PR) |
 | Q194 | P3.74: Wired terse dilation field | READY after Q116 and Q115 |
-| Q117 | P3.4: Analytic box, sphere and cylinder | READY after Q100a and Q177 and Q105 |
+| Q117 | P3.4: Analytic box, sphere and cylinder | DONE (this PR) |
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
 | Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
 | Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
