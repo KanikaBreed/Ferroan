@@ -32,3 +32,7 @@ Scale is `(0.45, 0.6, 1.9)`. The packed look is `RotateToLookAt` of
 
 The sender id and the object full id are the harness account
 `4f0c8d2e-7a51-4b8e-9c3d-2e6f1a0b7c55`, which is already named in the harness.
+
+## Viewer bake read
+
+`service.json` is a separate Pin9 SQLite capture of `GET /texture/<agent>/<channel>/<uuid>`. Regenerate it with `cargo xtask appearance service-generate`. `viewer_bake_replies_and_rows_match_pin9` replays it. The reply field is base64. An empty body is an empty string. `seed.rows` and `indexAfter` are the avatar index before and after the requests. They are the same list: the route does not write that index. `assetsAfter` is what the asset service still returns once the missing-asset step has removed the hit. The queue row does not name MySQL or PostgreSQL, so this capture is SQLite.

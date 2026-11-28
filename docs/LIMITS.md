@@ -9,7 +9,7 @@ The recent-events ring keeps 1000 warning, error and limit lines per process. A 
 | id | value | where | soft or hard | configurable | C# at the pin |
 | --- | --- | --- | --- | --- | --- |
 | `http.post-body` | 1 MiB | `crates/ferroan-region/src/simulation.rs`, `crates/ferroan-region/src/simulation_client.rs` | hard | no | No matching cap. The region answers 413 on an oversized inbound body. The outbound connector refuses oversized JSON before compression or delivery. |
-| `http.asset-body` | 50,000,000 bytes | `crates/ferroan-services/src/asset/http.rs` | hard | no | `ServerUtils.cs` sets `XmlReaderSettings.MaxCharactersInDocument` to 50,000,000. |
+| `http.asset-body` | 50,000,000 bytes | `crates/ferroan-services/src/asset/http.rs` and the viewer bake read | hard | no | `ServerUtils.cs` sets `XmlReaderSettings.MaxCharactersInDocument` to 50,000,000. A stored bake larger than this is refused and the bake read answers 404. |
 | `http.xml-chars` | 50,000,000 characters | `crates/ferroan-http/src/xml.rs`, asset parser | hard | no | Same `MaxCharactersInDocument`. The asset parser measures bytes. |
 | `http.xml-depth` | 64 | `crates/ferroan-http/src/xml.rs`, `crates/ferroan-services/src/auth/authorize.rs` | hard | no | Tranquillity's reader has no depth cap. |
 | `bakes.bytes` | 78,905,344 bytes | `crates/ferroan-services/src/bakes.rs` | hard | no | Pin8's HTTP request parser checks `64 * 1024 * 1204` before dispatch and returns 400 for a larger declared body. Ferroan also bounds streamed uploads and disk reads. A refused upload leaves the previous file intact. An oversized file on disk gives 500. Replacements are published by rename (D98). |

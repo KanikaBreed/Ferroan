@@ -106,6 +106,29 @@ impl AssetHttp {
         load_configured_assets(&store, config).await?;
         Ok(Self::new(store, options))
     }
+
+    /// Stock `AssetService` opened on `section`, as
+    /// `AssetServiceBase(IConfigSource, string)` does.
+    ///
+    /// `StorageProvider` and `ConnectionString` come from that section, then
+    /// `[DatabaseService]`. This path does not run `DefaultAssetLoader`: a
+    /// bake store holds stored assets, not the default library. A connection
+    /// string on `[AppearanceService]` is not read here.
+    pub(crate) async fn open_stock_from(
+        config: &Config,
+        section: &str,
+    ) -> Result<Self, AssetError> {
+        let provider = nonempty(config, section, "StorageProvider")
+            .or_else(|| nonempty(config, "DatabaseService", "StorageProvider"))
+            .ok_or(AssetError::Config("No StorageProvider configured"))?;
+        let backend = asset_backend(provider)?;
+        let connection = nonempty(config, section, "ConnectionString")
+            .or_else(|| nonempty(config, "DatabaseService", "ConnectionString"))
+            .ok_or(AssetError::Config("No ConnectionString configured"))?;
+        let pool = Pool::open(backend, connection, &["AssetStore"]).await?;
+        let store = AssetStore::new(pool)?;
+        Ok(Self::new(store, AssetOptions::default()))
+    }
 }
 
 async fn open_xasset(
