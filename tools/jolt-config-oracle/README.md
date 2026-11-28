@@ -76,8 +76,9 @@ recorded by bits, and a 5e6 m footprint hits the 0.05 m half-height floor.
 The replay compares NaN as NaN because the default NaN's bits are
 platform-defined. Only `fixtures/jolt-file/character/result.txt` has NaN
 results (capsule rows 21-24, size row 50, buoyancy row 57). The heightfield
-fixture stores a NaN payload as hex bits. The note-dilation, config and drop
-replays stay bit-exact.
+fixture stores a NaN payload as hex bits.
+`fixtures/jolt-file/gravity/matrix.txt` records a passed NaN payload by
+bits. The note-dilation, config and drop replays stay bit-exact.
 The default mass bits match `DefaultAvatarMass`. Walk and run leave Z
 unscaled. Flight ignores always-run, for both signs of Z. The latch clears
 when vertical velocity is above 0.5 or the avatar is not supported.
@@ -89,6 +90,18 @@ for the bind. The matched-native trace waits for the upgrade. The gravity
 scale inside `StepCharacter` is not invoked; that multiply is P3.13b.
 Default speed-factor and jump bits are the same bits as
 `fixtures/jolt-record/drop/config.txt`. The capture still does not load joltc.
+
+The same file command calls `HalcyonBasicForces.LegacyBuoyancy`
+(`HalcyonBasicForces.cs` 103-104; cite lines 1-33) and `JoltPrim.Buoyancy`
+and `VehicleType` (`JoltPrim.cs` 1784-1819, 2303-2332, 2755-2767 and
+2794-2810). The prim is uninitialised, so its constructor does not cook a
+shape. A recording backend stores `SetBodyGravityFactor` and ignores the
+vehicle body's friction, damping, sleep, CCD and step-provider calls. The
+0.977 boundary, a Second Life value that stays 0.98, the multiplier and its
+clamp, a rejected non-finite value, a child write on the root and a vehicle
+factor of 0 restored to the script factor are in
+`fixtures/jolt-file/gravity/matrix.txt`. Water is not used. The Rust replay
+compares every write by bits. Ordinary tests do not run this command.
 
 No native code is started. The fixture records the same proof at
 `before_construct`, after construction and after the calls:

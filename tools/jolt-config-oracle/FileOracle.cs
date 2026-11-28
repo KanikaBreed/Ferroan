@@ -7,14 +7,17 @@
 // SimStatsReporter's FPS transform, then calls CookPrimShape
 // (JoltScene.cs 1229-1259) and records the analytic constructor it chooses,
 // then calls public SetTerrain (JoltScene.cs 3552-3613) through a recording
-// backend and stores the padded field that method keeps, before the final
-// native proof. The physics scene is constructed and never initialised, so
+// backend and stores the padded field that method keeps, then calls
+// JoltPrim.Buoyancy, VehicleType and HalcyonBasicForces.LegacyBuoyancy and
+// records the gravity factor, before the final native proof. The physics
+// scene is constructed and never initialised, so
 // JoltNative stays unloaded and Foundation.Init is not called.
 
 using System.Diagnostics;
 using System.Globalization;
 using System.Numerics;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using OpenSim.Framework;
@@ -70,7 +73,8 @@ static class FileOracle
             || first.CharacterCalls != second.CharacterCalls || first.CharacterResult != second.CharacterResult
             || first.Stats != second.Stats
             || first.Analytic != second.Analytic
-            || first.Heightfield != second.Heightfield)
+            || first.Heightfield != second.Heightfield
+            || first.Gravity != second.Gravity)
             throw new InvalidOperationException(CaseId + " differed between two reads");
         RejectMachinePaths(first.Calls, reference);
         RejectMachinePaths(first.Result, reference);
@@ -80,6 +84,7 @@ static class FileOracle
         RejectMachinePaths(first.Stats, reference);
         RejectMachinePaths(first.Analytic, reference);
         RejectMachinePaths(first.Heightfield, reference);
+        RejectMachinePaths(first.Gravity, reference);
 
         var manifest = new StringBuilder();
         manifest.Append(FormatLine).Append('\n');
@@ -93,6 +98,7 @@ static class FileOracle
         manifest.Append("stats\n");
         manifest.Append("analytic\n");
         manifest.Append("heightfield\n");
+        manifest.Append("gravity\n");
 
         string caseDir = Path.Combine(directory, CaseId);
         Directory.CreateDirectory(caseDir);
@@ -112,6 +118,9 @@ static class FileOracle
         string heightDir = Path.Combine(directory, "heightfield");
         Directory.CreateDirectory(heightDir);
         File.WriteAllText(Path.Combine(heightDir, "field.txt"), first.Heightfield);
+        string gravityDir = Path.Combine(directory, "gravity");
+        Directory.CreateDirectory(gravityDir);
+        File.WriteAllText(Path.Combine(gravityDir, "matrix.txt"), first.Gravity);
         File.WriteAllText(Path.Combine(directory, "manifest.txt"), manifest.ToString());
     }
 
@@ -156,10 +165,11 @@ static class FileOracle
         string stats = StatsText();
         string analytic = AnalyticText(directory);
         string heightfield = HeightfieldText(directory);
+        string gravity = GravityText();
         native.Append(NativeProof("after_calls"));
         native.Append("witness s_foundationRefCount stays 0, so JoltPhysicsBackend.Initialize did not call Foundation.Init\n");
         native.Append("witness joltc is not mapped, so Foundation.Init did not call JPH_Init\n");
-        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic, heightfield);
+        return new Captured(calls.ToString(), result.ToString(), native.ToString(), character.Calls, character.Result, stats, analytic, heightfield, gravity);
     }
 
     const double HealthyFrameMs = 1000.0;
@@ -644,7 +654,7 @@ static class FileOracle
         internal static Call OneTick(float timeStep) => new Call(timeStep, "1");
     }
 
-    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic, string Heightfield);
+    readonly record struct Captured(string Calls, string Result, string Native, string CharacterCalls, string CharacterResult, string Stats, string Analytic, string Heightfield, string Gravity);
 
     static string AnalyticText(string directory)
     {
@@ -1109,4 +1119,342 @@ static class FileOracle
         for (int i = 0; i < values.Length; i++)
             text.Append(FloatBits(values[i])).Append('\n');
     }
+
+    static string GravityText()
+    {
+        var scene = new JoltScene();
+        var text = new StringBuilder();
+        text.Append(FormatLine).Append('\n');
+        text.Append("method Buoyancy\n");
+        text.Append("source JoltPrim.cs 1784-1819\n");
+        text.Append("source JoltPrim.cs 2303-2332\n");
+        text.Append("source JoltPrim.cs 2755-2767\n");
+        text.Append("source JoltPrim.cs 2794-2810\n");
+        text.Append("source HalcyonBasicForces.cs 103-104\n");
+        text.Append("header HalcyonBasicForces.cs 1-33\n");
+        text.Append("water not_used\n");
+        text.Append("native not_called\n");
+        text.Append("max_linear ").Append(FloatBits(SceneFloat(scene, "BodyMaxLinearSpeed"))).Append('\n');
+        text.Append("step_rate ").Append(FloatBits(ConfigFloat("MaxPhysicsStepRate"))).Append('\n');
+        object gravity = SceneProperty(scene, "DefaultGravity");
+        text.Append("gravity_z ").Append(FloatBits(VectorZ(gravity))).Append('\n');
+        text.Append("gravity_len ").Append(FloatBits(VectorLength(gravity))).Append('\n');
+        float threshold = 0.977f;
+        text.Append("threshold ").Append(FloatBits(threshold)).Append('\n');
+        float huge = 1e10f;
+        text.Append("clamp_modifier ").Append(FloatBits(huge)).Append('\n');
+        text.Append("clamp_max ").Append(FloatBits(ScriptFactor(Prim(scene, new RecordingBackend { RecordGravity = true }, 1, true, huge)))).Append('\n');
+        text.Append("clamp_min ").Append(FloatBits(ScriptFactor(Prim(scene, new RecordingBackend { RecordGravity = true }, 1, true, -huge)))).Append('\n');
+
+        text.Append("function\n");
+        AppendFunction(text, 0f);
+        AppendFunction(text, BitConverter.Int32BitsToSingle(unchecked((int)0x80000000)));
+        AppendFunction(text, -1f);
+        AppendFunction(text, 0.976f);
+        AppendFunction(text, Below(threshold));
+        AppendFunction(text, threshold);
+        AppendFunction(text, 0.98f);
+        AppendFunction(text, Below(1f));
+        AppendFunction(text, 1f);
+        AppendFunction(text, 1.5f);
+        AppendFunction(text, BitConverter.Int32BitsToSingle(unchecked((int)0x7FC00001)));
+        AppendFunction(text, float.PositiveInfinity);
+        AppendFunction(text, float.NegativeInfinity);
+
+        float below = Below(threshold);
+        float underOne = Below(1f);
+        RunCase(text, "boundary", "InWorldz", true, 1, true, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0f),
+            GravityStep.Buoyancy(BitConverter.Int32BitsToSingle(unchecked((int)0x80000000))),
+            GravityStep.Buoyancy(0.5f),
+            GravityStep.Buoyancy(0.5f),
+            GravityStep.Buoyancy(0f),
+            GravityStep.Buoyancy(0.976f),
+            GravityStep.Buoyancy(below),
+            GravityStep.Buoyancy(threshold),
+            GravityStep.Buoyancy(0.98f),
+            GravityStep.Buoyancy(underOne),
+            GravityStep.Buoyancy(1f),
+            GravityStep.Buoyancy(1.5f),
+            GravityStep.Buoyancy(BitConverter.Int32BitsToSingle(unchecked((int)0x7FC00001))),
+            GravityStep.Buoyancy(float.PositiveInfinity),
+            GravityStep.Buoyancy(float.NegativeInfinity),
+        });
+        RunCase(text, "second-life", "SecondLife", true, 1, true, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.98f),
+            GravityStep.Buoyancy(threshold),
+            GravityStep.Buoyancy(1f),
+        });
+        RunCase(text, "multiplier", "InWorldz", true, 1, true, 2f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+        });
+        RunCase(text, "clamp-high", "InWorldz", true, 1, true, huge, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+        });
+        RunCase(text, "clamp-low", "InWorldz", true, 1, true, -huge, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+        });
+        RunCase(text, "not-physical", "InWorldz", false, 1, true, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+        });
+        RunCase(text, "invalid-body", "InWorldz", true, 0, false, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+        });
+        RunCase(text, "child", "InWorldz", true, 1, true, 1f, 2, new GravityStep[]
+        {
+            GravityStep.Child(0.25f),
+            GravityStep.Child(BitConverter.Int32BitsToSingle(unchecked((int)0x7FC00001))),
+        });
+        int car = VehicleCode("TYPE_CAR");
+        int none = VehicleCode("TYPE_NONE");
+        RunCase(text, "vehicle", "InWorldz", true, 1, true, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Type(car),
+            GravityStep.Buoyancy(0.5f),
+            GravityStep.Type(none),
+        });
+        RunCase(text, "child-vehicle", "InWorldz", true, 1, true, 1f, 2, new GravityStep[]
+        {
+            GravityStep.Type(car),
+            GravityStep.Child(0.25f),
+            GravityStep.Type(none),
+        });
+        // 7 is not a Vehicle type. ProcessTypeChangeCore maps it to None.
+        RunCase(text, "unknown-type", "InWorldz", true, 1, true, 1f, 0, new GravityStep[]
+        {
+            GravityStep.Buoyancy(0.5f),
+            GravityStep.Type(car),
+            GravityStep.Type(7),
+        });
+        return text.ToString();
+    }
+
+    static void AppendFunction(StringBuilder text, float value)
+    {
+        text.Append("in ").Append(FloatBits(value)).Append(" out ").Append(FloatBits(Legacy(value))).Append('\n');
+    }
+
+    static void RunCase(StringBuilder text, string name, string behaviour, bool physical, uint body, bool valid, float modifier, uint child, GravityStep[] steps)
+    {
+        var scene = new JoltScene();
+        SetBehaviour(scene, behaviour);
+        if (BehaviourName(scene) != behaviour)
+            throw new InvalidOperationException(name + " behaviour did not stick");
+        var backend = new RecordingBackend { RecordGravity = true };
+        object root = Prim(scene, backend, body, physical, modifier);
+        object linked = null;
+        if (child != 0)
+        {
+            linked = Prim(scene, backend, child, physical, modifier);
+            SetField(linked, "_linkRoot", root);
+        }
+        text.Append("case ").Append(name).Append('\n');
+        text.Append("behaviour ").Append(behaviour).Append('\n');
+        text.Append("physical ").Append(physical ? "true" : "false").Append('\n');
+        text.Append("body ").Append(body.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("valid ").Append(valid ? "true" : "false").Append('\n');
+        text.Append("modifier ").Append(FloatBits(modifier)).Append('\n');
+        text.Append("child ").Append(child.ToString(CultureInfo.InvariantCulture)).Append('\n');
+        text.Append("initial ").Append(FloatBits(FloatField(root, "_buoyancy"))).Append('\n');
+        foreach (GravityStep step in steps)
+        {
+            backend.GravityWrites.Clear();
+            backend.Activates = 0;
+            if (step.Kind == "child")
+            {
+                if (linked == null)
+                    throw new InvalidOperationException(name + " has no child");
+                SetProp(linked, "Buoyancy", step.Value);
+                text.Append("action child ").Append(FloatBits(step.Value)).Append('\n');
+                text.Append("root_stored ").Append(FloatBits(FloatField(root, "_buoyancy"))).Append('\n');
+                text.Append("child_stored ").Append(FloatBits(FloatField(linked, "_buoyancy"))).Append('\n');
+                text.Append("child_get ").Append(FloatBits((float)Prop(linked, "Buoyancy"))).Append('\n');
+            }
+            else if (step.Kind == "type")
+            {
+                SetProp(root, "VehicleType", step.Code);
+                text.Append("action type ").Append(step.Code.ToString(CultureInfo.InvariantCulture)).Append('\n');
+                text.Append("stored ").Append(FloatBits(FloatField(root, "_buoyancy"))).Append('\n');
+                text.Append("get ").Append(FloatBits((float)Prop(root, "Buoyancy"))).Append('\n');
+                text.Append("type_get ").Append(Convert.ToInt32(Prop(root, "VehicleType"), CultureInfo.InvariantCulture).ToString(CultureInfo.InvariantCulture)).Append('\n');
+            }
+            else
+            {
+                SetProp(root, "Buoyancy", step.Value);
+                text.Append("action buoyancy ").Append(FloatBits(step.Value)).Append('\n');
+                text.Append("stored ").Append(FloatBits(FloatField(root, "_buoyancy"))).Append('\n');
+                text.Append("get ").Append(FloatBits((float)Prop(root, "Buoyancy"))).Append('\n');
+            }
+            bool active = Convert.ToInt32(Prop(root, "VehicleType"), CultureInfo.InvariantCulture) != 0;
+            text.Append("active ").Append(active ? "true" : "false").Append('\n');
+            text.Append("activates ").Append(backend.Activates.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            text.Append("writes ").Append(backend.GravityWrites.Count.ToString(CultureInfo.InvariantCulture)).Append('\n');
+            foreach (RecordingBackend.GravityWrite write in backend.GravityWrites)
+                text.Append("write ").Append(write.Body.ToString(CultureInfo.InvariantCulture)).Append(' ').Append(FloatBits(write.Factor)).Append('\n');
+        }
+    }
+
+    readonly struct GravityStep
+    {
+        internal readonly string Kind;
+        internal readonly float Value;
+        internal readonly int Code;
+
+        GravityStep(string kind, float value, int code)
+        {
+            Kind = kind;
+            Value = value;
+            Code = code;
+        }
+
+        internal static GravityStep Buoyancy(float value) => new GravityStep("buoyancy", value, 0);
+        internal static GravityStep Child(float value) => new GravityStep("child", value, 0);
+        internal static GravityStep Type(int code) => new GravityStep("type", 0f, code);
+    }
+
+    static object Prim(JoltScene scene, RecordingBackend backend, uint body, bool physical, float modifier)
+    {
+        Type type = typeof(JoltScene).Assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.JoltPrim")
+            ?? throw new InvalidOperationException("JoltPrim was not in the Jolt assembly");
+        object prim = RuntimeHelpers.GetUninitializedObject(type);
+        SetField(prim, "_module", scene);
+        SetField(prim, "_backend", backend);
+        SetField(prim, "_body", new BodyId(body));
+        SetField(prim, "_isPhysical", physical);
+        SetField(prim, "_gravityModifier", modifier);
+        SetField(prim, "_vehicleStepGate", new object());
+        return prim;
+    }
+
+    static void SetBehaviour(JoltScene scene, string name)
+    {
+        object config = Field(typeof(JoltScene), "_joltConfig").GetValue(scene)
+            ?? throw new InvalidOperationException("JoltScene has no config");
+        FieldInfo behaviour = Field(config.GetType(), "BasicForcesBehaviour");
+        behaviour.SetValue(config, Enum.Parse(behaviour.FieldType, name));
+    }
+
+    static string BehaviourName(JoltScene scene)
+    {
+        object value = SceneProperty(scene, "BasicForcesBehaviour");
+        return value.ToString() ?? throw new InvalidOperationException("behaviour has no name");
+    }
+
+    static float SceneFloat(JoltScene scene, string name)
+    {
+        return (float)SceneProperty(scene, name);
+    }
+
+    static object SceneProperty(JoltScene scene, string name)
+    {
+        return Prop(scene, name);
+    }
+
+    static float ConfigFloat(string name)
+    {
+        Type config = typeof(JoltScene).Assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.JoltConfig")
+            ?? throw new InvalidOperationException("JoltConfig was not in the Jolt assembly");
+        FieldInfo field = config.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("missing " + name);
+        return (float)field.GetValue(null);
+    }
+
+    static float VectorZ(object vector)
+    {
+        FieldInfo field = vector.GetType().GetField("Z")
+            ?? throw new InvalidOperationException("Vector3.Z was not found");
+        return (float)field.GetValue(vector);
+    }
+
+    static float VectorLength(object vector)
+    {
+        MethodInfo method = vector.GetType().GetMethod("Length", Type.EmptyTypes)
+            ?? throw new InvalidOperationException("Vector3.Length() was not found");
+        return (float)method.Invoke(vector, null);
+    }
+
+    static float ScriptFactor(object prim)
+    {
+        return (float)Prop(prim, "ScriptGravityFactor");
+    }
+
+    static float Legacy(float value)
+    {
+        Type type = typeof(JoltScene).Assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.HalcyonBasicForces")
+            ?? throw new InvalidOperationException("HalcyonBasicForces was not loaded");
+        MethodInfo method = type.GetMethod("LegacyBuoyancy", BindingFlags.Public | BindingFlags.Static)
+            ?? throw new InvalidOperationException("LegacyBuoyancy was not found");
+        try
+        {
+            return (float)method.Invoke(null, new object[] { value });
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw exception.InnerException ?? exception;
+        }
+    }
+
+    static int VehicleCode(string name)
+    {
+        Type type = null;
+        foreach (Assembly assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            type = assembly.GetType("OpenSim.Region.PhysicsModules.Jolt.Vehicles.Vehicle");
+            if (type != null)
+                break;
+        }
+        if (type == null)
+            throw new InvalidOperationException("Vehicle enum was not loaded");
+        return (int)Enum.Parse(type, name);
+    }
+
+    static float Below(float value)
+    {
+        return BitConverter.Int32BitsToSingle(BitConverter.SingleToInt32Bits(value) - 1);
+    }
+
+    static float FloatField(object target, string name)
+    {
+        return (float)Field(target.GetType(), name).GetValue(target);
+    }
+
+    static void SetField(object target, string name, object value)
+    {
+        Field(target.GetType(), name).SetValue(target, value);
+    }
+
+    static FieldInfo Field(Type type, string name)
+    {
+        return type.GetField(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static)
+            ?? throw new InvalidOperationException("missing field " + name);
+    }
+
+    static object Prop(object target, string name)
+    {
+        PropertyInfo property = target.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing property " + name);
+        return property.GetValue(target);
+    }
+
+    static void SetProp(object target, string name, object value)
+    {
+        PropertyInfo property = target.GetType().GetProperty(name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("missing property " + name);
+        try
+        {
+            property.SetValue(target, value);
+        }
+        catch (TargetInvocationException exception)
+        {
+            throw exception.InnerException ?? exception;
+        }
+    }
+
 }

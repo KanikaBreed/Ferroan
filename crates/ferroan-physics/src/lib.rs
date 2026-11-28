@@ -15,8 +15,10 @@
 //! stays 20. P3.4 chooses an analytic box, sphere or cylinder. The dimensions
 //! are the ones `CookPrimShape` passes. A non-uniform sphere is not analytic.
 //! Mass, a ray and free flight before contact use that shape.
-//! Unsafe is allowed in `native`, and in `ferroan-scripting` once that crate
-//! exists. The workspace forbids it everywhere else.
+//! P3.6 replays the buoyancy boundary, the gravity factor, the vehicle
+//! override and the child forward. Unsafe is allowed in `native`, and in
+//! `ferroan-scripting` once that crate exists. The workspace forbids it
+//! everywhere else.
 
 #![deny(unsafe_code)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
@@ -24,6 +26,7 @@
 mod analytic;
 mod character;
 mod dilation;
+mod gravity;
 mod jolt_config;
 #[allow(unsafe_code)]
 mod native;
@@ -46,6 +49,10 @@ pub use character::{
 pub use dilation::{
     DILATION_WINDOW, DilationWindow, PHYSICS_STEP_MS, StatsInputs, StatsReport, accumulate_frame,
     report_stats, statistics_fps_factor,
+};
+pub use gravity::{
+    GravityActor, GravityScale, GravityWrite, legacy_buoyancy, script_gravity_factor, set_buoyancy,
+    set_linked_buoyancy, set_vehicle_type,
 };
 pub use jolt_config::{
     BasicForces, JoltConfig, JoltLoad, MaterialCombine, VehicleBehaviour, VehiclePresetSet, load,

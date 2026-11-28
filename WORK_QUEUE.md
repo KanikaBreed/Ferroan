@@ -350,7 +350,7 @@ Items that name a GitHub issue are open to outside contributors too, but the cod
 | Q118 | P3.5: Create-time body flags | READY after Q117 |
 | Q119 | P3.18a: Actor-set collision replay | READY after Q100a |
 | Q186 | P3.66: Engine drop, box against terrain and box against box | READY after Q119, Q118 and Q183 |
-| Q120 | P3.6: Gravity command matrix | READY after Q100a |
+| Q120 | P3.6: Gravity command matrix | DONE (this PR) |
 | Q185 | P3.65: Three falling boxes | READY after Q120 and Q118 |
 | Q121 | P3.40: Live physical, phantom and volume-detect toggle | READY after Q118 |
 | Q122 | P3.41: Resize and reshape, uncut | READY after Q117 and Q118 |

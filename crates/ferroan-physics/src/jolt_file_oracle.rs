@@ -8,7 +8,8 @@
 //! `JoltCharacter` compile; `character_oracle` replays that fixture. The
 //! `stats` line is the reporter transform. It names the analytic cook;
 //! `analytic` replays that fixture. The `heightfield` line is the padded
-//! field `SetTerrain` stores; `pad_heightfield` replays it.
+//! field `SetTerrain` stores; `pad_heightfield` replays it. It names the
+//! gravity matrix; `gravity` replays that fixture.
 
 use std::path::PathBuf;
 
@@ -51,6 +52,7 @@ fn note_dilation_fixture_keeps_the_pinned_structure() {
     assert!(manifest.lines().any(|line| line == "stats"));
     assert!(manifest.lines().any(|line| line == "analytic"));
     assert!(manifest.lines().any(|line| line == "heightfield"));
+    assert!(manifest.lines().any(|line| line == "gravity"));
 
     let calls = std::fs::read_to_string(root.join("note-dilation/calls.txt")).expect("calls");
     assert_eq!(calls, expected_calls());
