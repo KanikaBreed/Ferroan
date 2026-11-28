@@ -133,3 +133,4 @@ pub const YENGINE_HEADER_STRING: &str = "yengine.header-string";
 pub const REGEX_PATTERN_CHARS: &str = "regex.pattern-chars";
 pub const REGEX_CLASS_DEPTH: &str = "regex.class-depth";
 pub const FORMAT_CHARS: &str = "format.chars";
+pub const REGEX_TREE_DEPTH: &str = "regex.tree-depth";

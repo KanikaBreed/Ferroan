@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use crate::names::{is_boundary_word, known_property};
-use crate::{CLASS_DEPTH_LIMIT, Node, ParseError};
+use crate::{CLASS_DEPTH_LIMIT, Node, ParseError, TREE_DEPTH_LIMIT};
 
 const IGNORE_CASE: u32 = 1;
 const MULTILINE: u32 = 2;
@@ -75,27 +75,14 @@ impl Level {
     }
 }
 
-fn reduce_concat(parts: Vec<Node>) -> Node {
+fn keep_parts(parts: Vec<Node>) -> Vec<Node> {
     let mut kept = Vec::with_capacity(parts.len());
     for node in parts {
         if !matches!(node, Node::Empty) {
             kept.push(node);
         }
     }
-    join(kept, false)
-}
-
-fn reduce_alt(branches: Vec<Node>) -> Node {
-    join(branches, true)
-}
-
-fn join(mut nodes: Vec<Node>, alternate: bool) -> Node {
-    match nodes.len() {
-        0 => Node::Empty,
-        1 => nodes.pop().unwrap_or(Node::Empty),
-        _ if alternate => Node::Alternate(nodes),
-        _ => Node::Concat(nodes),
-    }
+    kept
 }
 
 struct Level {
@@ -220,6 +207,56 @@ impl<'a> Parser<'a> {
         Err(ParseError::Limit {
             id: ferroan_diag::REGEX_CLASS_DEPTH,
         })
+    }
+
+    /// Refuse a node whose path would pass [`TREE_DEPTH_LIMIT`]. `depth` is
+    /// the depth the node would have, and the node is not built on failure.
+    fn limit_tree(&self, depth: u32) -> Result<(), ParseError> {
+        if depth <= TREE_DEPTH_LIMIT {
+            return Ok(());
+        }
+        ferroan_diag::refuse(
+            ferroan_diag::REGEX_TREE_DEPTH,
+            ferroan_diag::Kind::Hard,
+            u64::from(TREE_DEPTH_LIMIT),
+            u64::from(depth),
+            "regex.parse",
+        );
+        Err(ParseError::Limit {
+            id: ferroan_diag::REGEX_TREE_DEPTH,
+        })
+    }
+
+    fn wrap(&self, child: Node) -> Result<Box<Node>, ParseError> {
+        self.limit_tree(child.depth().saturating_add(1))?;
+        Ok(Box::new(child))
+    }
+
+    fn reduce_concat(&self, parts: Vec<Node>) -> Result<Node, ParseError> {
+        self.join_nodes(keep_parts(parts), false)
+    }
+
+    fn reduce_alt(&self, branches: Vec<Node>) -> Result<Node, ParseError> {
+        self.join_nodes(branches, true)
+    }
+
+    fn join_nodes(&self, mut nodes: Vec<Node>, alternate: bool) -> Result<Node, ParseError> {
+        match nodes.len() {
+            0 => Ok(Node::Empty),
+            1 => Ok(nodes.pop().unwrap_or(Node::Empty)),
+            _ => {
+                let mut deepest = 0;
+                for node in &nodes {
+                    deepest = deepest.max(node.depth());
+                }
+                self.limit_tree(deepest.saturating_add(1))?;
+                if alternate {
+                    Ok(Node::Alternate(nodes))
+                } else {
+                    Ok(Node::Concat(nodes))
+                }
+            }
+        }
     }
 
     fn at(&self, index: usize) -> Result<u16, ParseError> {
@@ -514,7 +551,7 @@ impl<'a> Parser<'a> {
                     continue;
                 }
                 ch if ch == u16::from(b'|') => {
-                    self.add_alternate();
+                    self.add_alternate()?;
                     continue;
                 }
                 ch if ch == u16::from(b')') => {
@@ -622,7 +659,7 @@ impl<'a> Parser<'a> {
                 min,
                 max,
                 lazy,
-                child: Box::new(child),
+                child: self.wrap(child)?,
             }
         };
         self.current.parts.push(node);
@@ -666,14 +703,15 @@ impl<'a> Parser<'a> {
         }
     }
 
-    fn add_alternate(&mut self) {
+    fn add_alternate(&mut self) -> Result<(), ParseError> {
         let parts = std::mem::take(&mut self.current.parts);
-        self.current.branches.push(reduce_concat(parts));
+        self.current.branches.push(self.reduce_concat(parts)?);
         if self.current.kind == Kind::ExpressionConditional
             || self.current.kind == Kind::BackreferenceConditional
         {
             self.current.children += 1;
         }
+        Ok(())
     }
 
     fn finish_group(&mut self) -> Result<(), ParseError> {
@@ -687,12 +725,12 @@ impl<'a> Parser<'a> {
                 return Err(self.fail("Too many | in (?()|)."));
             }
         }
-        self.unit = Some(self.assemble());
+        self.unit = Some(self.assemble()?);
         self.has_unit = true;
         Ok(())
     }
 
-    fn assemble(&mut self) -> Node {
+    fn assemble(&mut self) -> Result<Node, ParseError> {
         let kind = self.current.kind;
         let capture = self.current.capture;
         let transparent = self.current.transparent;
@@ -700,20 +738,21 @@ impl<'a> Parser<'a> {
         let mut branches = std::mem::take(&mut self.current.branches);
         let conditional =
             kind == Kind::ExpressionConditional || kind == Kind::BackreferenceConditional;
-        branches.push(reduce_concat(parts));
+        branches.push(self.reduce_concat(parts)?);
         if conditional {
-            return Node::Hold(Box::new(join(branches, false)));
+            let joined = self.join_nodes(branches, false)?;
+            return Ok(Node::Hold(self.wrap(joined)?));
         }
-        let body = reduce_alt(branches);
+        let body = self.reduce_alt(branches)?;
         if let Some(number) = capture {
-            Node::Capture {
+            Ok(Node::Capture {
                 number,
-                child: Box::new(body),
-            }
+                child: self.wrap(body)?,
+            })
         } else if transparent {
-            body
+            Ok(body)
         } else {
-            Node::Hold(Box::new(body))
+            Ok(Node::Hold(self.wrap(body)?))
         }
     }
 

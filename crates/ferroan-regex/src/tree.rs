@@ -15,10 +15,11 @@
 //! The shape follows `RegexParser.ScanRegex` through `AddToConcatenate`,
 //! `AddAlternate`, `AddGroup` and `RegexNode.MakeQuantifier` before `Reduce`
 //! merges character classes and before `FinalOptimize`. A capturing group's
-//! number is the slot `osMatchString` reads from `Match.Groups`. A literal, a
-//! class, an anchor, an escape or a backreference is one `Unit`. Lookaround
-//! and an atomic group stay a `Hold` so a quantifier wraps them; their match
-//! behaviour is a later row.
+//! number is the declared slot `Groups[number]` looks up. `osMatchString`
+//! walks `Match.Groups` by index, and a number that is not itself one of
+//! those indexes is never read. A literal, a class, an anchor, an escape or
+//! a backreference is one `Unit`. Lookaround and an atomic group stay a
+//! `Hold` so a quantifier wraps them; their match behaviour is a later row.
 
 use std::fmt;
 
@@ -40,13 +41,35 @@ pub enum Node {
         lazy: bool,
         child: Box<Node>,
     },
-    /// A capturing group. `number` is the slot `Match.Groups` uses.
+    /// A capturing group. `number` is the declared slot.
     Capture { number: i32, child: Box<Node> },
     /// Lookaround, an atomic group, or a conditional. The inside is kept.
     Hold(Box<Node>),
 }
 
 impl Node {
+    /// Nodes on the deepest path, counting this node.
+    ///
+    /// [`crate::parse`] refuses a tree whose depth would pass
+    /// [`crate::TREE_DEPTH_LIMIT`], so a tree it returns stays within the
+    /// bound this walk uses.
+    #[must_use]
+    pub fn depth(&self) -> u32 {
+        match self {
+            Node::Empty | Node::Unit => 1,
+            Node::Concat(children) | Node::Alternate(children) => {
+                let mut deepest = 0;
+                for child in children {
+                    deepest = deepest.max(child.depth());
+                }
+                deepest.saturating_add(1)
+            }
+            Node::Quant { child, .. } | Node::Capture { child, .. } | Node::Hold(child) => {
+                child.depth().saturating_add(1)
+            }
+        }
+    }
+
     /// One line, with no spaces, that compares trees in the group fixture.
     #[must_use]
     pub fn structure(&self) -> String {

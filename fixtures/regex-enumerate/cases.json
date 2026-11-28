@@ -1,0 +1,11 @@
+[
+  {"pattern": "(?<8>a)(b)", "subject": "ab"},
+  {"pattern": "(?<8>a)", "subject": "a"},
+  {"pattern": "(a)|(?<5>b)", "subject": "b"},
+  {"pattern": "(?<name>a)(b)", "subject": "ab"},
+  {"pattern": "(a)(b)", "subject": "ab"},
+  {"pattern": "(?<2>a)(?<3>b)", "subject": "ab"},
+  {"pattern": "(?<3>a)|(?<2>b)", "subject": "a"},
+  {"pattern": "(?:a)(b)", "subject": "ab"},
+  {"pattern": "a", "subject": "a"}
+]
