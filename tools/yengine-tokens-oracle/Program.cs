@@ -20,9 +20,17 @@ if (!runtime.Contains("10.0.14", StringComparison.Ordinal))
     return 1;
 }
 
-if (args.Length != 2)
+bool slots = false;
+string[] argv = args;
+if (argv.Length == 3 && argv[0] == "--slots")
+{
+    slots = true;
+    argv = new[] { argv[1], argv[2] };
+}
+if (argv.Length != 2)
 {
     Console.Error.WriteLine("usage: YEngineTokensOracle cases.json out-dir");
+    Console.Error.WriteLine("       YEngineTokensOracle --slots cases.json out-dir");
     return 2;
 }
 
@@ -35,8 +43,8 @@ if (!EnsureInstanceType())
     return 1;
 }
 
-JsonDocument doc = JsonDocument.Parse(File.ReadAllText(args[0]));
-string outDir = args[1];
+JsonDocument doc = JsonDocument.Parse(File.ReadAllText(argv[0]));
+string outDir = argv[1];
 Directory.CreateDirectory(outDir);
 string objDir = Path.Combine(outDir, "objects");
 Directory.CreateDirectory(objDir);
@@ -112,7 +120,10 @@ foreach (JsonElement item in doc.RootElement.GetProperty("compile").EnumerateArr
         continue;
     }
     File.WriteAllBytes(Path.Combine(objDir, name + ".yobj"), bytes);
-    AppendCase(canonical, name, header);
+    if (slots)
+        AppendSlots(canonical, name, header);
+    else
+        AppendCase(canonical, name, header);
     var globals = new List<Dictionary<string, object>>();
     foreach (Global g in header.Globals)
     {
@@ -139,6 +150,14 @@ foreach (JsonElement item in doc.RootElement.GetProperty("compile").EnumerateArr
     Console.Error.WriteLine("ok " + name + " tokens " + tokens.Count + " bytes " + bytes.Length + " globals " + globals.Count);
 }
 
+if (slots && doc.RootElement.GetProperty("errors").GetArrayLength() != 0)
+{
+    Console.Error.WriteLine("slots mode does not record error cases");
+    return 1;
+}
+
+if (!slots)
+{
 foreach (JsonElement item in doc.RootElement.GetProperty("errors").EnumerateArray())
 {
     string name = item.GetProperty("name").GetString();
@@ -159,12 +178,25 @@ foreach (JsonElement item in doc.RootElement.GetProperty("errors").EnumerateArra
         ["messages"] = messages,
     });
 }
+}
 
 if (failed)
     return 1;
 
 string canon = canonical.ToString();
 string digest = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(canon))).ToLowerInvariant();
+var opts = new JsonSerializerOptions { WriteIndented = true };
+if (slots)
+{
+    File.WriteAllText(Path.Combine(outDir, "digest.json"), JsonSerializer.Serialize(new Dictionary<string, string>
+    {
+        ["runtime"] = "10.0.14",
+        ["pin"] = pin,
+        ["digest"] = digest,
+    }, opts) + "\n");
+    Console.Error.WriteLine("slots " + digest);
+    return 0;
+}
 var manifest = new Dictionary<string, object>
 {
     ["runtime"] = "10.0.14",
@@ -173,7 +205,6 @@ var manifest = new Dictionary<string, object>
     ["cases"] = cases,
     ["errors"] = errors,
 };
-var opts = new JsonSerializerOptions { WriteIndented = true };
 File.WriteAllText(Path.Combine(outDir, "manifest.json"), JsonSerializer.Serialize(manifest, opts) + "\n");
 File.WriteAllText(Path.Combine(outDir, "digest.json"), JsonSerializer.Serialize(new Dictionary<string, string>
 {
@@ -207,6 +238,18 @@ static bool EnsureInstanceType()
     ScriptCodeGen.xmrInstSuperType = created;
     ScriptObjWriter.DefineInternalType("xmrsuper", created);
     return true;
+}
+
+static void AppendSlots(StringBuilder sb, string name, Header header)
+{
+    sb.Append("C ").Append(name).Append('\n');
+    foreach (Global global in header.Globals)
+    {
+        sb.Append("G ").Append(global.Name).Append('\n');
+        sb.Append(global.Type).Append('\n');
+        sb.Append(global.Index.ToString(CultureInfo.InvariantCulture)).Append('\n');
+    }
+    sb.Append(".\n");
 }
 
 static void AppendCase(StringBuilder sb, string name, Header header)

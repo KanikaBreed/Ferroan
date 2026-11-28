@@ -27,22 +27,27 @@
 //   Source/OpenSim.Region.ScriptEngine.YEngine/MMRScriptTokenize.cs
 //   Source/OpenSim.Region.ScriptEngine.YEngine/MMRScriptObjCode.cs
 //   Source/OpenSim.Region.ScriptEngine.YEngine/MMRScriptCodeGen.cs
+//   Source/OpenSim.Region.ScriptEngine.YEngine/MMRScriptCompValu.cs
+//   Source/OpenSim.Region.ScriptEngine.YEngine/MMRScriptReduce.cs
 //   Source/OpenSim.Region.ScriptEngine.YEngine/XMRInstAbstract.cs
 //   OpenSim-NGC/OpenSim-Tranquillity @ 41f18f983bb2bfc82e033fed410d361ba57d5aa4
 // Ferroan changes: Copyright (c) 2026 Ferroan contributors,
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! YEngine token stream, source hash and the object-file header.
+//! YEngine token stream, source hash, object-file header and global slots.
 //!
-//! The script thread and Linden's SLua engine are not in this crate yet.
+//! [`assign_global_slots`] gives an ordinary global the slot `globalVarNames`
+//! records. The script thread and Linden's SLua engine are not in this crate yet.
 
 mod error;
 mod number;
 mod object;
+mod slots;
 mod tokenize;
 
 pub use error::Failure;
 pub use object::{Global, HEADER_STRING, Header, OBJECT_BYTES, VERSION, read_header};
+pub use slots::assign_global_slots;
 pub use tokenize::{
     MAX_NAME_LEN, MAX_STRING_LEN, SOURCE_CHARS, Stream, Token, source_hash, tokenize,
 };
