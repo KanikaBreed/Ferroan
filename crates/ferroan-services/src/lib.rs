@@ -29,7 +29,7 @@ mod shard_header;
 
 pub use account::AccountHttp;
 pub use alias::AliasHttp;
-pub use appearance::AppearanceHttp;
+pub use appearance::{AppearanceHttp, AppearanceRoute};
 pub use auth::{AuthError, AuthHttp, authorization_router, open_authorization};
 pub use avatar::AvatarHttp;
 pub use griduser::GridUserHttp;

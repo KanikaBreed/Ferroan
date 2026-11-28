@@ -3,8 +3,11 @@
 
 //! The grid-services process. This build listens for the asset, user-account,
 //! user-alias, authentication, authorization, avatar and grid-user routes whose ini
-//! sections are present. It also serves the configured XBakes connector and, when
-//! the appearance connector is selected, the viewer bake read on this same listener.
+//! sections are present. It also serves the configured XBakes connector on this
+//! listener. When the appearance connector is selected, the viewer bake read is
+//! served on the connector's public port. A port of 0, or `[Network] port`,
+//! shares this listener. Any other port is its own listener, and `GET /texture`
+//! is not mounted here.
 //!
 //! Configuration is loaded the way `GridServerConfigSource` loads it.
 //! `--inimaster` defaults to `OpenSim.Server.GridServer.ini` in the working
@@ -144,13 +147,28 @@ fn run() -> Result<(), String> {
             router = router.merge(http.into_router());
             tracing::info!("ferroan-robust: avatar service on {listen}:{port}");
         }
-        if let Some(section) = appearance {
+        // `public_port` is set only when the connector names a port other than
+        // 0 and other than `[Network] port` (`MainServer.GetHttpServer`).
+        // That listener alone serves `GET /texture`. The appearance tests bind
+        // both ports and fetch the bake on the advertised one.
+        let mut texture_serve = None;
+        if let Some(route) = appearance {
             let avatars = opened_avatars.ok_or("AppearanceService requires AvatarService")?;
             let assets = opened_assets.ok_or("AppearanceService requires AssetService")?;
-            let http = AppearanceHttp::open(config, &section, &avatars, assets)
+            let http = AppearanceHttp::open(config, &route.section, &avatars, assets)
+                .await
                 .map_err(|error| error.to_string())?;
-            router = router.merge(http.into_router());
-            tracing::info!("ferroan-robust: viewer bake read on {listen}:{port}");
+            let bake_port = match route.public_port {
+                Some(public_port) => {
+                    texture_serve = Some((public_port, http.into_router()));
+                    public_port
+                }
+                None => {
+                    router = router.merge(http.into_router());
+                    port
+                }
+            };
+            tracing::info!("ferroan-robust: viewer bake read on {listen}:{bake_port}");
         }
         if let Some(cache) = bakes {
             router = router.merge(cache.clone().into_router());
@@ -188,16 +206,30 @@ fn run() -> Result<(), String> {
         let listener = TcpListener::bind((listen, port))
             .await
             .map_err(|error| error.to_string())?;
-        if let Some(address) = metrics {
-            let metrics_listener = TcpListener::bind(address)
-                .await
-                .map_err(|error| error.to_string())?;
-            let metrics_router = status::metrics_router(meters);
-            let service = axum_serve(listener, router);
-            let scrape = axum_serve(metrics_listener, metrics_router);
-            tokio::try_join!(service, scrape).map(|_| ())
-        } else {
-            axum_serve(listener, router).await
+        let texture_job = match texture_serve {
+            Some((public_port, texture_router)) => {
+                let texture_listener = TcpListener::bind((listen, public_port))
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some(axum_serve(texture_listener, texture_router))
+            }
+            None => None,
+        };
+        let metrics_job = match metrics {
+            Some(address) => {
+                let metrics_listener = TcpListener::bind(address)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                Some(axum_serve(metrics_listener, status::metrics_router(meters)))
+            }
+            None => None,
+        };
+        let service = axum_serve(listener, router);
+        match (metrics_job, texture_job) {
+            (Some(scrape), Some(texture)) => tokio::try_join!(service, scrape, texture).map(|_| ()),
+            (Some(scrape), None) => tokio::try_join!(service, scrape).map(|_| ()),
+            (None, Some(texture)) => tokio::try_join!(service, texture).map(|_| ()),
+            (None, None) => service.await,
         }
     })
 }

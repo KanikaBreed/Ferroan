@@ -10,6 +10,7 @@ mod open;
 mod service;
 
 pub use http::AppearanceHttp;
+pub use open::AppearanceRoute;
 
 #[cfg(test)]
 mod tests;
