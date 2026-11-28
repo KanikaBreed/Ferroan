@@ -15,6 +15,7 @@ members = [
     "crates/ferroan-capture",
     "crates/ferroan-client",
     "crates/ferroan-physics",
+    "crates/ferroan-format",
     "tools/bot",
     "xtask",
 ]
