@@ -1,0 +1,21 @@
+{
+  "compile": [
+    {
+      "name": "two-integers",
+      "source": "integer a;\ninteger b;\nfloat c;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "after-function",
+      "source": "integer a;\ninteger f()\n{\n    integer local;\n    return 0;\n}\nstring b;\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "initializer",
+      "source": "integer n = 1;\nstring s = \"hi\";\ndefault{state_entry(){}}"
+    },
+    {
+      "name": "string-key",
+      "source": "string a;\ninteger n;\nkey b;\ndefault{state_entry(){}}"
+    }
+  ],
+  "errors": []
+}

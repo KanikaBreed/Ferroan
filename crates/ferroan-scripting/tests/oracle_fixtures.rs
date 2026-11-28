@@ -6,10 +6,30 @@
 use std::path::PathBuf;
 
 use ferroan_scripting::{
-    Failure, HEADER_STRING, MAX_NAME_LEN, OBJECT_BYTES, SOURCE_CHARS, read_header, source_hash,
-    tokenize,
+    Failure, HEADER_STRING, MAX_NAME_LEN, OBJECT_BYTES, SOURCE_CHARS, assign_global_slots,
+    read_header, source_hash, tokenize,
 };
 use sha2::{Digest, Sha256};
+
+fn slot_sizes(globals: &[ferroan_scripting::Global]) -> [i32; 11] {
+    let mut sizes: [i32; 11] = [0; 11];
+    for global in globals {
+        let slot: usize = match global.type_name.as_str() {
+            "iarArrays" => 0,
+            "iarChars" => 1,
+            "iarFloats" => 2,
+            "iarIntegers" => 3,
+            "iarLists" => 4,
+            "iarObjects" => 5,
+            "iarRotations" => 6,
+            "iarStrings" => 7,
+            "iarVectors" => 8,
+            _ => panic!("{}", global.type_name),
+        };
+        sizes[slot] = sizes[slot].saturating_add(1_i32);
+    }
+    sizes
+}
 
 fn fixture(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -116,6 +136,9 @@ fn pin_object_files_match_the_tokenizer() {
             assert_eq!(got.type_name, want["type"].as_str().unwrap());
             assert_eq!(i64::from(got.index), want["index"].as_i64().unwrap());
         }
+        let assigned = assign_global_slots(&parsed.tokens);
+        assert_eq!(assigned, header.globals, "{name}");
+        assert_eq!(slot_sizes(&assigned), header.sizes, "{name}");
         canon.push_str(&canonical(case, &hash, &header));
     }
     let digest = format!("{:x}", Sha256::digest(canon.as_bytes()));
@@ -209,6 +232,40 @@ fn a_foreign_object_version_is_refused_before_the_hash() {
         }
         other => panic!("version with no hash, got {other:?}"),
     }
+}
+
+#[test]
+fn slots_match_pin_objects() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/yengine-slots");
+    let cases: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("cases.json")).unwrap()).unwrap();
+    let digest_file: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(root.join("digest.json")).unwrap()).unwrap();
+    assert_eq!(digest_file["runtime"], "10.0.14");
+    assert_eq!(
+        digest_file["pin"],
+        "41f18f983bb2bfc82e033fed410d361ba57d5aa4"
+    );
+    let mut canon = String::new();
+    for case in cases["compile"].as_array().unwrap() {
+        let name = case["name"].as_str().unwrap();
+        let parsed = tokenize(case["source"].as_str().unwrap()).unwrap();
+        let bytes = std::fs::read(root.join(format!("objects/{name}.yobj"))).unwrap();
+        let header = read_header(&bytes).unwrap();
+        let assigned = assign_global_slots(&parsed.tokens);
+        assert_eq!(assigned, header.globals, "{name}");
+        assert_eq!(slot_sizes(&assigned), header.sizes, "{name}");
+        canon.push_str(&format!("C {name}\n"));
+        for global in &header.globals {
+            canon.push_str(&format!(
+                "G {}\n{}\n{}\n",
+                global.name, global.type_name, global.index
+            ));
+        }
+        canon.push_str(".\n");
+    }
+    let digest = format!("{:x}", Sha256::digest(canon.as_bytes()));
+    assert_eq!(digest, digest_file["digest"].as_str().unwrap());
 }
 
 #[test]
